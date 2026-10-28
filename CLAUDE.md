@@ -56,11 +56,25 @@
 - 2단계: 완료 (사용자 확인함). 그림 엔진 lib/figure (types.ts 그림 명령 형식, engine.ts 그리기·PNG, geometry.ts 계산, examples.ts 예시 A~F, render-exam.ts 시험지 그림 일괄 PNG), 확인 화면 components/figure-test (Next 페이지 app/figure-test 와 점검 페이지가 같이 씀)
   - 점검 페이지(사용자가 바로 여는 주소): https://claude.ai/artifact/LvPQzVC3soDs8HtzVXUcGw
   - 다시 만들기: python3 scripts/subset-fonts.py <원본 글꼴 폴더> <부분 글꼴 폴더> → node scripts/build-figure-artifact.mjs <출력.html> <부분 글꼴 폴더>
-- 3단계: 진행 중. python3 scripts/make_step3.py → output/step3_exam_p1.hwpx (그림 아래 배치), output/step3_figure_right.hwpx (그림 오른쪽 배치 확인용)
-  - 사용자 한글(Windows, 이전 버전)에서 그림·수식·줄 맞춤 확인함. 남은 것: 사용자가 말한 "삼각형 기호 두 개" 위치 확인, 3단계 "확인했다"
+- 3단계: 완료 (사용자 확인함). python3 scripts/make_step3.py → output/step3_exam_p1.hwpx (그림 아래 배치), output/step3_figure_right.hwpx (그림 오른쪽 배치 확인용)
   - 사용자 한글에서 확인된 사항 (바꾸지 말 것):
     - 그림: imgDim·imgClip = 픽셀 x 75, curSz = 0, PNG 에 pHYs 없음, 그림 이름 image1…, header 의 binDataList 없음, BinData·version.xml 은 압축하지 않음
       (python-hwpx 기본값으로는 이전 버전 한글에서 그림 자리만 생기고 그림이 안 보였다. scripts/make_picture_test.py 로 비교해서 찾음)
     - 문제 글: 왼쪽 여백 0 + 내어쓰기 5.5mm (번호가 선택지 번호와 같은 세로줄)
     - 같은 이름의 파일을 여러 번 보내면 사용자가 예전 파일을 열 수 있다. 보낼 때마다 파일 이름을 다르게 한다
   - python-hwpx 6.9.0 메모: doc.media.add_image 가 돌려주는 BinaryItem 의 id 는 item.id 가 아니라 item.item_id
+- 4단계: 진행 중. AI 부르는 코드까지 다 만들었고, 사용자 API 키를 기다리는 중 (키 없이 할 수 있는 점검은 모두 통과)
+  - 사용자에게 요금(쪽당 약 1,000~1,500원 예상, 시험 몇 번에 2~3만 원)과 키 넣는 법을 안내함. 요금 승인과 키 넣기는 사용자 몫
+    - 키는 채팅에 붙여 넣게 하지 않는다. 환경 설정(세션 제목 줄의 환경 메뉴 → Edit → Network secrets 또는 환경변수)에 ANTHROPIC_API_KEY 로 넣고 새 세션을 연다
+  - 흐름: 쪽 사진 → (1차) lib/ai/read-page.ts 쪽 읽기 (구조화 출력, effort medium) → 그림마다 원본에서 잘라 키워서 → (2차) lib/ai/read-figure.ts 그림 읽기 (effort high, 답을 lib/figure/validate.ts 로 검사해 틀리면 한 번 고쳐 받음) → lib/ai/assemble.ts 로 시험지 JSON
+  - lib/ai: page-schema.ts (쪽 읽기 답 모양. 구조화 출력 제한: 선택 항목 24개·anyOf 16개, 그래서 빠지는 칸 없이 "" · 0 · [] 로), prompts.ts (지시문. 그림 예시는 samples 와 관계없는 연습용이어야 한다), claude.ts (스트리밍, fallbacks "default" + 베타 server-side-fallback-2026-07-01, 거절·한도·크레딧 오류를 쉬운 말로, 요금 계산), image-geometry.ts (보낼 크기: 긴 변 2576·370만 픽셀 이하, 그림 자르기 여백, 사진 머리에서 크기 읽기), compare.ts · figure-compare.ts (직접 넣은 것과 비교), latex-view.ts (보고서용 수식 보기), http.ts
+  - lib/figure/points.ts: 점 위치 계산을 엔진에서 떼어 냄 (엔진이 만드는 PNG 가 바뀌기 전과 바이트까지 같음을 확인). lib/figure/validate.ts: 그림 명령 검사
+  - 서버 주소: app/api/read/page, app/api/read/figure (5단계 화면이 쓸 것). 배포(6단계) 전에 남이 이 주소로 요금을 쓰지 못하게 막는 방법을 사용자에게 물어 정할 것
+  - 한글 생성기 보완: 문항 label("[서술형 1]" 같은 번호), bogi(<보기> 상자), 문제 글 여러 문단({"t": "\n"}), break_before "page", 부분(section)의 break_before. 1~3단계 결과는 그대로임을 확인
+  - 스크립트:
+    - node scripts/check-ai.mjs : 요금 없는 점검 (답 모양 제한, 그림 명령 검사, 지시문 예시, 합치기 왕복, 사진 크기)
+    - node scripts/read-samples.mjs [사진 이름] [--cached] : samples 를 AI 로 읽음 (요금 듦). 결과 output/ai/*.page.json · *.figures.json · *.exam.json, 요금 기록 output/ai/usage.json. --cached 는 저장해 둔 결과만 씀
+    - node scripts/report-samples.mjs [--fonts=<부분 글꼴 폴더>] : output/ai/report.html 비교 보고서 (원본 · AI 그림 · 직접 만든 그림 나란히). 점검 페이지로 올릴 때는 --fonts 로 글꼴을 넣는다
+      (글꼴: https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_six@1.2/S-CoreDream-{4Regular,5Medium,6Bold}.woff 와 public/fonts 의 Liberation Serif 를 한 폴더에 모아 python3 scripts/subset-fonts.py)
+    - python3 scripts/make_hwpx.py <시험지.json> <출력.hwpx> : AI 결과로 한글 파일
+  - 키가 생기면 할 일: check-ai → read-samples → report-samples → 보고서와 한글 파일(이름을 새로 붙여)을 사용자에게 보내고, 결과가 나쁜 곳은 지시문(prompts.ts)을 고쳐 다시 읽기 (--cached 로 요금 아끼기). 쓴 요금을 사용자에게 알린다

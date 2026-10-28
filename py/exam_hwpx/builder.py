@@ -178,7 +178,9 @@ class ExamBuilder:
                 self.add_equation(p, piece["m"], size=size, where=f"{where}[{i}]")
             else:
                 text = piece.get("t")
-                p.add_run("" if text is None else str(text), char_pr_id_ref=self.run_style(size=size))
+                # 문단 나눔은 문제 글에서만 쓴다 (build_item 이 미리 나눔). 다른 곳에 섞여 오면 빈칸으로
+                text = "" if text is None else str(text).replace("\n", " ")
+                p.add_run(text, char_pr_id_ref=self.run_style(size=size))
 
     # ------------------------------------------------------------------ 부분별
     def text_width(self) -> int:
@@ -274,9 +276,10 @@ class ExamBuilder:
         self.para_format(p_anchor, line_spacing_percent=100, spacing_after_pt=3)
         return table
 
-    def build_section_title(self, title: str):
+    def build_section_title(self, title: str, break_before: str | None = None):
         t = self.tpl
         p_anchor = self.doc.add_paragraph("")
+        self.set_break(p_anchor, break_before)
         table = p_anchor.add_table(1, 1, width=self.column_width(), border_fill_id_ref=self.border("0.4 mm", "0.4 mm", "0.4 mm", "0.4 mm"))
         p = table.cell(0, 0).paragraphs[0]
         p.add_run(title, char_pr_id_ref=self.run_style(size=t["sizes"]["section_title"], font=t["fonts"]["heading"]))
@@ -390,31 +393,86 @@ class ExamBuilder:
         self.para_format(p_anchor, alignment=align, line_spacing_percent=100,
                          indent_left_mm=0, first_line_indent_mm=0, spacing_before_pt=6, spacing_after_pt=6)
 
+    @staticmethod
+    def set_break(p, kind: str | None):
+        """문단 앞에서 단(column)이나 쪽(page)을 나눈다."""
+        if kind == "column":
+            p.column_break = True
+        elif kind == "page":
+            p.element.set("pageBreak", "1")
+            p.section.mark_dirty()
+
+    @staticmethod
+    def split_paragraphs(pieces: list) -> list[list]:
+        """문제 글 조각을 문단별로 나눈다. {"t": "\\n"} 조각이 문단 나눔이다."""
+        paragraphs: list[list] = [[]]
+        for piece in pieces or []:
+            if isinstance(piece, dict) and piece.get("t") == "\n":
+                paragraphs.append([])
+            else:
+                paragraphs[-1].append(piece)
+        return [p for p in paragraphs if p] or [[]]
+
     def build_item(self, item: dict, is_first: bool):
         t = self.tpl
         size = t["sizes"]["body"]
         no = item["no"]
-        p = self.doc.add_paragraph("")
-        if item.get("break_before") == "column":
-            p.column_break = True
-        p.add_run(f"{no}. ", char_pr_id_ref=self.run_style(size=size))
-        self.add_pieces(p, item.get("stem", []), size=size, where=f"{no}번 문제 글")
-        if item.get("points") is not None:
-            p.add_run(f" [{item['points']}점]", char_pr_id_ref=self.run_style(size=size))
-        self.para_format(
-            p, alignment="JUSTIFY", line_spacing_percent=t["line_spacing"]["body"],
-            # 내어쓰기: 첫 줄(문제 번호)은 단 왼쪽 끝에서, 다음 줄부터 5.5mm 들여 시작한다.
-            # 한글은 왼쪽 여백에서 첫 줄을 시작하고 내어쓰기 값만큼 나머지 줄을 민다 (왼쪽 여백 0 이어야 번호가 선택지 번호와 같은 세로줄에 선다)
-            indent_left_mm=0, first_line_indent_mm=-5.5,
-            spacing_before_pt=0 if (is_first or item.get("break_before")) else t["item_gap_pt"],
-        )
-        self.build_figure(item, p)
+        label = item.get("label") or f"{no}."
+        paragraphs = self.split_paragraphs(item.get("stem", []))
+        first = None
+        for k, pieces in enumerate(paragraphs):
+            p = self.doc.add_paragraph("")
+            if k == 0:
+                first = p
+                self.set_break(p, item.get("break_before"))
+                p.add_run(f"{label} ", char_pr_id_ref=self.run_style(size=size))
+            self.add_pieces(p, pieces, size=size, where=f"{no}번 문제 글")
+            if k == len(paragraphs) - 1 and item.get("points") is not None:
+                p.add_run(f" [{item['points']}점]", char_pr_id_ref=self.run_style(size=size))
+            if k == 0:
+                self.para_format(
+                    p, alignment="JUSTIFY", line_spacing_percent=t["line_spacing"]["body"],
+                    # 내어쓰기: 첫 줄(문제 번호)은 단 왼쪽 끝에서, 다음 줄부터 5.5mm 들여 시작한다.
+                    # 한글은 왼쪽 여백에서 첫 줄을 시작하고 내어쓰기 값만큼 나머지 줄을 민다 (왼쪽 여백 0 이어야 번호가 선택지 번호와 같은 세로줄에 선다)
+                    indent_left_mm=0, first_line_indent_mm=-5.5,
+                    spacing_before_pt=0 if (is_first or item.get("break_before")) else t["item_gap_pt"],
+                )
+            else:
+                # 둘째 문단부터는 번호 다음 글자와 같은 세로줄에서 시작한다
+                self.para_format(p, alignment="JUSTIFY", line_spacing_percent=t["line_spacing"]["body"],
+                                 indent_left_mm=5.5, first_line_indent_mm=0, spacing_before_pt=2)
+        self.build_figure(item, first)
+        if item.get("bogi"):
+            self.build_bogi(item["bogi"], no)
         for i, choice in enumerate(item.get("choices", [])):
             cp = self.doc.add_paragraph("")
             cp.add_run(f"{CHOICE_MARKS[i]}  ", char_pr_id_ref=self.run_style(size=t["sizes"]["choice"]))
             self.add_pieces(cp, choice, size=t["sizes"]["choice"], where=f"{no}번 선택지 {i + 1}")
             self.para_format(cp, alignment="LEFT", line_spacing_percent=t["line_spacing"]["choice"],
                              indent_left_mm=0, spacing_before_pt=4 if i == 0 else 0)
+
+    def build_bogi(self, lines: list, no):
+        """<보기> 상자: 문제 글과 같은 들여쓰기로, 가는 테두리 안에 항목(ㄱ, ㄴ, ㄷ …)을 한 줄씩."""
+        t = self.tpl
+        size = t["sizes"]["body"]
+        indent = 5.5
+        p_anchor = self.doc.add_paragraph("")
+        thin = t["border"]["thin"]
+        table = p_anchor.add_table(1, 1, width=self.column_width() - mm(indent), border_fill_id_ref=self.border(thin, thin, thin, thin))
+        cell = table.cell(0, 0)
+        title = cell.paragraphs[0]
+        title.add_run("<보기>", char_pr_id_ref=self.run_style(size=size, font=t["fonts"]["heading"]))
+        self.para_format(title, alignment="CENTER", line_spacing_percent=t["line_spacing"]["box"])
+        for i, line in enumerate(lines):
+            lp = cell.add_paragraph("")
+            self.add_pieces(lp, line, size=size, where=f"{no}번 보기 {i + 1}")
+            first_text = next((piece.get("t", "") for piece in line if isinstance(piece, dict) and "t" in piece), "")
+            # "ㄱ. " 처럼 기호로 시작하는 항목은 다음 줄을 기호 뒤 글자에 맞춘다
+            hanging = bool(re.match(r"^\s*[ㄱ-ㅎ가-하①-⑳a-z0-9]\s*[.)]\s", first_text))
+            self.para_format(lp, alignment="JUSTIFY", line_spacing_percent=t["line_spacing"]["body"],
+                             indent_left_mm=0, first_line_indent_mm=-4.5 if hanging else 0)
+        self.para_format(p_anchor, line_spacing_percent=100, indent_left_mm=indent, first_line_indent_mm=0,
+                         spacing_before_pt=4, spacing_after_pt=4)
 
     def build_footer(self):
         """꼬리말: 위쪽 선, ( 쪽 / 전체 쪽 ), 오른쪽 학년·학교, 맨 아래 안내 문구."""
@@ -468,7 +526,7 @@ class ExamBuilder:
             self.build_box(box, anchor=first_col_para if i == 0 else None)
         for section in self.exam.get("sections", []):
             if section.get("title"):
-                self.build_section_title(section["title"])
+                self.build_section_title(section["title"], section.get("break_before"))
             for j, item in enumerate(section.get("items", [])):
                 self.build_item(item, is_first=(j == 0))
         note = self.exam.get("page_end_note")

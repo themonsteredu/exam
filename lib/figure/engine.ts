@@ -2,11 +2,9 @@
 // 브라우저에서만 돈다. JXG 는 `import("jsxgraph")` 로 불러서 넘긴다.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import {
-  Vec, v, add, sub, mul, dot, len, dist, unit, perp, fromAngle, angleOf, rotate, mid,
-  intersectLines, foot, intersectCircleLine, bisectorDir, interiorSweep, Line,
-} from "./geometry";
-import type { ElementSpec, FigureSpec, LineSpec, PointRef, PointSpec, Dir, XY } from "./types";
+import { Vec, v, add, sub, mul, dist, unit, perp, fromAngle, angleOf, mid, bisectorDir, interiorSweep } from "./geometry";
+import { PointBook } from "./points";
+import type { ElementSpec, FigureSpec, PointRef, Dir } from "./types";
 
 export const FONT_SERIF = "'Liberation Serif', 'Times New Roman', serif";
 export const FONT_SANS = "'S-Core Dream', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif";
@@ -109,10 +107,10 @@ export class FigureRenderer {
   heightPx: number;
   /** 다 그리지 못한 까닭 (없는 점, 계산되지 않는 점, 모르는 요소 등). 비어 있지 않으면 PNG 를 만들지 않는다 */
   issues: string[] = [];
-  private pointFns = new Map<string, () => Vec>();
+  /** 점 위치 계산 (자유점은 보드를 만든 뒤 JSXGraph glider 위치를 따른다) */
+  private book: PointBook;
   private gliderEls = new Map<string, { el: any; from: () => Vec; dir: () => Vec }>();
   private opts: RenderOptions;
-  private pendingGliders: { id: string; g: any; fromFn: () => Vec; dirFn: () => Vec; startDist: () => number }[] = [];
   /** 그릴 요소 (쓰는 점을 확인한 것만) */
   private elements: ElementSpec[];
   /** 함수 요소마다 미리 계산한 점 (범위 계산용) */
@@ -127,8 +125,14 @@ export class FigureRenderer {
     this.opts = opts;
     patchCanvasText(JXG);
 
-    // 점 계산 함수 준비 (자유점은 일단 처음 위치로)
-    for (const p of spec.points || []) this.definePoint(p);
+    // 점 계산 준비 (자유점은 보드를 만들기 전까지 처음 위치로)
+    this.book = new PointBook(spec.points || [], {
+      gliders: opts.gliders,
+      gliderPosition: (id) => {
+        const ge = this.gliderEls.get(id);
+        return ge ? v(ge.el.X(), ge.el.Y()) : undefined;
+      },
+    });
     // 없는 점이나 계산되지 않는 점(만나지 않는 원과 직선 등)을 쓰는 요소는 그리지 않고 issues 에 적는다
     this.elements = spec.elements.filter((el) => this.usable(el));
 
@@ -205,10 +209,7 @@ export class FigureRenderer {
 
   // ---------------------------------------------------------------- 점
   pt(ref: PointRef): Vec {
-    if (Array.isArray(ref)) return v(ref[0], ref[1]);
-    const fn = this.pointFns.get(ref);
-    if (!fn) throw new Error(`점 '${ref}' 이 없습니다`);
-    return fn();
+    return this.book.pt(ref);
   }
 
   /** 지금 점 좌표 (자유점을 옮긴 뒤 값 포함) */
@@ -217,118 +218,11 @@ export class FigureRenderer {
   }
 
   pointIds(): string[] {
-    return [...this.pointFns.keys()];
-  }
-
-  private lineOf(spec: LineSpec): Line {
-    if ("bisector" in spec) {
-      const [a, o, b] = spec.bisector.map((r) => this.pt(r));
-      return { p: o, d: bisectorDir(a, o, b) };
-    }
-    if ("perpendicular" in spec) {
-      const p = this.pt(spec.perpendicular.through);
-      const [a, b] = spec.perpendicular.to.map((r) => this.pt(r));
-      return { p, d: perp(sub(b, a)) };
-    }
-    const through = spec.through;
-    if (through.length === 2) {
-      const a = this.pt(through[0]);
-      const b = this.pt(through[1] as PointRef);
-      return { p: a, d: sub(b, a) };
-    }
-    const p = this.pt(through[0]);
-    if ("angle" in spec) return { p, d: fromAngle(spec.angle) };
-    if ("dirOf" in spec) {
-      const [a, b] = spec.dirOf.map((r) => this.pt(r));
-      return { p, d: rotate(sub(b, a), spec.turn ?? 0) };
-    }
-    throw new Error("직선을 알 수 없습니다");
-  }
-
-  private definePoint(p: PointSpec) {
-    const s: any = p;
-    let fn: () => Vec;
-    if (s.at) {
-      const [x, y] = s.at as XY;
-      fn = () => v(x, y);
-    } else if (s.isoApex) {
-      const { base, angle, side } = s.isoApex;
-      fn = () => {
-        const a = this.pt(base[0]);
-        const b = this.pt(base[1]);
-        const h = (dist(a, b) / 2) / Math.tan((angle / 2) * Math.PI / 180);
-        const n = perp(unit(sub(b, a)));
-        return add(mid(a, b), mul(n, side === "right" ? -h : h));
-      };
-    } else if (s.polar) {
-      const { from, length, angle, dirOf, turn } = s.polar;
-      fn = () => {
-        const o = this.pt(from);
-        let d: Vec;
-        if (dirOf) {
-          const [a, b] = dirOf.map((r: PointRef) => this.pt(r));
-          d = rotate(unit(sub(b, a)), turn ?? 0);
-        } else d = fromAngle(angle ?? 0);
-        return add(o, mul(unit(d), length));
-      };
-    } else if (s.intersect) {
-      const [l1, l2] = s.intersect;
-      fn = () => intersectLines(this.lineOf(l1), this.lineOf(l2));
-    } else if (s.circleLine) {
-      const c = s.circleLine;
-      fn = () => {
-        const center = this.pt(c.center);
-        const r = c.radius ?? dist(center, this.pt(c.through));
-        const a = this.pt(c.line[0]);
-        const b = this.pt(c.line[1]);
-        const hits = intersectCircleLine(center, r, { p: a, d: sub(b, a) });
-        if (hits.length === 0) return v(NaN, NaN);
-        if (c.other) {
-          const o = this.pt(c.other);
-          return dist(hits[0], o) > dist(hits[1], o) ? hits[0] : hits[1];
-        }
-        if (c.near) {
-          const o = this.pt(c.near);
-          return dist(hits[0], o) < dist(hits[1], o) ? hits[0] : hits[1];
-        }
-        return hits[0];
-      };
-    } else if (s.foot) {
-      const { from, to } = s.foot;
-      fn = () => {
-        const a = this.pt(to[0]);
-        const b = this.pt(to[1]);
-        return foot(this.pt(from), { p: a, d: sub(b, a) });
-      };
-    } else if (s.midpoint) {
-      fn = () => mid(this.pt(s.midpoint[0]), this.pt(s.midpoint[1]));
-    } else if (s.glider) {
-      const g = s.glider;
-      const fromFn = () => this.pt(g.from);
-      const dirFn = () => unit(sub(this.pt(g.line[1]), this.pt(g.line[0])));
-      const wanted = this.opts.gliders?.[p.id] ?? g.dist;
-      // 선분 위의 자유점은 처음 위치도 선분 안으로 줄인다 (JSXGraph 가 선분 끝에 붙이므로, 범위 계산도 같게)
-      const startDist = () => {
-        if (!g.segment) return wanted;
-        const a = this.pt(g.line[0]);
-        const t0 = dot(sub(fromFn(), a), dirFn()); // from 이 선분 시작점에서 떨어진 거리
-        return Math.min(Math.max(wanted, -t0), dist(a, this.pt(g.line[1])) - t0);
-      };
-      // 보드가 만들어지기 전(범위 계산)에는 처음 위치를 쓴다
-      fn = () => {
-        const ge = this.gliderEls.get(p.id);
-        if (ge) return v(ge.el.X(), ge.el.Y());
-        return add(fromFn(), mul(dirFn(), startDist()));
-      };
-      this.pendingGliders.push({ id: p.id, g, fromFn, dirFn, startDist });
-    } else {
-      throw new Error(`점 '${p.id}' 을 만드는 방법을 알 수 없습니다`);
-    }
-    this.pointFns.set(p.id, fn);
+    return this.book.ids();
   }
 
   private createGliders() {
-    for (const { id, g, fromFn, dirFn, startDist } of this.pendingGliders) {
+    for (const { id, spec: g, from: fromFn, dir: dirFn, startDist } of this.book.gliders) {
       const a = () => this.pt(g.line[0]);
       const b = () => this.pt(g.line[1]);
       const line = this.board.create(
@@ -437,7 +331,7 @@ export class FigureRenderer {
   // ---------------------------------------------------------------- 범위
   private autoBBox(): [number, number, number, number] {
     const pts: Vec[] = [];
-    for (const id of this.pointFns.keys()) {
+    for (const id of this.book.ids()) {
       try {
         pts.push(this.pt(id));
       } catch {
