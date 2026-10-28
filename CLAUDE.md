@@ -51,4 +51,6 @@
 
 ## 진행 상황
 - 1단계: 완료 (사용자 확인함). py/exam_hwpx, scripts/make_step1.py → output/step1_exam_p1.hwpx
-- 2단계: 그림 엔진 lib/figure (types.ts 그림 명령 형식, engine.ts 그리기·PNG, geometry.ts 계산, examples.ts 예시 A~F), 테스트 화면 app/figure-test. 사용자 확인 대기 중
+- 2단계: 그림 엔진 lib/figure (types.ts 그림 명령 형식, engine.ts 그리기·PNG, geometry.ts 계산, examples.ts 예시 A~F), 확인 화면 components/figure-test (Next 페이지 app/figure-test 와 점검 페이지가 같이 씀). 사용자 확인 대기 중
+  - 점검 페이지(사용자가 바로 여는 주소): https://claude.ai/artifact/LvPQzVC3soDs8HtzVXUcGw
+  - 다시 만들기: python3 scripts/subset-fonts.py <원본 글꼴 폴더> <부분 글꼴 폴더> → node scripts/build-figure-artifact.mjs <출력.html> <부분 글꼴 폴더>
