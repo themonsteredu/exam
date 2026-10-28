@@ -1,0 +1,860 @@
+// 그림 명령(JSON) → JSXGraph(canvas) 그림.
+// 브라우저에서만 돈다. JXG 는 `import("jsxgraph")` 로 불러서 넘긴다.
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import {
+  Vec, v, add, sub, mul, len, dist, unit, perp, fromAngle, angleOf, rotate, mid,
+  intersectLines, foot, intersectCircleLine, bisectorDir, interiorSweep, Line,
+} from "./geometry";
+import type { ElementSpec, FigureSpec, LineSpec, PointRef, PointSpec, Dir, XY } from "./types";
+
+export const FONT_SERIF = "'Liberation Serif', 'Times New Roman', serif";
+export const FONT_SANS = "'S-Core Dream', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif";
+
+type JXGType = any;
+
+// 층(layer): 숫자가 클수록 위
+const LAYER = { fill: 1, cubes: 2, dimension: 3, line: 5, mark: 6, dot: 7, text: 9, handle: 10 };
+
+let patched = false;
+
+/** 캔버스 글자: Arial 고정을 풀고, 실제 글자 높이로 정확히 가운데 맞춘다. */
+export function patchCanvasText(JXG: JXGType) {
+  if (patched) return;
+  patched = true;
+  JXG.CanvasRenderer.prototype.drawInternalText = function (el: any) {
+    const fs = el.evalVisProp("fontsize");
+    const ctx = this.context as CanvasRenderingContext2D;
+    ctx.save();
+    if (this._setColor(el, "stroke", "fill") && !isNaN(el.coords.scrCoords[1] + el.coords.scrCoords[2])) {
+      const f = el.figFont || { family: FONT_SANS, italic: false, weight: 400 };
+      ctx.font = `${f.italic ? "italic " : ""}${f.weight || 400} ${fs > 0 ? fs : 0}px ${f.family}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "alphabetic";
+      const m = ctx.measureText(el.plaintext);
+      const dy = (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2;
+      ctx.fillText(el.plaintext, el.coords.scrCoords[1], el.coords.scrCoords[2] + dy);
+    }
+    ctx.restore();
+    return null;
+  };
+}
+
+export async function loadFigureFonts() {
+  if (typeof document === "undefined" || !document.fonts) return;
+  await Promise.all([
+    document.fonts.load(`20px 'Liberation Serif'`),
+    document.fonts.load(`italic 20px 'Liberation Serif'`),
+    document.fonts.load(`400 20px 'S-Core Dream'`),
+    document.fonts.load(`500 20px 'S-Core Dream'`),
+  ]).catch(() => undefined);
+}
+
+let measureCtx: CanvasRenderingContext2D | null = null;
+function measureTextPx(text: string, font: string): number {
+  if (!measureCtx) measureCtx = document.createElement("canvas").getContext("2d");
+  if (!measureCtx) return text.length * 10;
+  measureCtx.font = font;
+  return measureCtx.measureText(text).width;
+}
+
+const DIRS: Record<string, number> = { E: 0, NE: 45, N: 90, NW: 135, W: 180, SW: 225, S: 270, SE: 315 };
+const dirVec = (d: Dir): Vec => fromAngle(typeof d === "number" ? d : DIRS[d] ?? 90);
+
+export type RenderOptions = {
+  /** 보드 가로 크기(px, 화면 기준) */
+  widthPx: number;
+  /** 자유점을 끌 수 있게 할지 */
+  interactive?: boolean;
+  /** 자유점 위치 (id → from 에서의 거리) */
+  gliders?: Record<string, number>;
+  /** 자유점을 옮길 때마다 부르는 함수 */
+  onChange?: () => void;
+};
+
+export class FigureRenderer {
+  JXG: JXGType;
+  spec: FigureSpec;
+  board: any;
+  container: HTMLElement;
+  bbox: [number, number, number, number];
+  pxPerUnit: number;
+  heightPx: number;
+  private pointFns = new Map<string, () => Vec>();
+  private gliderEls = new Map<string, { el: any; from: () => Vec; dir: () => Vec }>();
+  private opts: RenderOptions;
+  private pendingGliders: { id: string; g: any; fromFn: () => Vec; dirFn: () => Vec; startDist: number }[] = [];
+
+  constructor(JXG: JXGType, container: HTMLElement, spec: FigureSpec, opts: RenderOptions) {
+    this.JXG = JXG;
+    this.spec = spec;
+    this.container = container;
+    this.opts = opts;
+    patchCanvasText(JXG);
+
+    // 점 계산 함수 준비 (자유점은 일단 처음 위치로)
+    for (const p of spec.points || []) this.definePoint(p);
+
+    this.bbox = spec.bbox || this.autoBBox();
+    const [l, t, r, b] = this.bbox;
+    this.pxPerUnit = opts.widthPx / (r - l);
+    this.heightPx = Math.round((t - b) * this.pxPerUnit);
+    container.style.width = `${opts.widthPx}px`;
+    container.style.height = `${this.heightPx}px`;
+
+    this.board = JXG.JSXGraph.initBoard(container, {
+      renderer: "canvas",
+      boundingbox: this.bbox,
+      keepAspectRatio: true,
+      axis: false,
+      grid: false,
+      showNavigation: false,
+      showCopyright: false,
+      showInfobox: false,
+      pan: { enabled: false },
+      zoom: { enabled: false, wheel: false },
+      resize: { enabled: false },
+    });
+    this.board.suspendUpdate();
+    this.setupDashes();
+    this.createGliders();
+    for (const el of spec.elements) this.drawElement(el);
+    this.board.unsuspendUpdate();
+    if (opts.onChange) this.board.on("update", opts.onChange);
+  }
+
+  destroy() {
+    try {
+      this.JXG.JSXGraph.freeBoard(this.board);
+    } catch {
+      /* 이미 지워짐 */
+    }
+  }
+
+  // ---------------------------------------------------------------- 크기 기준
+  get base() {
+    return this.spec.base;
+  }
+  /** 본선 굵기 (px) */
+  get lineWidthPx() {
+    return 0.01 * this.base * (this.spec.style?.lineScale ?? 1) * this.pxPerUnit;
+  }
+  /** 점 이름 글자 크기 (그림 단위) */
+  get labelUnits() {
+    return 0.15 * this.base * (this.spec.style?.labelScale ?? 1);
+  }
+  get labelPx() {
+    return this.labelUnits * this.pxPerUnit;
+  }
+
+  private setupDashes() {
+    const w = this.lineWidthPx;
+    const dims = w * 0.5;
+    // dash 번호: 1 보조 점선, 2 길이 표시 짧은 점선, 3 동그란 점선, 4 격자 점선
+    this.board.renderer.dashArray = [
+      [w * 4, w * 3],
+      [dims * 7, dims * 5],
+      [0, w * 0.9 * 2.4],
+      [w * 2.2, w * 2.2],
+      [20, 10, 10, 10],
+      [20, 5, 10, 5],
+      [0, 5],
+    ];
+  }
+
+  // ---------------------------------------------------------------- 점
+  pt(ref: PointRef): Vec {
+    if (Array.isArray(ref)) return v(ref[0], ref[1]);
+    const fn = this.pointFns.get(ref);
+    if (!fn) throw new Error(`점 '${ref}' 이 없습니다`);
+    return fn();
+  }
+
+  /** 지금 점 좌표 (자유점을 옮긴 뒤 값 포함) */
+  pointValue(id: string): Vec {
+    return this.pt(id);
+  }
+
+  pointIds(): string[] {
+    return [...this.pointFns.keys()];
+  }
+
+  private lineOf(spec: LineSpec): Line {
+    if ("bisector" in spec) {
+      const [a, o, b] = spec.bisector.map((r) => this.pt(r));
+      return { p: o, d: bisectorDir(a, o, b) };
+    }
+    if ("perpendicular" in spec) {
+      const p = this.pt(spec.perpendicular.through);
+      const [a, b] = spec.perpendicular.to.map((r) => this.pt(r));
+      return { p, d: perp(sub(b, a)) };
+    }
+    const through = spec.through;
+    if (through.length === 2) {
+      const a = this.pt(through[0]);
+      const b = this.pt(through[1] as PointRef);
+      return { p: a, d: sub(b, a) };
+    }
+    const p = this.pt(through[0]);
+    if ("angle" in spec) return { p, d: fromAngle(spec.angle) };
+    if ("dirOf" in spec) {
+      const [a, b] = spec.dirOf.map((r) => this.pt(r));
+      return { p, d: rotate(sub(b, a), spec.turn ?? 0) };
+    }
+    throw new Error("직선을 알 수 없습니다");
+  }
+
+  private definePoint(p: PointSpec) {
+    const s: any = p;
+    let fn: () => Vec;
+    if (s.at) {
+      const [x, y] = s.at as XY;
+      fn = () => v(x, y);
+    } else if (s.isoApex) {
+      const { base, angle, side } = s.isoApex;
+      fn = () => {
+        const a = this.pt(base[0]);
+        const b = this.pt(base[1]);
+        const h = (dist(a, b) / 2) / Math.tan((angle / 2) * Math.PI / 180);
+        const n = perp(unit(sub(b, a)));
+        return add(mid(a, b), mul(n, side === "right" ? -h : h));
+      };
+    } else if (s.polar) {
+      const { from, length, angle, dirOf, turn } = s.polar;
+      fn = () => {
+        const o = this.pt(from);
+        let d: Vec;
+        if (dirOf) {
+          const [a, b] = dirOf.map((r: PointRef) => this.pt(r));
+          d = rotate(unit(sub(b, a)), turn ?? 0);
+        } else d = fromAngle(angle ?? 0);
+        return add(o, mul(unit(d), length));
+      };
+    } else if (s.intersect) {
+      const [l1, l2] = s.intersect;
+      fn = () => intersectLines(this.lineOf(l1), this.lineOf(l2));
+    } else if (s.circleLine) {
+      const c = s.circleLine;
+      fn = () => {
+        const center = this.pt(c.center);
+        const r = c.radius ?? dist(center, this.pt(c.through));
+        const a = this.pt(c.line[0]);
+        const b = this.pt(c.line[1]);
+        const hits = intersectCircleLine(center, r, { p: a, d: sub(b, a) });
+        if (hits.length === 0) return v(NaN, NaN);
+        if (c.other) {
+          const o = this.pt(c.other);
+          return dist(hits[0], o) > dist(hits[1], o) ? hits[0] : hits[1];
+        }
+        if (c.near) {
+          const o = this.pt(c.near);
+          return dist(hits[0], o) < dist(hits[1], o) ? hits[0] : hits[1];
+        }
+        return hits[0];
+      };
+    } else if (s.foot) {
+      const { from, to } = s.foot;
+      fn = () => {
+        const a = this.pt(to[0]);
+        const b = this.pt(to[1]);
+        return foot(this.pt(from), { p: a, d: sub(b, a) });
+      };
+    } else if (s.midpoint) {
+      fn = () => mid(this.pt(s.midpoint[0]), this.pt(s.midpoint[1]));
+    } else if (s.glider) {
+      const g = s.glider;
+      const fromFn = () => this.pt(g.from);
+      const dirFn = () => unit(sub(this.pt(g.line[1]), this.pt(g.line[0])));
+      const startDist = this.opts.gliders?.[p.id] ?? g.dist;
+      // 보드가 만들어지기 전(범위 계산)에는 처음 위치를 쓴다
+      fn = () => {
+        const ge = this.gliderEls.get(p.id);
+        if (ge) return v(ge.el.X(), ge.el.Y());
+        return add(fromFn(), mul(dirFn(), startDist));
+      };
+      this.pendingGliders.push({ id: p.id, g, fromFn, dirFn, startDist });
+    } else {
+      throw new Error(`점 '${p.id}' 을 만드는 방법을 알 수 없습니다`);
+    }
+    this.pointFns.set(p.id, fn);
+  }
+
+  private createGliders() {
+    for (const { id, g, fromFn, dirFn, startDist } of this.pendingGliders) {
+      const a = () => this.pt(g.line[0]);
+      const b = () => this.pt(g.line[1]);
+      const line = this.board.create(
+        g.segment ? "segment" : "line",
+        [() => [a().x, a().y], () => [b().x, b().y]],
+        { visible: false, fixed: true },
+      );
+      const start = add(fromFn(), mul(dirFn(), startDist));
+      const interactive = !!this.opts.interactive;
+      const el = this.board.create("glider", [start.x, start.y, line], {
+        name: "",
+        withLabel: false,
+        size: Math.max(4, this.lineWidthPx * 3),
+        face: "o",
+        fillColor: "#F28C28",
+        strokeColor: "#F28C28",
+        fillOpacity: 0.35,
+        strokeOpacity: 0.8,
+        visible: interactive,
+        fixed: !interactive,
+        highlight: interactive,
+        layer: LAYER.handle,
+        showInfobox: false,
+      });
+      this.gliderEls.set(id, { el, from: fromFn, dir: dirFn });
+    }
+  }
+
+  /** 자유점 위치를 from 에서의 거리로 돌려준다 (PNG 다시 그릴 때 사용) */
+  gliderState(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const [id, g] of this.gliderEls) {
+      const p = v(g.el.X(), g.el.Y());
+      const d = sub(p, g.from());
+      out[id] = d.x * g.dir().x + d.y * g.dir().y;
+    }
+    return out;
+  }
+
+  // ---------------------------------------------------------------- 범위
+  private autoBBox(): [number, number, number, number] {
+    const pts: Vec[] = [];
+    for (const id of this.pointFns.keys()) pts.push(this.pt(id));
+    for (const el of this.spec.elements) pts.push(...this.extentOf(el));
+    const good = pts.filter((p) => isFinite(p.x) && isFinite(p.y));
+    const xs = good.map((p) => p.x);
+    const ys = good.map((p) => p.y);
+    const pad = this.labelUnits * 0.6;
+    return [Math.min(...xs) - pad, Math.max(...ys) + pad, Math.max(...xs) + pad, Math.min(...ys) - pad];
+  }
+
+  private extentOf(el: ElementSpec): Vec[] {
+    const L = this.labelUnits;
+    const box = (c: Vec, w: number, h: number) => [v(c.x - w, c.y - h), v(c.x + w, c.y + h)];
+    switch (el.type) {
+      case "label": {
+        const at = this.pt(el.at);
+        const size = L * (el.size ?? 1);
+        const c = el.dir ? add(at, mul(dirVec(el.dir), size * (el.offset ?? 0.75))) : at;
+        return box(c, size * 0.3 * Math.max(1, el.text.length), size * 0.5);
+      }
+      case "dimension": {
+        const [a, b] = el.points.map((r) => this.pt(r));
+        const n = perp(unit(sub(b, a)));
+        const apex = add(mid(a, b), mul(n, el.bulge * dist(a, b)));
+        const size = L * (el.labelSize ?? 0.85);
+        const w = el.label ? (measureTextPx(el.label, `400 100px ${FONT_SERIF}`) / 100) * size : 0;
+        const out = el.labelPlace === "outside" ? mul(n, (Math.sign(el.bulge) || 1) * (w / 2 * Math.abs(n.x) + size * 0.6 * Math.abs(n.y) + size * 0.2)) : v(0, 0);
+        return [a, b, ...box(add(apex, out), w / 2 + size * 0.2, size * 0.6)];
+      }
+      case "cubes":
+        return this.cubeFaces(el).flatMap((f) => f.pts);
+      case "grid":
+        return [v(el.at[0], el.at[1]), v(el.at[0] + el.cols * el.cell, el.at[1] - el.rows * el.cell)];
+      case "badge": {
+        const r = el.radius ?? L * 0.75;
+        return box(v(el.at[0], el.at[1]), r, r);
+      }
+      case "axes":
+        return [v(el.x[0], el.y[0]), v(el.x[1] + L * 0.6, el.y[1] + L * 0.6)];
+      case "circle": {
+        const c = this.pt(el.center);
+        const r = el.radius ?? dist(c, this.pt(el.through!));
+        return box(c, r, r);
+      }
+      case "segment": {
+        const [a, b] = el.points.map((r) => this.pt(r));
+        const d = unit(sub(b, a));
+        return [sub(a, mul(d, el.extendStart ?? 0)), add(b, mul(d, el.extendEnd ?? 0))];
+      }
+      case "arrow":
+        return [this.pt(el.from), this.pt(el.to)];
+      case "function": {
+        const f = this.fnOf(el.expr);
+        const out: Vec[] = [];
+        for (let i = 0; i <= 40; i++) {
+          const x = el.domain[0] + ((el.domain[1] - el.domain[0]) * i) / 40;
+          out.push(v(x, f(x)));
+        }
+        return out;
+      }
+      default:
+        return [];
+    }
+  }
+
+  private fnOf(expr: string): (x: number) => number {
+    // 범위 계산 단계에서는 보드가 없으므로 간단한 식만 직접 계산
+    const js = expr.replace(/\^/g, "**").replace(/\b(sin|cos|tan|sqrt|abs|log|exp|PI)\b/g, "Math.$1");
+    // eslint-disable-next-line no-new-func
+    return new Function("x", `return ${js};`) as (x: number) => number;
+  }
+
+  // ---------------------------------------------------------------- 그리기 도우미
+  private curve(
+    data: () => Vec[],
+    attrs: Record<string, any>,
+  ) {
+    const c = this.board.create("curve", [[0], [0]], {
+      strokeColor: "#000000",
+      strokeWidth: this.lineWidthPx,
+      fillColor: "none",
+      highlight: false,
+      fixed: true,
+      lineCap: "round",
+      ...attrs,
+    });
+    c.updateDataArray = function () {
+      const pts = data();
+      this.dataX = pts.map((p) => p.x);
+      this.dataY = pts.map((p) => p.y);
+    };
+    return c;
+  }
+
+  private text(at: () => Vec, text: string, opts: { sizePx: number; family: string; italic?: boolean; weight?: number; color?: string }) {
+    const t = this.board.create("text", [() => at().x, () => at().y, text], {
+      display: "internal",
+      anchorX: "middle",
+      anchorY: "middle",
+      fontSize: opts.sizePx,
+      strokeColor: opts.color || "#000000",
+      highlight: false,
+      fixed: true,
+      layer: LAYER.text,
+    });
+    t.figFont = { family: opts.family, italic: !!opts.italic, weight: opts.weight || 400 };
+    return t;
+  }
+
+  private strokeAttrs(s: { width?: number; color?: string; dash?: boolean }, layer = LAYER.line) {
+    return {
+      strokeWidth: this.lineWidthPx * (s.width ?? 1),
+      strokeColor: s.color || "#000000",
+      dash: s.dash ? 1 : 0,
+      layer,
+    };
+  }
+
+  private arcPoints(c: Vec, r: number, startDeg: number, endDeg: number, n = 48): Vec[] {
+    const out: Vec[] = [];
+    for (let i = 0; i <= n; i++) out.push(add(c, mul(fromAngle(startDeg + ((endDeg - startDeg) * i) / n), r)));
+    return out;
+  }
+
+  // ---------------------------------------------------------------- 요소
+  private drawElement(el: ElementSpec) {
+    const L = this.labelUnits;
+    switch (el.type) {
+      case "segment": {
+        this.curve(() => {
+          const a = this.pt(el.points[0]);
+          const b = this.pt(el.points[1]);
+          const d = unit(sub(b, a));
+          return [sub(a, mul(d, el.extendStart ?? 0)), add(b, mul(d, el.extendEnd ?? 0))];
+        }, this.strokeAttrs(el));
+        return;
+      }
+      case "line": {
+        const a = () => this.pt(el.points[0]);
+        const b = () => this.pt(el.points[1]);
+        this.board.create("line", [() => [a().x, a().y], () => [b().x, b().y]], {
+          ...this.strokeAttrs(el),
+          straightFirst: !el.ray,
+          straightLast: true,
+          highlight: false,
+          fixed: true,
+        });
+        return;
+      }
+      case "polygon": {
+        const pts = () => {
+          const p = el.points.map((r) => this.pt(r));
+          return [...p, p[0]];
+        };
+        this.curve(pts, {
+          ...this.strokeAttrs(el, LAYER.fill),
+          fillColor: el.fill || "none",
+          fillOpacity: 1,
+          strokeWidth: el.border === false ? 0 : this.lineWidthPx * (el.width ?? 1),
+          strokeOpacity: el.border === false ? 0 : 1,
+        });
+        return;
+      }
+      case "circle": {
+        this.curve(() => {
+          const c = this.pt(el.center);
+          const r = el.radius ?? dist(c, this.pt(el.through!));
+          return this.arcPoints(c, r, 0, 360, 120);
+        }, { ...this.strokeAttrs(el), fillColor: el.fill || "none", fillOpacity: 1 });
+        return;
+      }
+      case "arc": {
+        this.curve(() => {
+          const c = this.pt(el.center);
+          const f = this.pt(el.from);
+          const t = this.pt(el.to);
+          const r = el.radius ?? dist(c, f);
+          let s = angleOf(sub(f, c));
+          let e = angleOf(sub(t, c));
+          while (e < s) e += 360;
+          return this.arcPoints(c, r, s, e, 90);
+        }, this.strokeAttrs(el));
+        return;
+      }
+      case "angle": {
+        const r = el.radius ?? this.base * 0.07;
+        const count = el.count ?? 1;
+        const markWidth = (el.width ?? 0.8);
+        for (let k = 0; k < count; k++) {
+          const rk = r + k * r * 0.22;
+          this.curve(() => {
+            const [a, o, b] = el.points.map((p) => this.pt(p));
+            const { start, end } = interiorSweep(a, o, b);
+            return this.arcPoints(o, rk, start, end, 40);
+          }, { ...this.strokeAttrs({ ...el, width: markWidth }, LAYER.mark) });
+        }
+        if (el.symbol) {
+          const at = () => {
+            const [a, o, b] = el.points.map((p) => this.pt(p));
+            return add(o, mul(bisectorDir(a, o, b), r * 0.62));
+          };
+          const s = r * 0.16;
+          if (el.symbol === "dot") {
+            this.curve(() => this.arcPoints(at(), s * 0.75, 0, 360, 20), {
+              strokeWidth: 0, fillColor: el.color || "#000", fillOpacity: 1, layer: LAYER.mark,
+            });
+          } else {
+            for (const ang of [45, 135]) {
+              this.curve(() => {
+                const c = at();
+                const d = mul(fromAngle(ang), s * 1.3);
+                return [sub(c, d), add(c, d)];
+              }, this.strokeAttrs({ width: 0.7, color: el.color }, LAYER.mark));
+            }
+          }
+        }
+        if (el.label) {
+          const dl = el.labelDist ?? r * 1.9;
+          this.text(() => {
+            const [a, o, b] = el.points.map((p) => this.pt(p));
+            return add(o, mul(bisectorDir(a, o, b), dl));
+          }, el.label, { sizePx: this.labelPx * (el.labelSize ?? 0.8), family: FONT_SERIF });
+        }
+        return;
+      }
+      case "rightAngle": {
+        const s = el.size ?? this.base * 0.045;
+        this.curve(() => {
+          const [a, o, b] = el.points.map((p) => this.pt(p));
+          const u1 = mul(unit(sub(a, o)), s);
+          const u2 = mul(unit(sub(b, o)), s);
+          return [add(o, u1), add(add(o, u1), u2), add(o, u2)];
+        }, { ...this.strokeAttrs({ ...el, width: el.width ?? 0.8 }, LAYER.mark), lineCap: "butt" });
+        return;
+      }
+      case "ticks": {
+        const n = el.count ?? 1;
+        const size = el.size ?? this.base * 0.035;
+        for (let k = 0; k < n; k++) {
+          this.curve(() => {
+            const [a, b] = el.points.map((p) => this.pt(p));
+            const d = unit(sub(b, a));
+            const nrm = perp(d);
+            const c = add(mid(a, b), mul(d, (k - (n - 1) / 2) * size * 0.55));
+            return [add(c, mul(nrm, size)), sub(c, mul(nrm, size))];
+          }, this.strokeAttrs({ ...el, width: el.width ?? 0.8 }, LAYER.mark));
+        }
+        return;
+      }
+      case "dimension":
+        this.drawDimension(el);
+        return;
+      case "label": {
+        const size = L * (el.size ?? 1);
+        const serif = (el.font ?? "serif") === "serif";
+        this.text(() => {
+          const at = this.pt(el.at);
+          return el.dir ? add(at, mul(dirVec(el.dir), size * (el.offset ?? 0.75))) : at;
+        }, el.text, {
+          sizePx: size * this.pxPerUnit,
+          family: serif ? FONT_SERIF : FONT_SANS,
+          italic: el.italic,
+          color: el.color,
+          weight: serif ? 400 : 500,
+        });
+        return;
+      }
+      case "dot": {
+        const r = (el.size ?? 1) * this.base * 0.012;
+        this.curve(() => this.arcPoints(this.pt(el.at), r, 0, 360, 24), {
+          strokeWidth: 0, fillColor: el.color || "#000", fillOpacity: 1, layer: LAYER.dot,
+        });
+        return;
+      }
+      case "axes":
+        this.drawAxes(el);
+        return;
+      case "function": {
+        const f = this.board.jc.snippet(el.expr, true, "x", false);
+        this.board.create("functiongraph", [f, el.domain[0], el.domain[1]], {
+          ...this.strokeAttrs(el), highlight: false, fixed: true,
+        });
+        return;
+      }
+      case "cubes":
+        this.drawCubes(el);
+        return;
+      case "grid": {
+        const [x0, y0] = el.at;
+        const color = el.color || "#4A7BD0";
+        const attrs = { strokeWidth: this.lineWidthPx * 0.7, strokeColor: color, dash: el.dash === false ? 0 : 4, layer: LAYER.line, lineCap: "butt" };
+        for (let i = 0; i <= el.rows; i++) {
+          const y = y0 - i * el.cell;
+          this.curve(() => [v(x0, y), v(x0 + el.cols * el.cell, y)], attrs);
+        }
+        for (let j = 0; j <= el.cols; j++) {
+          const x = x0 + j * el.cell;
+          this.curve(() => [v(x, y0), v(x, y0 - el.rows * el.cell)], attrs);
+        }
+        return;
+      }
+      case "badge": {
+        const r = el.radius ?? L * 0.75;
+        const c = v(el.at[0], el.at[1]);
+        this.curve(() => this.arcPoints(c, r, 0, 360, 60), {
+          strokeColor: el.stroke || "#888888",
+          strokeWidth: this.lineWidthPx * 0.8,
+          fillColor: el.fill || "#FFFFFF",
+          fillOpacity: 1,
+          layer: LAYER.mark,
+        });
+        this.text(() => c, el.text, { sizePx: r * 1.05 * this.pxPerUnit, family: FONT_SANS, weight: 500, color: el.textColor || "#222222" });
+        return;
+      }
+      case "arrow": {
+        const a = () => this.pt(el.from);
+        const b = () => this.pt(el.to);
+        this.curve(() => [a(), b()], this.strokeAttrs({ ...el, width: el.width ?? 0.8 }, LAYER.mark));
+        const head = this.base * 0.03;
+        this.curve(() => {
+          const d = unit(sub(b(), a()));
+          const n = perp(d);
+          const tip = b();
+          const back = sub(tip, mul(d, head * 1.6));
+          return [add(back, mul(n, head * 0.6)), tip, sub(back, mul(n, head * 0.6)), add(back, mul(n, head * 0.6))];
+        }, { strokeWidth: 0, fillColor: el.color || "#000", fillOpacity: 1, layer: LAYER.mark });
+        return;
+      }
+    }
+  }
+
+  private drawDimension(el: Extract<ElementSpec, { type: "dimension" }>) {
+    const L = this.labelUnits;
+    const labelSize = L * (el.labelSize ?? 0.85);
+    const labelFont = `${el.italic ? "italic " : ""}400 ${labelSize * this.pxPerUnit}px ${FONT_SERIF}`;
+    const labelW = el.label ? measureTextPx(el.label, labelFont) / this.pxPerUnit : 0;
+    const outside = el.labelPlace === "outside";
+    const labelHalf = el.label && !outside ? labelW / 2 + labelSize * 0.35 : 0;
+
+    const path = (): Vec[] => {
+      const a = this.pt(el.points[0]);
+      const b = this.pt(el.points[1]);
+      const L2 = dist(a, b);
+      const u = unit(sub(b, a));
+      const n = perp(u);
+      const h = el.bulge * L2;
+      const m = mid(a, b);
+      const out: Vec[] = [];
+      const N = 160;
+      if (el.shape === "ellipse") {
+        for (let i = 0; i <= N; i++) {
+          const t = (Math.PI * i) / N;
+          out.push(add(add(m, mul(u, -(L2 / 2) * Math.cos(t))), mul(n, h * Math.sin(t))));
+        }
+        return out;
+      }
+      if (Math.abs(h) < 1e-9) return [a, b];
+      const R = (L2 * L2) / 4 / (2 * Math.abs(h)) + Math.abs(h) / 2;
+      const c = add(m, mul(n, h - Math.sign(h) * R));
+      const sa = angleOf(sub(a, c));
+      const sb = angleOf(sub(b, c));
+      const apex = add(m, mul(n, h));
+      const sx = angleOf(sub(apex, c));
+      const norm = (x: number) => ((x % 360) + 360) % 360;
+      let sweep = norm(sb - sa);
+      if (norm(sx - sa) > sweep) sweep -= 360;
+      for (let i = 0; i <= N; i++) out.push(add(c, mul(fromAngle(sa + (sweep * i) / N), R)));
+      return out;
+    };
+
+    this.curve(() => {
+      const pts = path();
+      // 길이를 따라 재서 빈칸(글자 자리, 점 이름 자리)을 비운다
+      const cum = [0];
+      for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + dist(pts[i - 1], pts[i]));
+      const total = cum[cum.length - 1];
+      const gaps: [number, number][] = [];
+      if (el.label) gaps.push([total / 2 - labelHalf, total / 2 + labelHalf]);
+      if (el.gapStart) gaps.push([-1, el.gapStart]);
+      if (el.gapEnd) gaps.push([total - el.gapEnd, total + 1]);
+      const out: Vec[] = [];
+      let wasIn = false;
+      for (let i = 0; i < pts.length; i++) {
+        const inGap = gaps.some(([g0, g1]) => cum[i] > g0 && cum[i] < g1);
+        if (inGap) {
+          if (!wasIn) out.push(v(NaN, NaN));
+          wasIn = true;
+          continue;
+        }
+        wasIn = false;
+        out.push(pts[i]);
+      }
+      return out;
+    }, {
+      strokeColor: el.color || "#000000",
+      strokeWidth: this.lineWidthPx * (el.width ?? (el.dotted ? 0.9 : 0.5)),
+      dash: el.dotted ? 3 : 2,
+      lineCap: "round",
+      layer: LAYER.dimension,
+    });
+
+    if (el.label) {
+      this.text(() => {
+        const pts = path();
+        const apex = pts[Math.floor(pts.length / 2)];
+        if (!outside) return apex;
+        // 호 바깥쪽으로, 글자 상자가 호에 닿지 않을 만큼 민다
+        const a = this.pt(el.points[0]);
+        const b = this.pt(el.points[1]);
+        const n = mul(perp(unit(sub(b, a))), Math.sign(el.bulge) || 1);
+        const push = (labelW / 2) * Math.abs(n.x) + (labelSize * 0.38) * Math.abs(n.y) + labelSize * 0.2;
+        return add(apex, mul(n, push));
+      }, el.label, { sizePx: labelSize * this.pxPerUnit, family: FONT_SERIF, italic: el.italic, color: "#000000" });
+    }
+  }
+
+  private drawAxes(el: Extract<ElementSpec, { type: "axes" }>) {
+    const L = this.labelUnits;
+    const head = this.base * 0.025;
+    const arrow = (a: Vec, b: Vec) => {
+      this.curve(() => [a, b], this.strokeAttrs({ width: 0.8 }));
+      const d = unit(sub(b, a));
+      const n = perp(d);
+      const back = sub(b, mul(d, head * 1.8));
+      this.curve(() => [add(back, mul(n, head * 0.7)), b, sub(back, mul(n, head * 0.7)), add(back, mul(n, head * 0.7))], {
+        strokeWidth: 0, fillColor: "#000", fillOpacity: 1, layer: LAYER.line,
+      });
+    };
+    arrow(v(el.x[0], 0), v(el.x[1], 0));
+    arrow(v(0, el.y[0]), v(0, el.y[1]));
+    const lab = (at: Vec, text: string, italic: boolean, size = 0.85) =>
+      this.text(() => at, text, { sizePx: L * size * this.pxPerUnit, family: FONT_SERIF, italic });
+    lab(v(el.x[1] + L * 0.1, -L * 0.55), "x", true);
+    lab(v(L * 0.5, el.y[1] + L * 0.05), "y", true);
+    if (el.origin !== false) lab(v(-L * 0.45, -L * 0.5), "O", true);
+    if (el.ticks) {
+      const t = el.ticks;
+      const tl = this.base * 0.012;
+      for (let x = Math.ceil(el.x[0] / t) * t; x < el.x[1] - t * 0.3; x += t) {
+        if (Math.abs(x) < 1e-9) continue;
+        this.curve(() => [v(x, -tl), v(x, tl)], this.strokeAttrs({ width: 0.7 }));
+        if (el.tickLabels) lab(v(x, -L * 0.55), String(Math.round(x * 100) / 100), false, 0.65);
+      }
+      for (let y = Math.ceil(el.y[0] / t) * t; y < el.y[1] - t * 0.3; y += t) {
+        if (Math.abs(y) < 1e-9) continue;
+        this.curve(() => [v(-tl, y), v(tl, y)], this.strokeAttrs({ width: 0.7 }));
+        if (el.tickLabels) lab(v(-L * 0.5, y), String(Math.round(y * 100) / 100), false, 0.65);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- 쌓기나무
+  cubeFaces(el: Extract<ElementSpec, { type: "cubes" }>): { pts: Vec[]; color: string }[] {
+    const s = el.size ?? 1;
+    const [ox, oy] = el.origin ?? [0, 0];
+    const colors = { top: "#EAD6AE", front: "#DFC69A", side: "#C9AC82", ...el.colors };
+    // 화면 위 방향: c(왼→오른쪽), r(앞→뒤), z(위)
+    const ec = el.mode === "iso" ? v(Math.cos(Math.PI / 6), -0.5) : v(1, 0);
+    const er = el.mode === "iso" ? v(Math.cos(Math.PI / 6), 0.5) : v(el.depth ?? 0.45, el.depth ?? 0.45);
+    const ez = v(0, 1);
+    const P = (c: number, r: number, z: number) => v(ox + (ec.x * c + er.x * r + ez.x * z) * s, oy + (ec.y * c + er.y * r + ez.y * z) * s);
+    const cubes: { c: number; r: number; z: number }[] = [];
+    el.heights.forEach((row, r) => row.forEach((h, c) => {
+      for (let z = 0; z < h; z++) cubes.push({ c, r, z });
+    }));
+    // 뒤에 있는 것부터: 깊이 = c - r + z (보는 사람 쪽이 +c, -r, +z)
+    cubes.sort((a, b) => (a.c - a.r + a.z) - (b.c - b.r + b.z) || (b.r - a.r) || (a.c - b.c) || (a.z - b.z));
+    const faces: { pts: Vec[]; color: string }[] = [];
+    for (const { c, r, z } of cubes) {
+      faces.push({ pts: [P(c, r, z), P(c + 1, r, z), P(c + 1, r, z + 1), P(c, r, z + 1)], color: colors.front }); // 앞면 (r 쪽)
+      faces.push({ pts: [P(c + 1, r, z), P(c + 1, r + 1, z), P(c + 1, r + 1, z + 1), P(c + 1, r, z + 1)], color: colors.side }); // 옆면 (+c 쪽)
+      faces.push({ pts: [P(c, r, z + 1), P(c + 1, r, z + 1), P(c + 1, r + 1, z + 1), P(c, r + 1, z + 1)], color: colors.top }); // 윗면
+    }
+    return faces;
+  }
+
+  private drawCubes(el: Extract<ElementSpec, { type: "cubes" }>) {
+    const edge = el.colors?.edge || "#4B3E31";
+    for (const f of this.cubeFaces(el)) {
+      this.curve(() => [...f.pts, f.pts[0]], {
+        fillColor: f.color,
+        fillOpacity: 1,
+        strokeColor: edge,
+        strokeWidth: this.lineWidthPx * 0.8,
+        lineJoin: "round",
+        layer: LAYER.cubes,
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------- 좌표 변환
+  /** 그림 좌표 → 보드 안 화면 좌표(px) */
+  toScreen(p: Vec): Vec {
+    const [l, t] = this.bbox;
+    return v((p.x - l) * this.pxPerUnit, (t - p.y) * this.pxPerUnit);
+  }
+}
+
+/** 보이지 않는 곳에 큰 보드를 따로 그려 흰 바탕 PNG 로 만든다. */
+export async function renderFigurePng(
+  JXG: JXGType,
+  spec: FigureSpec,
+  opts: { widthPx: number; gliders?: Record<string, number> },
+): Promise<{ dataUrl: string; width: number; height: number }> {
+  await loadFigureFonts();
+  const holder = document.createElement("div");
+  holder.style.cssText = "position:fixed;left:-100000px;top:0;";
+  const box = document.createElement("div");
+  box.id = `figpng-${Math.random().toString(36).slice(2)}`;
+  holder.appendChild(box);
+  document.body.appendChild(holder);
+  try {
+    const r = new FigureRenderer(JXG, box, spec, { widthPx: opts.widthPx, gliders: opts.gliders });
+    r.board.fullUpdate();
+    const src: HTMLCanvasElement = r.board.renderer.canvasRoot;
+    // 캔버스는 화면 배율만큼 크게 그려지므로, 원하는 픽셀 수로 맞춰 흰 바탕에 합친다
+    const out = document.createElement("canvas");
+    out.width = opts.widthPx;
+    out.height = Math.round((opts.widthPx * src.height) / src.width);
+    const ctx = out.getContext("2d")!;
+    ctx.fillStyle = "#FFFFFF";
+    ctx.fillRect(0, 0, out.width, out.height);
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(src, 0, 0, out.width, out.height);
+    const dataUrl = out.toDataURL("image/png");
+    r.destroy();
+    return { dataUrl, width: out.width, height: out.height };
+  } finally {
+    holder.remove();
+  }
+}
+
+/** 실제 크기(mm)와 해상도(dpi)로 필요한 가로 픽셀 수 */
+export function pxForPrint(widthMm: number, dpi = 360): number {
+  return Math.round((widthMm / 25.4) * dpi);
+}

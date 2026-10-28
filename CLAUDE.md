@@ -50,4 +50,5 @@
 6. 양식 등록과 배포 — 새 시험지에서 양식(용지, 여백, 머리 표, 단 수, 구분선, 글꼴·크기, 꼬리말)을 뽑아 Supabase에 저장하고 골라 쓰기. Vercel 배포.
 
 ## 진행 상황
-- 1단계: 생성기 완성 (py/exam_hwpx, scripts/make_step1.py → output/step1_exam_p1.hwpx). 사용자 한글 확인 대기 중
+- 1단계: 완료 (사용자 확인함). py/exam_hwpx, scripts/make_step1.py → output/step1_exam_p1.hwpx
+- 2단계: 그림 엔진 lib/figure (types.ts 그림 명령 형식, engine.ts 그리기·PNG, geometry.ts 계산, examples.ts 예시 A~F), 테스트 화면 app/figure-test. 사용자 확인 대기 중
