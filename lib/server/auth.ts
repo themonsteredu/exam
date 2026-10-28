@@ -1,11 +1,20 @@
 // 서버 주소에서 쓰는 로그인 확인과 설정 읽기.
 
 import { isModel, modelFor, type Pass, type Usage } from "@/lib/ai/claude";
-import { openApiKey } from "./secrets";
 import { readSessionToken, SESSION_COOKIE } from "./session";
 import { getStore, LOGIN_LIMIT, type LoginGate, type UsageRow } from "./store";
 
 let cachedVersion: { value: number; at: number } | null = null;
+let cachedKey: { value: string; at: number } | null = null;
+
+/** 로그인 쿠키 서명 열쇠 (저장 창구가 만들어 준다). 서버마다 10분 캐시 */
+export async function currentSessionKey(): Promise<string> {
+  if (cachedKey && Date.now() - cachedKey.at < 600_000) return cachedKey.value;
+  const value = await getStore().sessionKey();
+  if (!value || value.length < 32) throw new Error("쿠키 서명 열쇠가 이상합니다");
+  cachedKey = { value, at: Date.now() };
+  return value;
+}
 
 /** 지금 세션 판 (비밀번호를 바꾸면 오른다). 서버마다 60초 캐시 */
 export async function sessionVersion(fresh = false): Promise<number> {
@@ -29,15 +38,18 @@ function cookieValue(req: Request, name: string): string | undefined {
   return undefined;
 }
 
-/** 로그인되어 있으면 null, 아니면 401 응답 */
+/** 로그인되어 있으면 null, 아니면 401 응답. 쿠키 서명과 세션 판을 모두 본다 (미들웨어는 모양과 만료만 본다) */
 export async function requireSession(req: Request): Promise<Response | null> {
-  const session = await readSessionToken(cookieValue(req, SESSION_COOKIE));
-  if (!session) return Response.json({ error: "로그인이 필요합니다" }, { status: 401 });
+  const token = cookieValue(req, SESSION_COOKIE);
+  if (!token) return Response.json({ error: "로그인이 필요합니다" }, { status: 401 });
   try {
+    const session = await readSessionToken(token, await currentSessionKey());
+    if (!session) return Response.json({ error: "로그인이 필요합니다" }, { status: 401 });
     if (session.version !== (await sessionVersion())) {
       return Response.json({ error: "비밀번호가 바뀌어 다시 로그인해야 합니다" }, { status: 401 });
     }
-  } catch {
+  } catch (err) {
+    console.error("로그인 확인 실패", err);
     return Response.json({ error: "저장소에 연결하지 못했습니다. 잠시 뒤 다시 해 주세요" }, { status: 503 });
   }
   return null;
@@ -62,14 +74,14 @@ export function isHttps(req: Request): boolean {
 
 export type AiConfig = { apiKey: string | null; keyBroken: boolean; models: Record<Pass, string> };
 
-/** 설정에 저장한 API 키(풀어서)와 모델 */
+/** 설정에 저장한 API 키(저장 창구가 풀어 준다)와 모델 */
 export async function aiConfig(): Promise<AiConfig> {
-  const s = await getStore().getSettings(["anthropic_key", "models"]);
-  const apiKey = s.anthropic_key ? openApiKey(s.anthropic_key) : null;
+  const store = getStore();
+  const [apiKey, s] = await Promise.all([store.getApiKey(), store.getSettings(["models"])]);
   const saved = (s.models ?? {}) as Partial<Record<Pass, unknown>>;
   return {
-    apiKey,
-    keyBroken: !!s.anthropic_key && !apiKey,
+    apiKey: apiKey.key,
+    keyBroken: apiKey.broken,
     models: {
       page: isModel(saved.page) ? saved.page : modelFor("page"),
       figure: isModel(saved.figure) ? saved.figure : modelFor("figure"),

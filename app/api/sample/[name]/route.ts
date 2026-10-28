@@ -1,10 +1,13 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { requireSession } from "@/lib/server/auth";
 
 const TYPES: Record<string, string> = { ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png" };
 
-// samples 폴더의 사진을 겹쳐 보기 화면에 보내 준다
-export async function GET(_req: Request, { params }: { params: Promise<{ name: string }> }) {
+// samples 폴더의 사진을 겹쳐 보기 화면에 보내 준다 (시험지 사진이므로 로그인한 사람만)
+export async function GET(req: Request, { params }: { params: Promise<{ name: string }> }) {
+  const denied = await requireSession(req);
+  if (denied) return denied;
   const { name } = await params;
   const safe = path.basename(name);
   const type = TYPES[path.extname(safe).toLowerCase()];

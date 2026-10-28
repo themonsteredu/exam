@@ -1,6 +1,6 @@
 // 비밀번호 바꾸기. 지금 비밀번호를 확인하고, 세션 판을 올려 다른 기기는 다시 로그인하게 한다.
 // 지금 비밀번호 확인도 로그인과 같은 횟수 제한을 받는다 (쿠키를 훔친 사람이 비밀번호를 맞혀 보지 못하게).
-import { clientIp, forgetSessionVersion, isHttps, loginBlockedMessage, requireSession, sessionVersion } from "@/lib/server/auth";
+import { clientIp, currentSessionKey, forgetSessionVersion, isHttps, loginBlockedMessage, requireSession, sessionVersion } from "@/lib/server/auth";
 import { hashPassword, verifyPassword } from "@/lib/server/secrets";
 import { makeSessionToken, sessionCookie } from "@/lib/server/session";
 import { getStore } from "@/lib/server/store";
@@ -35,7 +35,7 @@ export async function POST(req: Request) {
     await store.setSetting("password_hash", hashPassword(next));
     await store.setSetting("session_version", version);
     forgetSessionVersion();
-    const { token, maxAge } = await makeSessionToken(version);
+    const { token, maxAge } = await makeSessionToken(version, await currentSessionKey());
     return new Response(JSON.stringify({ ok: true }), {
       headers: { "content-type": "application/json", "set-cookie": sessionCookie(token, maxAge, isHttps(req)) },
     });

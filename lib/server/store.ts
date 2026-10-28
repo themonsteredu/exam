@@ -1,11 +1,19 @@
-// 저장소: 설정, 월별 사용 기록, 보관함 문서, 파일.
-// 배포에서는 Supabase 함수 exam-gateway 를 거친다 (Vercel 은 Supabase 서비스 열쇠를 갖지 않는다).
+// 저장소: 설정, 월별 사용 기록, 보관함 문서, 파일, 로그인 쿠키 서명 열쇠, API 키.
+// 배포에서는 Supabase 함수 exam-gateway 를 거친다. Vercel 에는 비밀값이 없다:
+//   Vercel 이 주는 OIDC 토큰(이 프로젝트에서 도는 코드라는 증명)으로 창구에 들어가고,
+//   쿠키 서명 열쇠와 API 키 암호화는 창구가 맡는다 (Vercel 은 Supabase 서비스 열쇠도 갖지 않는다).
+// EXAM_GATEWAY_SECRET 이 있으면 OIDC 대신 그 값으로 들어간다 (이 작업 환경에서 실제 창구를 시험할 때만).
 // EXAM_STORE=local 이면 .data 폴더를 쓴다 (이 작업 환경에서 화면을 시험할 때만).
 
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { getVercelOidcToken } from "@vercel/oidc";
+import { openApiKey, sealApiKey } from "./secrets";
 import { appSecret } from "./session";
+
+/** 저장 창구 주소 (비밀이 아니다) */
+export const DEFAULT_GATEWAY_URL = "https://vypnobpmyadtcvxhtagn.supabase.co/functions/v1/exam-gateway";
 
 export type FileRef = { path: string; name: string; size: number; type: string };
 
@@ -47,6 +55,9 @@ export const LOGIN_LIMIT = { ip: 10, all: 50, day: 200 };
 
 export type SignedUpload = { url: string; headers: Record<string, string> };
 
+/** 저장된 API 키 정보 (키 자체는 없다) */
+export type ApiKeyInfo = { saved: boolean; last4?: string; savedAt?: string; broken?: boolean };
+
 export interface Store {
   getSettings(keys: string[]): Promise<Record<string, unknown>>;
   setSetting(key: string, value: unknown): Promise<void>;
@@ -66,6 +77,13 @@ export interface Store {
   uploadUrl(filePath: string, contentType: string): Promise<SignedUpload>;
   /** 60초 동안 쓸 수 있는 내려받기 주소 */
   downloadUrl(filePath: string, downloadName?: string): Promise<string>;
+  /** 로그인 쿠키 서명 열쇠 */
+  sessionKey(): Promise<string>;
+  apiKeyInfo(): Promise<ApiKeyInfo>;
+  /** AI 를 부를 때만 쓴다. 풀 수 없으면 broken */
+  getApiKey(): Promise<{ key: string | null; broken: boolean }>;
+  setApiKey(key: string): Promise<ApiKeyInfo>;
+  deleteApiKey(): Promise<void>;
 }
 
 /** 파일 경로: originals/<문서 id>/…, generated/<문서 id>/… 만 허용 (다른 앱 파일에 닿지 않게).
@@ -93,12 +111,25 @@ export function safeName(name: string): string {
 class GatewayError extends Error {}
 
 class GatewayStore implements Store {
-  constructor(private url: string, private secret: string) {}
+  constructor(private url: string, private secret: string | undefined) {}
+
+  /** 창구에 들어갈 증명: 이 작업 환경 시험은 공유 비밀값, 배포는 Vercel OIDC 토큰 (요청마다 새로 받는다) */
+  private async proof(): Promise<Record<string, string>> {
+    if (this.secret) return { "x-exam-gateway": this.secret };
+    let token = "";
+    try {
+      token = await getVercelOidcToken();
+    } catch {
+      /* 아래에서 알린다 */
+    }
+    if (!token) throw new GatewayError("저장소에 들어갈 증명(Vercel OIDC)을 받지 못했습니다");
+    return { "x-exam-oidc": token };
+  }
 
   private async call<T>(action: string, payload: Record<string, unknown> = {}): Promise<T> {
     const res = await fetch(this.url, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-exam-gateway": this.secret },
+      headers: { "content-type": "application/json", ...(await this.proof()) },
       body: JSON.stringify({ action, ...payload }),
       cache: "no-store",
     });
@@ -154,6 +185,21 @@ class GatewayStore implements Store {
   }
   downloadUrl(filePath: string, downloadName?: string) {
     return this.call<string>("files.downloadUrl", { path: filePath, downloadName });
+  }
+  async sessionKey() {
+    return (await this.call<{ key: string }>("session.key")).key;
+  }
+  apiKeyInfo() {
+    return this.call<ApiKeyInfo>("apikey.info");
+  }
+  getApiKey() {
+    return this.call<{ key: string | null; broken: boolean }>("apikey.get");
+  }
+  setApiKey(key: string) {
+    return this.call<ApiKeyInfo>("apikey.set", { key });
+  }
+  async deleteApiKey() {
+    await this.call("apikey.delete");
   }
 }
 
@@ -304,6 +350,27 @@ class LocalStore implements Store {
     if (downloadName) q.set("download", downloadName);
     return `/api/dev-files?${q}`;
   }
+  async sessionKey() {
+    return appSecret();
+  }
+  async apiKeyInfo(): Promise<ApiKeyInfo> {
+    const sealed = (await this.load()).settings.anthropic_key as { last4?: string; saved_at?: string } | undefined;
+    if (!sealed) return { saved: false };
+    return { saved: true, last4: sealed.last4, savedAt: sealed.saved_at, broken: !openApiKey(sealed) };
+  }
+  async getApiKey() {
+    const sealed = (await this.load()).settings.anthropic_key;
+    const key = sealed ? openApiKey(sealed) : null;
+    return { key, broken: !!sealed && !key };
+  }
+  async setApiKey(key: string) {
+    const sealed = sealApiKey(key);
+    await this.setSetting("anthropic_key", sealed);
+    return { saved: true, last4: sealed.last4, savedAt: sealed.saved_at, broken: false };
+  }
+  async deleteApiKey() {
+    await this.deleteSetting("anthropic_key");
+  }
 }
 
 let store: Store | null = null;
@@ -313,10 +380,7 @@ export function getStore(): Store {
   if (process.env.EXAM_STORE === "local") {
     store = new LocalStore();
   } else {
-    const url = process.env.EXAM_GATEWAY_URL;
-    const secret = process.env.EXAM_GATEWAY_SECRET;
-    if (!url || !secret) throw new Error("저장소 설정(EXAM_GATEWAY_URL, EXAM_GATEWAY_SECRET)이 없습니다");
-    store = new GatewayStore(url, secret);
+    store = new GatewayStore(process.env.EXAM_GATEWAY_URL || DEFAULT_GATEWAY_URL, process.env.EXAM_GATEWAY_SECRET || undefined);
   }
   return store;
 }

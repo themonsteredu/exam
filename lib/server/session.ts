@@ -1,4 +1,6 @@
-// 로그인 쿠키: "v1.<만료 초>.<세션 판>.<서명>". 서명은 HMAC-SHA256(APP_SECRET).
+// 로그인 쿠키: "v1.<만료 초>.<세션 판>.<서명>". 서명은 HMAC-SHA256(서명 열쇠).
+// 서명 열쇠는 배포에서는 Supabase 저장 창구가 만들어 준다 (lib/server/auth.ts 의 currentSessionKey). Vercel 에는 비밀값을 두지 않는다.
+// 이 작업 환경 시험(EXAM_STORE=local)에서는 APP_SECRET 환경변수(없으면 개발용 값)를 쓴다.
 // Web Crypto 만 써서 미들웨어(Edge)와 서버 주소(Node) 양쪽에서 돈다.
 // 비밀번호를 바꾸면 세션 판(session_version)을 올려 예전 쿠키를 모두 무효로 한다 (판 확인은 서버 주소에서).
 
@@ -7,7 +9,7 @@ export const SESSION_DAYS = 30;
 
 const enc = new TextEncoder();
 
-/** 쿠키 서명·API 키 암호화에 쓰는 서버 비밀값. 배포에서는 꼭 있어야 한다 */
+/** 이 작업 환경 시험용 비밀값 (쿠키 서명, API 키 암호화, 개발용 파일 주소 서명). 배포에서는 쓰지 않는다 */
 export function appSecret(): string {
   const s = process.env.APP_SECRET;
   if (s && s.length >= 32) return s;
@@ -37,25 +39,36 @@ function sameString(a: string, b: string): boolean {
   return diff === 0;
 }
 
-export async function makeSessionToken(version: number, now = Date.now()): Promise<{ token: string; maxAge: number }> {
+export async function makeSessionToken(version: number, key: string, now = Date.now()): Promise<{ token: string; maxAge: number }> {
   const maxAge = SESSION_DAYS * 24 * 3600;
   const exp = Math.floor(now / 1000) + maxAge;
   const body = `v1.${exp}.${version}`;
-  return { token: `${body}.${await sign(appSecret(), body)}`, maxAge };
+  return { token: `${body}.${await sign(key, body)}`, maxAge };
 }
 
-/** 서명과 만료가 맞으면 세션 판을 돌려준다. 아니면 null */
-export async function readSessionToken(token: string | undefined | null, now = Date.now()): Promise<{ version: number; exp: number } | null> {
+type TokenParts = { exp: number; version: number; body: string; sig: string };
+
+function parseToken(token: string | undefined | null, now: number): TokenParts | null {
   if (!token) return null;
   const parts = token.split(".");
   if (parts.length !== 4 || parts[0] !== "v1") return null;
   const [, expText, versionText, sig] = parts;
-  if (!/^\d+$/.test(expText) || !/^\d+$/.test(versionText)) return null;
-  const expected = await sign(appSecret(), `v1.${expText}.${versionText}`);
-  if (!sameString(sig, expected)) return null;
+  if (!/^\d{1,12}$/.test(expText) || !/^\d{1,9}$/.test(versionText) || !/^[A-Za-z0-9_-]{43}$/.test(sig)) return null;
   const exp = Number(expText);
   if (exp * 1000 <= now) return null;
-  return { version: Number(versionText), exp };
+  return { exp, version: Number(versionText), body: `v1.${expText}.${versionText}`, sig };
+}
+
+/** 서명과 만료가 맞으면 세션 판을 돌려준다. 아니면 null */
+export async function readSessionToken(token: string | undefined | null, key: string, now = Date.now()): Promise<{ version: number; exp: number } | null> {
+  const t = parseToken(token, now);
+  if (!t || !sameString(t.sig, await sign(key, t.body))) return null;
+  return { version: t.version, exp: t.exp };
+}
+
+/** 미들웨어용: 모양과 만료만 본다 (서명 열쇠가 없어서). 서명은 서버 주소의 requireSession 이 꼭 확인한다 */
+export function peekSessionToken(token: string | undefined | null, now = Date.now()): boolean {
+  return parseToken(token, now) !== null;
 }
 
 /** 응답에 붙일 Set-Cookie 값 */

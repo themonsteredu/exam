@@ -1,11 +1,24 @@
 // 시험지 만들기 앱(exam)의 저장소 창구 (Supabase Edge Function, Deno).
-// Vercel 서버는 Supabase 서비스 열쇠를 갖지 않고 이 함수만 부른다. 이 함수는 exam_* 표와 exam-files 보관함만 다룬다.
-// 머리말 x-exam-gateway 의 값을 SHA-256 으로 바꾼 것이 exam_settings.gateway_secret_sha256 과 같을 때만 일한다.
-// 배포: Supabase MCP deploy_edge_function (name exam-gateway, verify_jwt false: 위의 비밀값으로 직접 확인)
+// Vercel 서버는 Supabase 서비스 열쇠도, 다른 비밀값도 갖지 않고 이 함수만 부른다. 이 함수는 exam_* 표와 exam-files 보관함만 다룬다.
+// 들어오는 길은 둘:
+//   1) 머리말 x-exam-oidc: Vercel 이 이 프로젝트(exam-maker)의 서버에 주는 OIDC 토큰. 서명(Vercel 공개키), 발급자, 대상, 프로젝트·환경을 확인한다.
+//   2) 머리말 x-exam-gateway: 값을 SHA-256 으로 바꾼 것이 exam_settings.gateway_secret_sha256 과 같을 때 (개발 작업 환경에서 시험할 때만).
+// 로그인 쿠키 서명 열쇠와 API 키 암호화 열쇠는 이 함수 안에서 SUPABASE_SERVICE_ROLE_KEY 로부터 만든다 (DB 에도 Vercel 에도 두지 않는다).
+// 배포: Supabase MCP deploy_edge_function (name exam-gateway, verify_jwt false: 위의 방법으로 직접 확인)
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { createRemoteJWKSet, jwtVerify } from "npm:jose@5.9.6";
 
 const BUCKET = "exam-files";
-const HIDDEN = new Set(["gateway_secret_sha256"]);
+// 다른 동작으로는 읽거나 바꿀 수 없는 설정 (API 키는 apikey.* 로만)
+const HIDDEN = new Set(["gateway_secret_sha256", "anthropic_key"]);
+
+// Vercel OIDC: 팀 themonsteredu 의 프로젝트 exam-maker (실서비스, 미리보기)
+const VERCEL_TEAM = "themonsteredu";
+const VERCEL_PROJECT = "exam-maker";
+const OIDC_ISSUER = `https://oidc.vercel.com/${VERCEL_TEAM}`;
+const OIDC_AUDIENCE = `https://vercel.com/${VERCEL_TEAM}`;
+const OIDC_SUBJECTS = new Set(["production", "preview"].map((env) => `owner:${VERCEL_TEAM}:project:${VERCEL_PROJECT}:environment:${env}`));
+const JWKS = createRemoteJWKSet(new URL(`${OIDC_ISSUER}/.well-known/jwks`));
 // 보관함 파일 이름은 영문·숫자만 (Supabase 보관함이 한글 이름을 받지 않는다). 한글 원래 이름은 내려받을 때 붙인다.
 const PATH = /^(originals|generated)\/[0-9a-f-]{36}\/[A-Za-z0-9._-]{1,100}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -14,6 +27,9 @@ const DOC_FIELDS = "id,created_at,updated_at,title,status,original_files,hwpx_pa
 const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
+
+const ROOT = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const te = new TextEncoder();
 
 let cached: { hash: string | null; at: number } | null = null;
 
@@ -28,6 +44,52 @@ async function expectedHash(): Promise<string | null> {
 async function sha256Hex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function vercelCaller(token: string): Promise<boolean> {
+  try {
+    const { payload } = await jwtVerify(token, JWKS, { issuer: OIDC_ISSUER, audience: OIDC_AUDIENCE });
+    return typeof payload.sub === "string" && OIDC_SUBJECTS.has(payload.sub);
+  } catch {
+    return false;
+  }
+}
+
+async function secretCaller(given: string): Promise<boolean> {
+  const want = await expectedHash();
+  return !!want && !!given && same(await sha256Hex(given), want);
+}
+
+const b64 = (bytes: ArrayBuffer | Uint8Array) => btoa(String.fromCharCode(...new Uint8Array(bytes)));
+const unb64 = (text: string) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
+const b64url = (bytes: ArrayBuffer | Uint8Array) => b64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+/** SUPABASE_SERVICE_ROLE_KEY 에서 쓰임새(purpose)마다 다른 열쇠 32바이트를 만든다 (HKDF-SHA256) */
+async function derive(purpose: string): Promise<ArrayBuffer> {
+  const base = await crypto.subtle.importKey("raw", te.encode(ROOT), "HKDF", false, ["deriveBits"]);
+  return crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt: te.encode("exam-maker"), info: te.encode(purpose) }, base, 256);
+}
+
+async function apiKeyCipher(): Promise<CryptoKey> {
+  return crypto.subtle.importKey("raw", await derive("anthropic-api-key-v2"), "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+
+type Sealed = { v: 2; iv: string; data: string; last4: string; saved_at: string };
+
+async function readSealed(): Promise<Sealed | null> {
+  const { data, error } = await db.from("exam_settings").select("value").eq("key", "anthropic_key").maybeSingle();
+  if (error) throw error;
+  return (data?.value as Sealed) ?? null;
+}
+
+async function openSealed(s: Sealed | null): Promise<string | null> {
+  if (!s || s.v !== 2 || !s.iv || !s.data) return null;
+  try {
+    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(s.iv) }, await apiKeyCipher(), unb64(s.data));
+    return new TextDecoder().decode(plain);
+  } catch {
+    return null; // 열쇠가 바뀌었거나 값이 망가짐 → 설정에서 키를 다시 넣어야 한다
+  }
 }
 
 function same(a: string, b: string): boolean {
@@ -52,9 +114,9 @@ const num = (v: unknown) => (Number.isFinite(Number(v)) ? Math.max(0, Math.round
 
 Deno.serve(async (req) => {
   if (req.method !== "POST") return bad(405, "POST only");
-  const given = req.headers.get("x-exam-gateway") ?? "";
-  const want = await expectedHash();
-  if (!want || !given || !same(await sha256Hex(given), want)) return bad(401, "unauthorized");
+  const oidc = req.headers.get("x-exam-oidc");
+  const allowed = oidc ? await vercelCaller(oidc) : await secretCaller(req.headers.get("x-exam-gateway") ?? "");
+  if (!allowed) return bad(401, "unauthorized");
 
   // deno-lint-ignore no-explicit-any
   let body: any;
@@ -197,6 +259,34 @@ Deno.serve(async (req) => {
         const { data, error } = await db.storage.from(BUCKET).createSignedUrl(path, 60);
         if (error) throw error;
         return ok(`${data.signedUrl}&download=${encodeURIComponent(name)}`);
+      }
+      case "session.key": {
+        return ok({ key: b64url(await derive("session-hmac-v1")) });
+      }
+      case "apikey.info": {
+        const sealed = await readSealed();
+        if (!sealed) return ok({ saved: false });
+        return ok({ saved: true, last4: sealed.last4 ?? "", savedAt: sealed.saved_at ?? "", broken: (await openSealed(sealed)) === null });
+      }
+      case "apikey.get": {
+        const sealed = await readSealed();
+        const key = await openSealed(sealed);
+        return ok({ key, broken: !!sealed && key === null });
+      }
+      case "apikey.set": {
+        const key = typeof body.key === "string" ? body.key.trim() : "";
+        if (!/^sk-ant-[A-Za-z0-9_-]{20,300}$/.test(key)) return bad(400, "bad key");
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const data = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await apiKeyCipher(), te.encode(key));
+        const sealed: Sealed = { v: 2, iv: b64(iv), data: b64(data), last4: key.slice(-4), saved_at: new Date().toISOString() };
+        const { error } = await db.from("exam_settings").upsert({ key: "anthropic_key", value: sealed, updated_at: sealed.saved_at });
+        if (error) throw error;
+        return ok({ saved: true, last4: sealed.last4, savedAt: sealed.saved_at, broken: false });
+      }
+      case "apikey.delete": {
+        const { error } = await db.from("exam_settings").delete().eq("key", "anthropic_key");
+        if (error) throw error;
+        return ok(null);
       }
       default:
         return bad(400, "unknown action");

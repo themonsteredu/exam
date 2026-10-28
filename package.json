@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "1.3.0",
+    "@vercel/oidc": "4.0.1",
     "jsxgraph": "1.13.3",
     "next": "^15.5.28",
     "pdfjs-dist": "6.4.299",

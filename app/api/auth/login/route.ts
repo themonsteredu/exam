@@ -1,7 +1,7 @@
 // 비밀번호 확인 → 로그인 쿠키.
 // 같은 곳(IP)에서 15분에 10번, 모두 합쳐 15분에 50번, 24시간에 200번 틀리면 막는다 (숫자 4자리 비밀번호도 쓰므로
 // 하나씩 맞혀 보기를 늦춘다). 시도를 먼저 적고 확인하므로 한꺼번에 많이 보내도 제한을 건너뛰지 못한다.
-import { clientIp, isHttps, loginBlockedMessage, sessionVersion } from "@/lib/server/auth";
+import { clientIp, currentSessionKey, isHttps, loginBlockedMessage, sessionVersion } from "@/lib/server/auth";
 import { hashPassword, verifyPassword } from "@/lib/server/secrets";
 import { makeSessionToken, sessionCookie } from "@/lib/server/session";
 import { getStore } from "@/lib/server/store";
@@ -28,7 +28,7 @@ export async function POST(req: Request) {
     if (!ok) return Response.json({ error: "비밀번호가 맞지 않습니다." }, { status: 401 });
     await store.loginSucceeded(gate.id);
     if (!password_hash) await store.setSetting("password_hash", hashPassword(password));
-    const { token, maxAge } = await makeSessionToken(await sessionVersion(true));
+    const { token, maxAge } = await makeSessionToken(await sessionVersion(true), await currentSessionKey());
     return new Response(JSON.stringify({ ok: true }), {
       headers: { "content-type": "application/json", "set-cookie": sessionCookie(token, maxAge, isHttps(req)) },
     });

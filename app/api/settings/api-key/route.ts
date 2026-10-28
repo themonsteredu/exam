@@ -1,7 +1,7 @@
 // API 키 저장(먼저 Anthropic 에 맞는 키인지 확인. 모델 목록 보기라 요금이 들지 않는다) / 지우기.
+// 키는 저장 창구가 암호로 바꿔 보관한다 (배포에서는 Vercel 에 키를 풀 열쇠가 없다).
 import Anthropic from "@anthropic-ai/sdk";
 import { requireSession } from "@/lib/server/auth";
-import { sealApiKey } from "@/lib/server/secrets";
 import { getStore } from "@/lib/server/store";
 
 export const runtime = "nodejs";
@@ -35,9 +35,8 @@ export async function POST(req: Request) {
     return Response.json({ error: "Anthropic 에 연결해 키를 확인하지 못했습니다. 잠시 뒤 다시 해 주세요." }, { status: 502 });
   }
   try {
-    const sealed = sealApiKey(key);
-    await getStore().setSetting("anthropic_key", sealed);
-    return Response.json({ ok: true, last4: sealed.last4, savedAt: sealed.saved_at });
+    const info = await getStore().setApiKey(key);
+    return Response.json({ ok: true, last4: info.last4, savedAt: info.savedAt });
   } catch (err) {
     console.error("키 저장 실패", err);
     return Response.json({ error: "키를 저장하지 못했습니다. 잠시 뒤 다시 해 주세요." }, { status: 503 });
@@ -48,7 +47,7 @@ export async function DELETE(req: Request) {
   const denied = await requireSession(req);
   if (denied) return denied;
   try {
-    await getStore().deleteSetting("anthropic_key");
+    await getStore().deleteApiKey();
     return Response.json({ ok: true });
   } catch {
     return Response.json({ error: "키를 지우지 못했습니다. 잠시 뒤 다시 해 주세요." }, { status: 503 });
