@@ -119,6 +119,26 @@ export function usageOf(message: BetaMessage, requestedModel = message.model): U
   return { model: message.model, ...t, usd: priceOf(message.model, t) };
 }
 
+/** 중간에 멈춘 답의 어림 사용량: 입력은 처음에 받은 값, 출력은 받은 글자 수로 어림 (보이지 않는 생각은 셀 수 없어 실제보다 적다) */
+function partialUsage(stream: { currentMessage?: BetaMessage } | undefined, model: string): Usage | undefined {
+  let snap: BetaMessage | undefined;
+  try {
+    snap = stream?.currentMessage;
+  } catch {
+    return undefined;
+  }
+  if (!snap) return undefined;
+  const u = snap.usage;
+  const chars = snap.content.reduce((n, b) => n + (b.type === "text" ? b.text.length : b.type === "thinking" ? b.thinking.length : 0), 0);
+  const t = {
+    input: u?.input_tokens ?? 0,
+    output: Math.max(u?.output_tokens ?? 0, Math.ceil(chars / 3)),
+    cacheWrite: u?.cache_creation_input_tokens ?? 0,
+    cacheRead: u?.cache_read_input_tokens ?? 0,
+  };
+  return { model, ...t, usd: priceOf(model, t) };
+}
+
 export function addUsage(a: Usage | undefined, b: Usage): Usage {
   if (!a) return { ...b };
   return {
@@ -173,10 +193,14 @@ export async function callClaude(req: {
   }
   // 한도가 있으면: 끝낼 시각 3초 전까지만 기다리고, 넉넉할 때만 한 번 다시 시도한다
   const limits = left !== undefined ? { timeout: left - 3_000, maxRetries: left > 150_000 ? 1 : 0 } : {};
+  // SDK 의 timeout 은 응답 머리가 올 때까지만 잰다. 답을 흘려 받는 동안까지 재려고 전체 시간 제한을 따로 건다
+  const overall = left !== undefined ? AbortSignal.timeout(left - 3_000) : undefined;
+  const signal = overall ? (req.signal ? AbortSignal.any([req.signal, overall]) : overall) : req.signal;
+  let stream: ReturnType<typeof anthropic.beta.messages.stream> | undefined;
   const fallback = supportsFallback(req.model);
   let message: BetaMessage;
   try {
-    const stream = anthropic.beta.messages.stream(
+    stream = anthropic.beta.messages.stream(
       {
         model: req.model,
         max_tokens: req.maxTokens,
@@ -190,10 +214,16 @@ export async function callClaude(req: {
         },
         ...(fallback ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
       },
-      { signal: req.signal, ...limits },
+      { signal, ...limits },
     );
     message = await stream.finalMessage();
   } catch (err) {
+    if (overall?.aborted && !req.signal?.aborted) {
+      const timeout = new ReadError("timeout", "AI 가 너무 오래 걸려 이번 읽기를 멈췄습니다. 잠시 뒤 다시 해 주세요.");
+      // 멈추기 전까지 만든 답에도 요금이 든다 → 받은 만큼으로 어림해 기록에 남긴다
+      timeout.usage = partialUsage(stream, req.model);
+      throw timeout;
+    }
     throw explainApiError(err);
   }
   const usage = usageOf(message, req.model);
