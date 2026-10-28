@@ -106,9 +106,9 @@
     AI 열쇠는 각자 설정에서 넣는다
     - 기기별 열쇠(코드 완료·로컬 시험 통과, 커밋함): 쿠키 exam_device(무작위, HttpOnly, 400일, 미들웨어가 붙임) → 그 SHA-256 으로
       exam_devices 표에 열쇠(창구가 잠금)·모델. 요금은 열쇠별(key_tag) 기록·표시. 키 없는 기기의 AI 읽기는 바로 거절 (서버 환경변수 키로 넘어가지 않음)
-    - 배포 순서 (아직 안 함): ① Supabase 마이그레이션 supabase/migrations/20261029_exam_devices.sql (apply_migration 은 사용자 허락 창이 뜬다.
-      2026-10-28 첫 시도는 허락 없이 시간 초과, 적용 안 됨을 확인) ② exam-gateway 배포 ③ Vercel 실서비스 배포 ④ ssoProtection 풀기 ⑤ 공개 주소 시험
-      (①을 하면 예전 창구의 월별 요금이 깨지므로 ①~③을 바로 이어서)
+    - 배포 순서 (아직 안 함): ① Supabase 마이그레이션 supabase/migrations/20261029_exam_devices.sql ② exam-gateway 배포 ③ Vercel 실서비스 배포
+      ④ ssoProtection 풀기 ⑤ 공개 주소 시험. ①은 지우는 문장(drop) 없이 새 함수 exam_usage_monthly_by_key 를 더하기만 한다
+      (drop 이 있던 판은 apply_migration 이 사용자 허락 창을 띄웠고, 두 번 모두 답이 없어 시간 초과·적용 안 됨을 확인. 예전 창구도 계속 돌아간다)
   - 남은 일: 세 모델 비교 → 가장 싼 쓸 만한 조합을 기본값으로. 열쇠가 기기마다 따로라서 read-samples --via 로는 원장님 열쇠를 쓸 수 없다
     → 프로그램 화면 안에 '모델 비교' 기능을 만들어 원장님 기기에서 돌리고, 결과는 보관함(DB)에서 읽어 판단할 것.
     그림 속 기울인 글자를 Latin Modern Math(수학 기울임 글자)로 (조사: 한글 수식 글꼴 x 와 0.987 로 가장 닮음, 지금 Liberation Serif Italic 은 0.089),

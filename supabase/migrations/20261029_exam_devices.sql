@@ -21,9 +21,10 @@ revoke all on public.exam_devices from anon, authenticated;
 alter table public.exam_usage add column if not exists key_tag text;
 create index if not exists exam_usage_key_tag_at_idx on public.exam_usage (key_tag, at);
 
--- 열쇠 하나로 달마다 AI 를 부른 횟수와 요금 (한국 시간 기준 달). 예전의 "모두 합친" 함수는 없앤다
-drop function if exists public.exam_usage_monthly(integer);
-create or replace function public.exam_usage_monthly(p_key_tag text, months integer default 12)
+-- 열쇠 하나로 달마다 AI 를 부른 횟수와 요금 (한국 시간 기준 달).
+-- 예전의 "모두 합친" 함수 exam_usage_monthly(months) 는 지우지 않고 그대로 둔다 (지우는 문장이 있으면 적용할 때 사용자 허락 창이 뜬다.
+-- 새 창구는 쓰지 않는다. 쓰는 곳이 없으니 나중에 지워도 된다)
+create or replace function public.exam_usage_monthly_by_key(p_key_tag text, months integer default 12)
 returns table (month text, calls bigint, usd numeric)
 language sql
 stable
@@ -39,5 +40,5 @@ as $$
   order by 1 desc
   limit greatest(months, 1);
 $$;
-revoke all on function public.exam_usage_monthly(text, integer) from public, anon, authenticated;
-grant execute on function public.exam_usage_monthly(text, integer) to service_role;
+revoke all on function public.exam_usage_monthly_by_key(text, integer) from public, anon, authenticated;
+grant execute on function public.exam_usage_monthly_by_key(text, integer) to service_role;

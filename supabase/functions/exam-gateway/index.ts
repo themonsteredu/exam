@@ -178,7 +178,7 @@ Deno.serve(async (req) => {
         // 열쇠 하나로 쓴 요금만 (다른 사람 열쇠의 요금은 보이지 않게)
         if (typeof body.keyTag !== "string" || !KEY_TAG.test(body.keyTag)) return ok([]);
         const months = Math.min(60, Math.max(1, num(body.months) || 12));
-        const { data, error } = await db.rpc("exam_usage_monthly", { p_key_tag: body.keyTag, months });
+        const { data, error } = await db.rpc("exam_usage_monthly_by_key", { p_key_tag: body.keyTag, months });
         if (error) throw error;
         return ok((data ?? []).map((r: { month: string; calls: number; usd: number }) => ({ month: r.month, calls: Number(r.calls), usd: Number(r.usd) })));
       }
