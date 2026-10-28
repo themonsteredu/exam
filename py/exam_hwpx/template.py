@@ -41,7 +41,7 @@ SCHOOL_A_2026 = {
     "item_gap_pt": 40,
     # 그림: 위아래 여백, 오른쪽에 둘 때 단 너비에 대한 최대 비율
     "figure": {"gap_pt": 6, "right_max_ratio": 0.5},
-    # 수식 속 대문자(점 이름)를 정자체로
+    # 수식 속 대문자(점 이름)를 정자체로. 점 이름이 아닌 대문자(집합 A, 확률 P 등)는 \mathit{A} 로 쓰면 기울임으로 남는다
     "upright_point_names": True,
 }
 

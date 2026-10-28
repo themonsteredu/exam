@@ -160,7 +160,7 @@ function FigureCard({ JXG, ex, imgUrl, onChoose, onImageState, canDownload }: Ca
   const [clicks, setClicks] = useState<Clicks | null>(null);
   const [picking, setPicking] = useState<[number, number][] | null>(null);
   const [showJson, setShowJson] = useState(false);
-  const [png, setPng] = useState<{ url: string; w: number; h: number } | null>(null);
+  const [png, setPng] = useState<{ url: string; w: number; h: number; warnings: string[] } | null>(null);
   const [pngBusy, setPngBusy] = useState(false);
   const [pngError, setPngError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
@@ -227,7 +227,7 @@ function FigureCard({ JXG, ex, imgUrl, onChoose, onImageState, canDownload }: Ca
         widthPx: pxForPrint(ex.printWidthMm, PRINT_DPI),
         gliders: rendererRef.current?.gliderState(),
       });
-      setPng({ url: out.dataUrl, w: out.width, h: out.height });
+      setPng({ url: out.dataUrl, w: out.width, h: out.height, warnings: out.warnings });
       if (canDownload) {
         const a = document.createElement("a");
         a.href = out.dataUrl;
@@ -421,6 +421,7 @@ function FigureCard({ JXG, ex, imgUrl, onChoose, onImageState, canDownload }: Ca
           <figcaption>
             {png.w} × {png.h} 픽셀 · 시험지에 가로 {ex.printWidthMm}mm로 넣으면 약 {Math.round((png.w / ex.printWidthMm) * 25.4)}dpi
           </figcaption>
+          {png.warnings.length > 0 && <p className="ft-error">{png.warnings.join(" ")}</p>}
         </figure>
       )}
     </section>

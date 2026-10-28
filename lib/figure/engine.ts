@@ -3,7 +3,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import {
-  Vec, v, add, sub, mul, len, dist, unit, perp, fromAngle, angleOf, rotate, mid,
+  Vec, v, add, sub, mul, dot, len, dist, unit, perp, fromAngle, angleOf, rotate, mid,
   intersectLines, foot, intersectCircleLine, bisectorDir, interiorSweep, Line,
 } from "./geometry";
 import type { ElementSpec, FigureSpec, LineSpec, PointRef, PointSpec, Dir, XY } from "./types";
@@ -40,14 +40,41 @@ export function patchCanvasText(JXG: JXGType) {
   };
 }
 
-export async function loadFigureFonts() {
-  if (typeof document === "undefined" || !document.fonts) return;
-  await Promise.all([
-    document.fonts.load(`20px 'Liberation Serif'`),
-    document.fonts.load(`italic 20px 'Liberation Serif'`),
-    document.fonts.load(`400 20px 'S-Core Dream'`),
-    document.fonts.load(`500 20px 'S-Core Dream'`),
-  ]).catch(() => undefined);
+/** 글꼴을 기다리는 가장 긴 시간(ms). 넘으면 있는 글꼴로 그리고, 그 글꼴을 쓴 그림마다 알림을 붙인다 */
+const FONT_TIMEOUT_MS = 15000;
+let fontsLoading: Promise<void> | null = null;
+
+/**
+ * 그림 글꼴(점 이름 Liberation Serif, 한글 에스코어드림)을 불러 둔다.
+ * 내려받기가 실패하거나 멈춰도 FONT_TIMEOUT_MS 뒤에는 넘어간다. 한 페이지에서 한 번만 기다린다.
+ * 빠진 글꼴은 그림마다 FigureRenderer.fontWarnings() 로 알린다.
+ */
+export function loadFigureFonts(): Promise<void> {
+  if (typeof document === "undefined" || !document.fonts) return Promise.resolve();
+  if (!fontsLoading) {
+    const loads = Promise.all(
+      [`20px 'Liberation Serif'`, `italic 20px 'Liberation Serif'`, `400 20px 'S-Core Dream'`, `500 20px 'S-Core Dream'`]
+        .map((font) => document.fonts.load(font).catch(() => undefined)),
+    );
+    fontsLoading = new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, FONT_TIMEOUT_MS);
+      loads.then(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+  return fontsLoading;
+}
+
+/** 요소가 쓰는 점(이름이나 좌표)을 모두 모은다 */
+function refsOf(el: ElementSpec): PointRef[] {
+  const s: any = el;
+  const out: PointRef[] = Array.isArray(s.points) ? [...s.points] : [];
+  for (const key of ["at", "center", "through", "from", "to"]) {
+    if (s[key] !== undefined) out.push(s[key]);
+  }
+  return out;
 }
 
 let measureCtx: CanvasRenderingContext2D | null = null;
@@ -80,10 +107,18 @@ export class FigureRenderer {
   bbox: [number, number, number, number];
   pxPerUnit: number;
   heightPx: number;
+  /** 다 그리지 못한 까닭 (없는 점, 계산되지 않는 점, 모르는 요소 등). 비어 있지 않으면 PNG 를 만들지 않는다 */
+  issues: string[] = [];
   private pointFns = new Map<string, () => Vec>();
   private gliderEls = new Map<string, { el: any; from: () => Vec; dir: () => Vec }>();
   private opts: RenderOptions;
-  private pendingGliders: { id: string; g: any; fromFn: () => Vec; dirFn: () => Vec; startDist: number }[] = [];
+  private pendingGliders: { id: string; g: any; fromFn: () => Vec; dirFn: () => Vec; startDist: () => number }[] = [];
+  /** 그릴 요소 (쓰는 점을 확인한 것만) */
+  private elements: ElementSpec[];
+  /** 함수 요소마다 미리 계산한 점 (범위 계산용) */
+  private fnSamples = new Map<ElementSpec, Vec[]>();
+  /** 이 그림에 쓴 글꼴 → 그 글꼴로 쓴 글자 */
+  private fontsUsed = new Map<string, string>();
 
   constructor(JXG: JXGType, container: HTMLElement, spec: FigureSpec, opts: RenderOptions) {
     this.JXG = JXG;
@@ -94,8 +129,14 @@ export class FigureRenderer {
 
     // 점 계산 함수 준비 (자유점은 일단 처음 위치로)
     for (const p of spec.points || []) this.definePoint(p);
+    // 없는 점이나 계산되지 않는 점(만나지 않는 원과 직선 등)을 쓰는 요소는 그리지 않고 issues 에 적는다
+    this.elements = spec.elements.filter((el) => this.usable(el));
 
     this.bbox = spec.bbox || this.autoBBox();
+    if (!(this.bbox[2] > this.bbox[0] && this.bbox[1] > this.bbox[3])) {
+      this.addIssue("그림의 보이는 범위(bbox)를 정할 수 없습니다");
+      this.bbox = [-1, 1, 1, -1];
+    }
     const [l, t, r, b] = this.bbox;
     this.pxPerUnit = opts.widthPx / (r - l);
     this.heightPx = Math.round((t - b) * this.pxPerUnit);
@@ -118,7 +159,7 @@ export class FigureRenderer {
     this.board.suspendUpdate();
     this.setupDashes();
     this.createGliders();
-    for (const el of spec.elements) this.drawElement(el);
+    for (const el of this.elements) this.drawElement(el);
     this.board.unsuspendUpdate();
     if (opts.onChange) this.board.on("update", opts.onChange);
   }
@@ -265,12 +306,19 @@ export class FigureRenderer {
       const g = s.glider;
       const fromFn = () => this.pt(g.from);
       const dirFn = () => unit(sub(this.pt(g.line[1]), this.pt(g.line[0])));
-      const startDist = this.opts.gliders?.[p.id] ?? g.dist;
+      const wanted = this.opts.gliders?.[p.id] ?? g.dist;
+      // 선분 위의 자유점은 처음 위치도 선분 안으로 줄인다 (JSXGraph 가 선분 끝에 붙이므로, 범위 계산도 같게)
+      const startDist = () => {
+        if (!g.segment) return wanted;
+        const a = this.pt(g.line[0]);
+        const t0 = dot(sub(fromFn(), a), dirFn()); // from 이 선분 시작점에서 떨어진 거리
+        return Math.min(Math.max(wanted, -t0), dist(a, this.pt(g.line[1])) - t0);
+      };
       // 보드가 만들어지기 전(범위 계산)에는 처음 위치를 쓴다
       fn = () => {
         const ge = this.gliderEls.get(p.id);
         if (ge) return v(ge.el.X(), ge.el.Y());
-        return add(fromFn(), mul(dirFn(), startDist));
+        return add(fromFn(), mul(dirFn(), startDist()));
       };
       this.pendingGliders.push({ id: p.id, g, fromFn, dirFn, startDist });
     } else {
@@ -288,7 +336,7 @@ export class FigureRenderer {
         [() => [a().x, a().y], () => [b().x, b().y]],
         { visible: false, fixed: true },
       );
-      const start = add(fromFn(), mul(dirFn(), startDist));
+      const start = add(fromFn(), mul(dirFn(), startDist()));
       const interactive = !!this.opts.interactive;
       const el = this.board.create("glider", [start.x, start.y, line], {
         name: "",
@@ -320,12 +368,88 @@ export class FigureRenderer {
     return out;
   }
 
+  // ---------------------------------------------------------------- 확인
+  private addIssue(message: string) {
+    if (!this.issues.includes(message)) this.issues.push(message);
+  }
+
+  /** 요소가 쓰는 점이 모두 있고 계산되는지 본다. 함수 요소는 식도 미리 계산해 본다. */
+  private usable(el: ElementSpec): boolean {
+    for (const ref of refsOf(el)) {
+      let p: Vec;
+      try {
+        p = this.pt(ref);
+      } catch (err) {
+        this.addIssue(err instanceof Error ? err.message : String(err));
+        return false;
+      }
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) {
+        const name = typeof ref === "string" ? `'${ref}'` : JSON.stringify(ref);
+        this.addIssue(`점 ${name} 의 위치를 계산할 수 없습니다 (만나지 않는 원과 직선, 평행한 두 직선 등)`);
+        return false;
+      }
+    }
+    if (el.type === "function") {
+      const pts = this.sampleFunction(el);
+      if (!pts) return false;
+      this.fnSamples.set(el, pts);
+    }
+    return true;
+  }
+
+  /**
+   * 함수 식을 JSXGraph 의 식 해석기(JessieCode)로 읽어 정의역을 40 칸으로 나눠 계산한다.
+   * 식은 페이지 JavaScript 로 실행하지 않는다. 그리는 보드가 아직 없으므로 그리지 않는 보드(renderer "no")를 잠깐 쓴다.
+   */
+  private sampleFunction(el: Extract<ElementSpec, { type: "function" }>): Vec[] | null {
+    const parser = this.JXG.JSXGraph.initBoard(document.createElement("div"), {
+      renderer: "no", boundingbox: [-1, 1, 1, -1], showNavigation: false, showCopyright: false,
+    });
+    try {
+      let f: (x: number) => unknown;
+      try {
+        f = parser.jc.snippet(el.expr, true, "x", false);
+      } catch {
+        this.addIssue(`함수 식 '${el.expr}' 을 읽을 수 없습니다`);
+        return null;
+      }
+      const out: Vec[] = [];
+      for (let i = 0; i <= 40; i++) {
+        const x = el.domain[0] + ((el.domain[1] - el.domain[0]) * i) / 40;
+        let y = NaN;
+        try {
+          y = Number(f(x));
+        } catch {
+          /* 이 x 에서는 계산되지 않는다 */
+        }
+        if (Number.isFinite(y)) out.push(v(x, y));
+      }
+      if (out.length === 0) {
+        this.addIssue(`함수 식 '${el.expr}' 의 값을 계산할 수 없습니다`);
+        return null;
+      }
+      return out;
+    } finally {
+      this.JXG.JSXGraph.freeBoard(parser);
+    }
+  }
+
   // ---------------------------------------------------------------- 범위
   private autoBBox(): [number, number, number, number] {
     const pts: Vec[] = [];
-    for (const id of this.pointFns.keys()) pts.push(this.pt(id));
-    for (const el of this.spec.elements) pts.push(...this.extentOf(el));
+    for (const id of this.pointFns.keys()) {
+      try {
+        pts.push(this.pt(id));
+      } catch {
+        /* 다른 점이 없어 계산되지 않는 점. 이 점을 쓰는 요소는 issues 에 이미 적혀 있다 */
+      }
+    }
+    for (const el of this.elements) pts.push(...refsOf(el).map((r) => this.pt(r)), ...this.extentOf(el));
     const good = pts.filter((p) => isFinite(p.x) && isFinite(p.y));
+    if (good.length === 0) {
+      this.addIssue("그릴 점이나 선이 하나도 없습니다");
+      return [-1, 1, 1, -1];
+    }
     const xs = good.map((p) => p.x);
     const ys = good.map((p) => p.y);
     const pad = this.labelUnits * 0.6;
@@ -373,25 +497,39 @@ export class FigureRenderer {
       }
       case "arrow":
         return [this.pt(el.from), this.pt(el.to)];
-      case "function": {
-        const f = this.fnOf(el.expr);
-        const out: Vec[] = [];
-        for (let i = 0; i <= 40; i++) {
-          const x = el.domain[0] + ((el.domain[1] - el.domain[0]) * i) / 40;
-          out.push(v(x, f(x)));
+      case "function":
+        return this.fnSamples.get(el) ?? [];
+      case "arc":
+        return this.arcPath(el);
+      case "angle": {
+        const [a, o, b] = el.points.map((p) => this.pt(p));
+        const r = el.radius ?? this.base * 0.07;
+        const { start, end } = interiorSweep(a, o, b);
+        const out = this.arcPoints(o, r + ((el.count ?? 1) - 1) * r * 0.22, start, end, 12);
+        if (el.label) {
+          const size = L * (el.labelSize ?? 0.8);
+          const c = add(o, mul(bisectorDir(a, o, b), el.labelDist ?? r * 1.9));
+          out.push(...box(c, size * 0.3 * Math.max(1, el.label.length), size * 0.5));
         }
         return out;
+      }
+      case "rightAngle": {
+        const [a, o, b] = el.points.map((p) => this.pt(p));
+        const s = el.size ?? this.base * 0.045;
+        return [add(add(o, mul(unit(sub(a, o)), s)), mul(unit(sub(b, o)), s))];
+      }
+      case "ticks": {
+        const [a, b] = el.points.map((p) => this.pt(p));
+        const s = el.size ?? this.base * 0.035;
+        return box(mid(a, b), s, s);
+      }
+      case "dot": {
+        const r = (el.size ?? 1) * this.base * 0.012;
+        return box(this.pt(el.at), r, r);
       }
       default:
         return [];
     }
-  }
-
-  private fnOf(expr: string): (x: number) => number {
-    // 범위 계산 단계에서는 보드가 없으므로 간단한 식만 직접 계산
-    const js = expr.replace(/\^/g, "**").replace(/\b(sin|cos|tan|sqrt|abs|log|exp|PI)\b/g, "Math.$1");
-    // eslint-disable-next-line no-new-func
-    return new Function("x", `return ${js};`) as (x: number) => number;
   }
 
   // ---------------------------------------------------------------- 그리기 도우미
@@ -419,6 +557,8 @@ export class FigureRenderer {
   private text(at: () => Vec, text: string, opts: { sizePx: number; family: string; italic?: boolean; weight?: number; color?: string }) {
     const t = this.board.create("text", [() => at().x, () => at().y, text], {
       display: "internal",
+      // 적힌 글자 그대로 그린다 (A_1, x^2 를 <sub>/<sup> 태그로 바꾸지 않고, <value> 같은 것도 계산하지 않는다)
+      parse: false,
       anchorX: "middle",
       anchorY: "middle",
       fontSize: opts.sizePx,
@@ -428,7 +568,19 @@ export class FigureRenderer {
       layer: LAYER.text,
     });
     t.figFont = { family: opts.family, italic: !!opts.italic, weight: opts.weight || 400 };
+    const font = `${opts.italic ? "italic " : ""}${opts.weight || 400} 20px ${opts.family}`;
+    this.fontsUsed.set(font, (this.fontsUsed.get(font) ?? "") + text);
     return t;
+  }
+
+  /** 이 그림에 쓴 글꼴 가운데 불러오지 못한 것이 있으면 알림 문장으로 돌려준다 */
+  fontWarnings(): string[] {
+    if (typeof document === "undefined" || !document.fonts) return [];
+    const missing = new Set<string>();
+    for (const [font, sample] of this.fontsUsed) {
+      if (!document.fonts.check(font, sample)) missing.add(font.includes("S-Core Dream") ? "에스코어드림" : "Liberation Serif");
+    }
+    return [...missing].map((name) => `글꼴(${name})을 불러오지 못해 다른 글꼴로 그렸습니다`);
   }
 
   private strokeAttrs(s: { width?: number; color?: string; dash?: boolean }, layer = LAYER.line) {
@@ -444,6 +596,18 @@ export class FigureRenderer {
     const out: Vec[] = [];
     for (let i = 0; i <= n; i++) out.push(add(c, mul(fromAngle(startDeg + ((endDeg - startDeg) * i) / n), r)));
     return out;
+  }
+
+  /** 호: center 를 중심으로 from 에서 to 까지 시계 반대 방향 */
+  private arcPath(el: Extract<ElementSpec, { type: "arc" }>): Vec[] {
+    const c = this.pt(el.center);
+    const f = this.pt(el.from);
+    const t = this.pt(el.to);
+    const r = el.radius ?? dist(c, f);
+    const s = angleOf(sub(f, c));
+    let e = angleOf(sub(t, c));
+    while (e < s) e += 360;
+    return this.arcPoints(c, r, s, e, 90);
   }
 
   // ---------------------------------------------------------------- 요소
@@ -494,16 +658,7 @@ export class FigureRenderer {
         return;
       }
       case "arc": {
-        this.curve(() => {
-          const c = this.pt(el.center);
-          const f = this.pt(el.from);
-          const t = this.pt(el.to);
-          const r = el.radius ?? dist(c, f);
-          let s = angleOf(sub(f, c));
-          let e = angleOf(sub(t, c));
-          while (e < s) e += 360;
-          return this.arcPoints(c, r, s, e, 90);
-        }, this.strokeAttrs(el));
+        this.curve(() => this.arcPath(el), this.strokeAttrs(el));
         return;
       }
       case "angle": {
@@ -650,6 +805,8 @@ export class FigureRenderer {
         }, { strokeWidth: 0, fillColor: el.color || "#000", fillOpacity: 1, layer: LAYER.mark });
         return;
       }
+      default:
+        this.addIssue(`'${(el as { type?: unknown }).type}' 는 그림 엔진이 모르는 요소입니다`);
     }
   }
 
@@ -820,12 +977,17 @@ export class FigureRenderer {
   }
 }
 
-/** 보이지 않는 곳에 큰 보드를 따로 그려 흰 바탕 PNG 로 만든다. */
+/**
+ * 보이지 않는 곳에 큰 보드를 따로 그려 흰 바탕 PNG 로 만든다.
+ * 다 그리지 못하는 그림(없는 점, 계산되지 않는 점, 모르는 요소 등)은 까닭을 담아 오류를 낸다.
+ * warnings: PNG 는 만들었지만 알려야 할 것 (글꼴을 못 불러와 다른 글꼴로 그림 등)
+ */
 export async function renderFigurePng(
   JXG: JXGType,
   spec: FigureSpec,
   opts: { widthPx: number; gliders?: Record<string, number> },
-): Promise<{ dataUrl: string; width: number; height: number }> {
+): Promise<{ dataUrl: string; width: number; height: number; warnings: string[] }> {
+  if (!(opts.widthPx > 0)) throw new Error("그림의 가로 크기(width_mm)가 올바르지 않습니다");
   await loadFigureFonts();
   const holder = document.createElement("div");
   holder.style.cssText = "position:fixed;left:-100000px;top:0;";
@@ -833,8 +995,10 @@ export async function renderFigurePng(
   box.id = `figpng-${Math.random().toString(36).slice(2)}`;
   holder.appendChild(box);
   document.body.appendChild(holder);
+  let r: FigureRenderer | null = null;
   try {
-    const r = new FigureRenderer(JXG, box, spec, { widthPx: opts.widthPx, gliders: opts.gliders });
+    r = new FigureRenderer(JXG, box, spec, { widthPx: opts.widthPx, gliders: opts.gliders });
+    if (r.issues.length) throw new Error(`그림을 다 그리지 못했습니다: ${r.issues.join(" / ")}`);
     r.board.fullUpdate();
     const src: HTMLCanvasElement = r.board.renderer.canvasRoot;
     // 캔버스는 화면 배율만큼 크게 그려지므로, 원하는 픽셀 수로 맞춰 흰 바탕에 합친다
@@ -847,9 +1011,9 @@ export async function renderFigurePng(
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(src, 0, 0, out.width, out.height);
     const dataUrl = out.toDataURL("image/png");
-    r.destroy();
-    return { dataUrl, width: out.width, height: out.height };
+    return { dataUrl, width: out.width, height: out.height, warnings: r.fontWarnings() };
   } finally {
+    r?.destroy();
     holder.remove();
   }
 }

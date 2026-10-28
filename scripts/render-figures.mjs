@@ -4,6 +4,8 @@
 // 사용법: node scripts/render-figures.mjs <입력.json> <출력.json> [dpi]
 //   글꼴: 점 이름용 Liberation Serif 는 public/fonts 에서, 한글(에스코어드림)은
 //   FIGURE_FONT_DIR 폴더에 S-CoreDream-4Regular.woff / 5Medium.woff 가 있으면 그것을, 없으면 CDN 에서 받는다.
+//   Playwright 와 Chromium 이 있어야 한다 (package.json 에는 없다. 없으면 무엇을 설치할지 알려 준다).
+// 끝 코드: 0 모두 그림, 2 출력은 만들었지만 그리지 못한 그림이 있음(그 그림에 render_error), 1 출력을 못 만듦
 import { build } from "esbuild";
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
@@ -50,11 +52,29 @@ for (const [weight, name] of [[400, "S-CoreDream-4Regular"], [500, "S-CoreDream-
 const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><style>${faces.join("\n")}</style></head>
 <body><script>${jxgJs}</script><script>${appJs}</script></body></html>`;
 
-const { chromium } = require("playwright");
-const proxy = process.env.HTTPS_PROXY || process.env.https_proxy;
-const browser = await chromium.launch(proxy ? { proxy: { server: proxy } } : {});
+let chromium;
 try {
-  const context = await browser.newContext({ ignoreHTTPSErrors: true, deviceScaleFactor: 1 });
+  ({ chromium } = require("playwright"));
+} catch {
+  console.error(
+    "그림을 그리려면 Playwright(화면 없이 도는 브라우저)가 필요한데 찾지 못했습니다.\n" +
+      "  설치: npm install --no-save playwright && npx playwright install chromium",
+  );
+  process.exit(1);
+}
+const proxy = process.env.HTTPS_PROXY || process.env.https_proxy;
+let browser;
+try {
+  browser = await chromium.launch(proxy ? { proxy: { server: proxy } } : {});
+} catch (err) {
+  console.error(
+    "그림을 그릴 브라우저(Chromium)를 열지 못했습니다. 설치되어 있지 않으면: npx playwright install chromium\n" +
+      `  (자세한 내용: ${String(err?.message || err).split("\n")[0]})`,
+  );
+  process.exit(1);
+}
+try {
+  const context = await browser.newContext({ deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.on("pageerror", (e) => console.error("그림 화면 오류:", e.message));
   await page.setContent(html, { waitUntil: "load" });
@@ -62,7 +82,8 @@ try {
   const { exam: withPng, results } = await page.evaluate(([e, d]) => window.renderExam(e, d), [exam, dpi]);
   await writeFile(outPath, JSON.stringify(withPng, null, 2));
   for (const r of results) {
-    console.log(r.ok ? `그림 ${r.no}번: ${r.size[0]}×${r.size[1]} 픽셀` : `그림 ${r.no}번: 실패 - ${r.error}`);
+    const note = r.warnings?.length ? ` (알림: ${r.warnings.join(" / ")})` : "";
+    console.log(r.ok ? `그림 ${r.no}번: ${r.size[0]}×${r.size[1]} 픽셀${note}` : `그림 ${r.no}번: 실패 - ${r.error}`);
   }
   if (results.some((r) => !r.ok)) process.exitCode = 2;
 } finally {

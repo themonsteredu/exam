@@ -32,7 +32,7 @@ export type Dir = "N" | "S" | "E" | "W" | "NE" | "NW" | "SE" | "SW" | number;
 export type LabelSpec = {
   type: "label";
   at: PointRef;
-  text: string;
+  text: string; // 적힌 그대로 그린다 (A_1, x^2 도 그대로). 첨자는 A₁, x² 처럼 글자로 쓴다
   dir?: Dir; // 점에서 어느 쪽에 둘지 (없으면 그 자리 가운데)
   offset?: number; // 점에서 떨어진 거리 (글자 크기 배수, 기본 0.75)
   size?: number; // 글자 크기 배수 (기본 1 = 밑변의 15%)

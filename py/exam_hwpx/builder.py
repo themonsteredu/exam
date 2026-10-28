@@ -16,8 +16,9 @@ import zipfile
 import zlib
 
 from hwpx import HwpxDocument
+from hwpx.equation.measure import measure_equation
 
-from .latex import EquationError, latex_to_plain, to_eqedit
+from .latex import latex_to_plain, script_for_measure, to_eqedit
 from .template import MM, get_template, mm
 
 CHOICE_MARKS = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧"]
@@ -143,25 +144,41 @@ class ExamBuilder:
             p.add_run(t, char_pr_id_ref=self.run_style(size=size, font=font, bold=b, underline=u))
 
     def add_equation(self, p, latex: str, *, size: float, where: str):
+        if not isinstance(latex, str):  # 수식 자리에 글이 아닌 값(null, 숫자 등)이 온 경우
+            self.warnings.append(f"{where}: 수식 자리가 비었거나 글이 아님 ({latex!r})")
+            if latex is not None:
+                p.add_run(str(latex), char_pr_id_ref=self.run_style(size=size))
+            return
+        base_unit = int(round(size * 100))
+        before = list(p.element)
         try:
             script = to_eqedit(latex, upright_uppercase=self.tpl.get("upright_point_names", True))
-        except EquationError as exc:  # 바꾸지 못한 수식은 읽을 수 있는 글자로 넣고 알려 준다
+            # 수식 상자 크기와 기준선: python-hwpx 측정기가 모르는 호(arch)·넓은 기호는 크기가 같은 것으로 바꿔 잰다
+            box = measure_equation(script_for_measure(script), base_unit=base_unit)
+            equation = self.doc.shapes.add_equation(
+                script,
+                paragraph=p,
+                base_unit=base_unit,
+                size=(box.width, box.height),
+                char_pr_id_ref=self.run_style(size=size),
+            )
+            equation.element.set("baseLine", str(box.base_line))
+        except Exception as exc:  # 바꾸지 못하거나 넣지 못한 수식은 읽을 수 있는 글자로 넣고 알려 준다
+            for child in list(p.element):  # 넣다 만 수식 조각은 지운다
+                if not any(child is old for old in before):
+                    p.element.remove(child)
             self.warnings.append(f"{where}: 수식을 글자로 넣음 ({latex}) - {exc}")
             p.add_run(latex_to_plain(latex), char_pr_id_ref=self.run_style(size=size))
-            return
-        self.doc.shapes.add_equation(
-            script,
-            paragraph=p,
-            base_unit=int(round(size * 100)),
-            char_pr_id_ref=self.run_style(size=size),
-        )
 
     def add_pieces(self, p, pieces: list[dict], *, size: float, where: str):
         for i, piece in enumerate(pieces):
+            if not isinstance(piece, dict):  # 조각이 그냥 글로 들어온 경우
+                piece = {"t": piece}
             if "m" in piece:
                 self.add_equation(p, piece["m"], size=size, where=f"{where}[{i}]")
             else:
-                p.add_run(piece.get("t", ""), char_pr_id_ref=self.run_style(size=size))
+                text = piece.get("t")
+                p.add_run("" if text is None else str(text), char_pr_id_ref=self.run_style(size=size))
 
     # ------------------------------------------------------------------ 부분별
     def text_width(self) -> int:
@@ -286,15 +303,28 @@ class ExamBuilder:
         limit = column_mm * self.tpl["figure"]["right_max_ratio"] if fig.get("place") == "right" else column_mm - 1
         return min(float(width), limit)
 
+    def figure_align(self, fig: dict, no) -> str:
+        """그림 가로 맞춤. LEFT·CENTER·RIGHT 가 아니면 가운데로 두고 알려 준다."""
+        align = str(fig.get("align") or "CENTER").strip().upper()
+        if align not in ("LEFT", "CENTER", "RIGHT"):
+            self.warnings.append(f"{no}번 그림: 맞춤 값을 몰라 가운데로 둠 ({fig.get('align')!r})")
+            align = "CENTER"
+        return align
+
     def build_figure(self, item: dict, stem_paragraph):
         """그림을 문제 글 아래(place=below, 기본) 또는 오른쪽(place=right)에 넣는다.
         PNG 가 아직 없으면 그림 크기만큼 빈 자리를 둔다."""
         fig = item.get("figure")
         if not fig:
             return
+        no = item.get("no")
         png = self.figure_png(fig)
         if png is None:
-            self.build_figure_placeholder(fig)
+            if fig.get("render_error"):
+                # 그림 그리기 단계(render-figures.mjs, 확인 화면)가 실패를 적어 둔 그림. 빈 자리만 넣고 알려 준다.
+                # 그리기 단계를 아예 거치지 않은 경우(1단계처럼 일부러 비워 두는 경우)는 알리지 않는다
+                self.warnings.append(f"{no}번 그림: 그림을 만들지 못해 빈 자리로 넣음 - {fig['render_error']}")
+            self.build_figure_placeholder(fig, align=self.figure_align(fig, no))
             return
         w_mm = self.figure_width_mm(fig)
         px_w, px_h = png_size(png)
@@ -302,7 +332,7 @@ class ExamBuilder:
         if fig.get("place") == "right":
             self.add_floating_figure(stem_paragraph, png, w_mm, h_mm)
             return
-        align = fig.get("align", "CENTER")
+        align = self.figure_align(fig, no)
         gap = self.tpl["figure"]["gap_pt"]
         item_id = self.add_image(png)
         p = self.doc.add_paragraph("", include_run=False)
@@ -350,14 +380,14 @@ class ExamBuilder:
                 break
         p.section.mark_dirty()
 
-    def build_figure_placeholder(self, fig: dict):
+    def build_figure_placeholder(self, fig: dict, align: str = "CENTER"):
         """그림 자리: 그림이 아직 없을 때 크기만큼 비워 둔다 (연한 점선 상자)."""
         w_mm, h_mm = fig.get("size_mm", [fig.get("width_mm", 50), 40])
         p_anchor = self.doc.add_paragraph("")
         bf = self.doc.styles.ensure_border_fill(border_color="#C8C8C8", border_width="0.12 mm", border_type="DASH")
         table = p_anchor.add_table(1, 1, width=mm(w_mm), border_fill_id_ref=bf)
         self._set_row_height(table, 0, mm(h_mm))
-        self.para_format(p_anchor, alignment=fig.get("align", "CENTER"), line_spacing_percent=100,
+        self.para_format(p_anchor, alignment=align, line_spacing_percent=100,
                          indent_left_mm=0, first_line_indent_mm=0, spacing_before_pt=6, spacing_after_pt=6)
 
     def build_item(self, item: dict, is_first: bool):

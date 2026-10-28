@@ -26,13 +26,19 @@ export type FigureRenderResult = {
   png?: string;
   size?: [number, number];
   error?: string;
+  /** PNG 는 만들었지만 알려야 할 것 (글꼴을 못 불러옴 등) */
+  warnings?: string[];
 };
 
 function figureWidthMm(fig: ExamFigure): number {
-  return fig.width_mm ?? fig.size_mm?.[0] ?? 50;
+  // 한글 파일 만드는 쪽(builder.figure_width_mm)과 같게: 0 이나 빈 값이면 size_mm, 그것도 없으면 50
+  return fig.width_mm || fig.size_mm?.[0] || 50;
 }
 
-/** 그림 명령이 있는 문항마다 PNG 를 만든다. 실패한 그림은 error 에 까닭을 적는다. */
+/**
+ * 그림이 있는 문항마다 PNG 를 만든다. 그리지 못한 그림은 error 에 까닭을 적는다.
+ * 그림 명령이 없거나 모양이 틀린 그림도 error 로 돌려준다 (예전에 만든 PNG 가 남아 들어가지 않게).
+ */
 export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGURE_DPI): Promise<FigureRenderResult[]> {
   await loadFigureFonts();
   const results: FigureRenderResult[] = [];
@@ -41,14 +47,27 @@ export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGUR
     const items: any[] = Array.isArray(sections[s]?.items) ? sections[s].items : [];
     for (let i = 0; i < items.length; i++) {
       const fig: ExamFigure | undefined = items[i]?.figure;
-      if (!fig?.commands || !Array.isArray(fig.commands.elements)) continue;
+      if (!fig) continue;
       const base = { section: s, index: i, no: items[i].no };
+      if (!fig.commands) {
+        results.push({ ...base, error: "그림 명령이 없습니다" });
+        continue;
+      }
+      if (!Array.isArray(fig.commands.elements)) {
+        results.push({ ...base, error: "그림 명령에 그릴 것 목록(elements)이 없습니다" });
+        continue;
+      }
       try {
         const out = await renderFigurePng(JXG, fig.commands, {
           widthPx: pxForPrint(figureWidthMm(fig), dpi),
           gliders: fig.gliders,
         });
-        results.push({ ...base, png: out.dataUrl.slice(out.dataUrl.indexOf(",") + 1), size: [out.width, out.height] });
+        results.push({
+          ...base,
+          png: out.dataUrl.slice(out.dataUrl.indexOf(",") + 1),
+          size: [out.width, out.height],
+          ...(out.warnings.length ? { warnings: out.warnings } : {}),
+        });
       } catch (err) {
         results.push({ ...base, error: err instanceof Error ? err.message : String(err) });
       }
@@ -69,8 +88,11 @@ export function attachFigurePngs(exam: any, results: FigureRenderResult[]): any 
       delete fig.render_error;
     } else {
       delete fig.png;
+      delete fig.png_size;
       fig.render_error = r.error;
     }
+    if (r.warnings?.length) fig.render_warnings = r.warnings;
+    else delete fig.render_warnings;
   }
   return copy;
 }
