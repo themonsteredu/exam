@@ -84,7 +84,9 @@
   - 사용자 결정: 저장은 기존 Supabase 프로젝트 aiapp(vypnobpmyadtcvxhtagn, 서울)에 exam_ 표와 exam-files 보관함을 따로. 비밀번호 3035 는 프로그램 전체. 월별 요금은 프로그램이 직접 기록
   - 화면: / (시험지 만들기), /archive (보관함), /settings (API 키·모델·월별 요금·비밀번호), /login
   - 배포: Vercel 팀 themonsteredu, 프로젝트 exam-maker (prj_JayN6FC5KzNlcDowvuG0lw1GJafo), 서버 지역 icn1(서울)
-    - 주소: https://exam-maker-themonsteredu.vercel.app (팀 기본 보호 "사용자 도메인 말고 모두"라 버셀 로그인한 팀원만 열린다. 그다음 비밀번호 3035)
+    - 주소: https://exam-maker-one.vercel.app (또는 exam-maker-themonsteredu.vercel.app). 보호를 "all" 로 바꿔 둠: 버셀에 로그인한 팀원만 열리고, 그다음 비밀번호 3035
+      (팀 기본값 "사용자 도메인 말고 모두" 에서는 exam-maker-one.vercel.app 이 누구에게나 열렸다. 숫자 4자리 비밀번호만으로 공개하지 않으려고 바꿈.
+      선생님들도 쓰게 하려면 사용자와 정해서 보호를 풀고 더 긴 비밀번호로)
     - 깃허브 기본 브랜치가 옛 claude/new-session-65lm7i 라서 Vercel 실서비스 브랜치도 그것이다. 그래서 Ignored Build Step
       ([ "$VERCEL_ENV" != "production" ] || [ "$VERCEL_GIT_COMMIT_REF" != "claude/lucid-sagan-4tgi0y" ]) 로 미리보기와 다른 브랜치는 빌드하지 않고,
       실서비스 배포는 Vercel MCP create_deployment (gitSource ref claude/lucid-sagan-4tgi0y, target production) 로 직접 한다 (push 만으로는 배포되지 않는다)
