@@ -4,6 +4,17 @@ import { FormEvent, Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import "../app.css";
 
+/** 로그인 뒤 돌아갈 곳. 이 사이트 안의 주소만 허락한다 ("/\\다른사이트" 처럼 다른 사이트로 보내는 주소는 처음 화면으로) */
+function safeNext(next: string | null): string {
+  if (!next || !next.startsWith("/") || next.startsWith("//") || next.includes("\\")) return "/";
+  try {
+    const url = new URL(next, window.location.origin);
+    return url.origin === window.location.origin ? url.pathname + url.search + url.hash : "/";
+  } catch {
+    return "/";
+  }
+}
+
 function LoginForm() {
   const params = useSearchParams();
   const [password, setPassword] = useState("");
@@ -25,8 +36,7 @@ function LoginForm() {
         setError(body.error || "로그인하지 못했습니다.");
         return;
       }
-      const next = params.get("next");
-      window.location.href = next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
+      window.location.href = safeNext(params.get("next"));
     } catch {
       setError("서버에 연결하지 못했습니다. 인터넷 연결을 확인해 주세요.");
     } finally {
