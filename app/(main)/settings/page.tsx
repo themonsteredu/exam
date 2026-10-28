@@ -191,7 +191,8 @@ function ModelCard({ s, onChange }: { s: Settings; onChange: () => void }) {
 }
 
 function UsageCard({ s }: { s: Settings }) {
-  const thisMonth = new Date().toISOString().slice(0, 7);
+  // 한국 시간 기준 달 (월별 기록도 한국 시간으로 묶는다). sv-SE 형식은 "2026-10"
+  const thisMonth = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit" }).format(new Date());
   const now = s.usage.find((u) => u.month === thisMonth);
   return (
     <section className="card">

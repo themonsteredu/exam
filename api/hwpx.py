@@ -22,6 +22,8 @@ from exam_hwpx.service import build_from_exam, session_version_of  # noqa: E402
 
 MAX_BODY = 4_400_000  # Vercel 요청 본문 한도(4.5MB)보다 조금 작게
 GATEWAY_URL = os.environ.get("EXAM_GATEWAY_URL") or "https://vypnobpmyadtcvxhtagn.supabase.co/functions/v1/exam-gateway"
+# 이 작업 환경 시험(EXAM_STORE=local)에서만 APP_SECRET 을 서명 열쇠로 쓴다 (Next 의 LocalStore 와 같은 조건)
+LOCAL_TEST = os.environ.get("EXAM_STORE") == "local" and bool(os.environ.get("APP_SECRET"))
 _cache: dict = {}
 
 
@@ -54,7 +56,7 @@ def _cached(name: str, seconds: int, make):
 
 def session_key(oidc_token: str | None) -> str:
     """로그인 쿠키 서명 열쇠. 함수가 살아 있는 동안 10분 캐시"""
-    if os.environ.get("APP_SECRET"):
+    if LOCAL_TEST:
         return os.environ["APP_SECRET"]
     key = _cached("key", 600, lambda: (_gateway("session.key", {}, oidc_token) or {}).get("key"))
     if not key or len(key) < 32:
@@ -63,10 +65,12 @@ def session_key(oidc_token: str | None) -> str:
     return key
 
 
-def current_session_version(oidc_token: str | None) -> int:
+def current_session_version(oidc_token: str | None, fresh: bool = False) -> int:
     """지금 세션 판 (비밀번호를 바꾸면 오른다). 60초 캐시 (Next 서버 주소와 같게)"""
-    if os.environ.get("APP_SECRET"):
+    if LOCAL_TEST:
         return int(os.environ.get("EXAM_SESSION_VERSION", "1"))
+    if fresh:
+        _cache.pop("version", None)
     data = _cached("version", 60, lambda: _gateway("settings.get", {"keys": ["session_version"]}, oidc_token) or {})
     try:
         return int(data.get("session_version") or 1)
@@ -88,6 +92,9 @@ class handler(BaseHTTPRequestHandler):
         try:
             version = session_version_of(self.headers.get("cookie"), session_key(oidc))
             current = current_session_version(oidc) if version is not None else None
+            if version is not None and version > current:
+                # 다른 곳에서 비밀번호를 막 바꿨으면 기억(60초)이 낡았을 수 있다 → 새로 읽어 본다
+                current = current_session_version(oidc, fresh=True)
         except Exception:  # noqa: BLE001 (창구에 닿지 못함)
             return self._json(503, {"error": "저장소에 연결하지 못했습니다. 잠시 뒤 다시 해 주세요"})
         if version is None:

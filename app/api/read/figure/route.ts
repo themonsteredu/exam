@@ -11,10 +11,13 @@ import { fakeFigure, fakeAiEnabled } from "@/lib/ai/fake";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
+/** 함수 시간 한도(300초)보다 먼저 끝내도록 AI 읽기에 줄 시간 (받은 답과 요금 기록을 잃지 않게) */
+const BUDGET_MS = 280_000;
 
 const pieces = (v: unknown) => (Array.isArray(v) ? v.filter((p) => p && typeof p === "object") : []);
 
 export async function POST(req: Request) {
+  const deadline = Date.now() + BUDGET_MS;
   const denied = await requireSession(req);
   if (denied) return denied;
   let body: { image?: unknown; item?: Record<string, unknown>; model?: unknown; docId?: unknown };
@@ -49,6 +52,7 @@ export async function POST(req: Request) {
         model: isModel(body.model) ? body.model : config.models.figure,
         apiKey: config.apiKey ?? undefined,
         signal: req.signal,
+        deadline,
       },
     );
     await logUsage("figure", usage, docId);

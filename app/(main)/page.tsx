@@ -70,11 +70,13 @@ export default function MakePage() {
     abort.current = controller;
     let docId: string | null = null;
     try {
-      docId = (await postJson<{ doc: { id: string } }>("/api/documents", { title })).doc.id;
       const out = await makeExam({
         files,
         title: title.trim() || "시험지",
-        docId,
+        createDoc: async () => {
+          docId = (await postJson<{ doc: { id: string } }>("/api/documents", { title })).doc.id;
+          return docId;
+        },
         JXG,
         hwpxEndpoint: ready.hwpxEndpoint,
         onProgress: setProgress,
@@ -213,8 +215,13 @@ function ResultView({ result, rate }: { result: MakeResult; rate?: number }) {
     <section className="card">
       <h2>다 만들었습니다</h2>
       <p>
-        문항 {items.length}개를 옮겼습니다. 한글 파일을 내려받았고 보관함에도 저장했습니다. 이번 AI 요금은 약 {won(result.usd, rate)} 입니다.
+        문항 {items.length}개를 옮겼습니다. 한글 파일을 내려받았{result.saved ? "고 보관함에도 저장했" : ""}습니다. 이번 AI 요금은 약 {won(result.usd, rate)} 입니다.
       </p>
+      {result.saveProblem && (
+        <p className="notice error" role="alert">
+          {result.saveProblem}. {result.saved ? "" : "내려받은 한글 파일을 잘 보관해 주세요."}
+        </p>
+      )}
       {(result.unsure > 0 || result.failedFigures > 0) && (
         <p className="notice error">
           {result.unsure > 0 && `AI 가 확신이 낮다고 표시한 곳이 ${result.unsure}군데 있습니다. `}

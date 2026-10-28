@@ -22,12 +22,57 @@ const PHOTO_LONG_EDGE = 4000;
 let pdfjsPromise: Promise<any> | null = null;
 
 async function loadPdfjs(): Promise<any> {
+  // legacy 판: 2026년 이전 브라우저(예: 예전 아이패드의 Safari)에서도 PDF 글자가 빠지지 않게 (새 판은 최신 브라우저 기능을 쓴다)
   pdfjsPromise ??= (async () => {
-    const pdfjs: any = await import("pdfjs-dist");
-    pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
+    const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/legacy/build/pdf.worker.min.mjs", import.meta.url).toString();
     return pdfjs;
   })();
   return pdfjsPromise;
+}
+
+/** 정해진 시간 안에 끝나지 않으면 알린다 (PDF 열기가 멈춰서 화면이 하염없이 기다리지 않게) */
+function within<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
+/** 보관함 한 파일 한도 (Supabase exam-files 50MB) */
+export const MAX_FILE_BYTES = 50 * 1024 * 1024;
+
+const isPdfFile = (f: File) => f.type === "application/pdf" || /\.pdf$/i.test(f.name);
+const isImageFile = (f: File) => f.type.startsWith("image/") || /\.(jpe?g|png|webp|gif|heic|heif)$/i.test(f.name);
+
+/** AI 를 부르기 전에 파일을 확인한다: 크기, 종류, 이 브라우저에서 열리는 사진인지 (요금이 들기 전에 알리려고) */
+export async function precheckFiles(files: File[]): Promise<void> {
+  for (const f of files) {
+    if (f.size > MAX_FILE_BYTES) throw new Error(`${f.name}: 파일이 너무 큽니다. 50MB 까지 올릴 수 있습니다.`);
+    if (f.size === 0) throw new Error(`${f.name}: 빈 파일입니다.`);
+    if (isPdfFile(f)) continue;
+    if (!isImageFile(f)) throw new Error(`${f.name}: PDF 나 사진(JPG, PNG) 파일만 올릴 수 있습니다.`);
+    try {
+      const bitmap = await createImageBitmap(f);
+      bitmap.close();
+    } catch {
+      const heic = /\.hei[cf]$/i.test(f.name) || /hei[cf]/i.test(f.type);
+      throw new Error(
+        heic
+          ? `${f.name}: 아이폰 사진(HEIC)은 이 브라우저에서 열 수 없습니다. 사진을 JPG 로 저장해서 다시 올려 주세요.`
+          : `${f.name}: 사진을 열 수 없습니다. 파일이 망가졌을 수 있습니다. 다른 파일로 해 주세요.`,
+      );
+    }
+  }
 }
 
 function canvasOf(width: number, height: number): HTMLCanvasElement {
@@ -41,10 +86,19 @@ function canvasOf(width: number, height: number): HTMLCanvasElement {
 export async function openSources(files: File[]): Promise<PageSource[]> {
   const out: PageSource[] = [];
   for (const file of files) {
-    const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
-    if (isPdf) {
+    if (isPdfFile(file)) {
       const pdfjs = await loadPdfjs();
-      const doc = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+      let doc: any;
+      try {
+        doc = await within(
+          pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise,
+          60_000,
+          `${file.name}: PDF 를 여는 데 너무 오래 걸립니다. 다른 브라우저(크롬 최신판)로 해 보거나 사진으로 올려 주세요.`,
+        );
+      } catch (err) {
+        if (err instanceof Error && err.message.startsWith(file.name)) throw err;
+        throw new Error(`${file.name}: PDF 를 열 수 없습니다. 암호가 걸렸거나 망가진 파일일 수 있습니다.`);
+      }
       for (let n = 1; n <= doc.numPages; n++) {
         out.push({
           label: `${file.name} ${n}쪽`,
@@ -63,7 +117,7 @@ export async function openSources(files: File[]): Promise<PageSource[]> {
           },
         });
       }
-    } else if (file.type.startsWith("image/") || /\.(jpe?g|png|webp|gif|heic)$/i.test(file.name)) {
+    } else if (isImageFile(file)) {
       out.push({
         label: file.name,
         async render() {

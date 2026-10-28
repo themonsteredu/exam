@@ -38,7 +38,7 @@ export function supportsFallback(model: string): boolean {
 export class ReadError extends Error {
   usage?: Usage;
   constructor(
-    public code: "no_key" | "refusal" | "too_long" | "bad_answer" | "api" | "input",
+    public code: "no_key" | "refusal" | "too_long" | "bad_answer" | "api" | "input" | "timeout",
     message: string,
     public detail?: string,
   ) {
@@ -163,8 +163,16 @@ export async function callClaude(req: {
   jsonSchema?: Record<string, unknown>;
   apiKey?: string;
   signal?: AbortSignal;
+  /** 이때(ms)까지 끝내야 한다 (서버 함수 시간 한도). 남은 시간에 맞춰 기다림과 다시 시도를 줄인다 */
+  deadline?: number;
 }): Promise<CallResult> {
   const anthropic = getClient(req.apiKey);
+  const left = req.deadline ? req.deadline - Date.now() : undefined;
+  if (left !== undefined && left < 15_000) {
+    throw new ReadError("timeout", "시간이 모자라 AI 읽기를 시작하지 못했습니다. 다시 해 주세요.");
+  }
+  // 한도가 있으면: 끝낼 시각 3초 전까지만 기다리고, 넉넉할 때만 한 번 다시 시도한다
+  const limits = left !== undefined ? { timeout: left - 3_000, maxRetries: left > 150_000 ? 1 : 0 } : {};
   const fallback = supportsFallback(req.model);
   let message: BetaMessage;
   try {
@@ -182,7 +190,7 @@ export async function callClaude(req: {
         },
         ...(fallback ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
       },
-      { signal: req.signal },
+      { signal: req.signal, ...limits },
     );
     message = await stream.finalMessage();
   } catch (err) {
@@ -213,6 +221,9 @@ export function assistantTurn(message: BetaMessage): BetaMessageParam {
 export function explainApiError(err: unknown): ReadError {
   if (err instanceof ReadError) return err;
   if (err instanceof Anthropic.APIUserAbortError) return new ReadError("api", "읽기를 멈췄습니다.");
+  if (err instanceof Anthropic.APIConnectionTimeoutError) {
+    return new ReadError("timeout", "AI 가 너무 오래 걸려 이번 읽기를 멈췄습니다. 잠시 뒤 다시 해 주세요.", err.message);
+  }
   if (err instanceof Anthropic.AuthenticationError) {
     return new ReadError("api", "AI 열쇠(ANTHROPIC_API_KEY)가 맞지 않습니다. 열쇠를 다시 확인해 주세요.", err.message);
   }

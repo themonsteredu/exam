@@ -45,7 +45,10 @@ export async function requireSession(req: Request): Promise<Response | null> {
   try {
     const session = await readSessionToken(token, await currentSessionKey());
     if (!session) return Response.json({ error: "로그인이 필요합니다" }, { status: 401 });
-    if (session.version !== (await sessionVersion())) {
+    let current = await sessionVersion();
+    // 다른 서버에서 비밀번호를 막 바꿨으면 이 서버의 기억(60초)이 낡았을 수 있다 → 쿠키 판이 더 높으면 새로 읽어 본다
+    if (session.version > current) current = await sessionVersion(true);
+    if (session.version !== current) {
       return Response.json({ error: "비밀번호가 바뀌어 다시 로그인해야 합니다" }, { status: 401 });
     }
   } catch (err) {

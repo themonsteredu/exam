@@ -33,6 +33,7 @@ const STATUS: Record<ReadError["code"], number> = {
   too_long: 422,
   bad_answer: 502,
   api: 502,
+  timeout: 504,
 };
 
 export function failFrom(err: unknown): Response {

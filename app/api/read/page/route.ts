@@ -11,8 +11,11 @@ import { fakePage, fakeAiEnabled } from "@/lib/ai/fake";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
+/** 함수 시간 한도(300초)보다 먼저 끝내도록 AI 읽기에 줄 시간 (받은 답과 요금 기록을 잃지 않게) */
+const BUDGET_MS = 280_000;
 
 export async function POST(req: Request) {
+  const deadline = Date.now() + BUDGET_MS;
   const denied = await requireSession(req);
   if (denied) return denied;
   let body: { image?: unknown; page?: unknown; total?: unknown; before?: unknown; model?: unknown; docId?: unknown };
@@ -43,6 +46,7 @@ export async function POST(req: Request) {
       model: isModel(body.model) ? body.model : config.models.page,
       apiKey: config.apiKey ?? undefined,
       signal: req.signal,
+      deadline,
     });
     await logUsage("page", usage, docId);
     return Response.json({ reading, usage });

@@ -58,7 +58,7 @@ export type FigureContext = {
 export async function readFigure(
   image: ImageInput,
   item: FigureContext,
-  o: { model?: string; effort?: Effort; maxAttempts?: number; apiKey?: string; signal?: AbortSignal } = {},
+  o: { model?: string; effort?: Effort; maxAttempts?: number; apiKey?: string; signal?: AbortSignal; deadline?: number } = {},
 ): Promise<{ figure: FigureReading; usage: Usage }> {
   const model = modelFor("figure", o.model);
   const maxAttempts = o.maxAttempts ?? 2;
@@ -94,6 +94,7 @@ export async function readFigure(
         effort: o.effort ?? FIGURE_EFFORT,
         maxTokens: 32000,
         signal: o.signal,
+        deadline: o.deadline,
       });
     } catch (err) {
       // 앞서 고쳐 받느라 쓴 토큰도 요금 기록에 넣게 붙여 보낸다
@@ -103,6 +104,8 @@ export async function readFigure(
     usage = addUsage(usage, call.usage);
     result = judge(call.text, image, attempt);
     if (!result.errors.length || attempt === maxAttempts) break;
+    // 고쳐 받을 시간이 모자라면 그대로 돌려준다 (서버 함수 시간 한도를 넘겨 이미 받은 답까지 잃지 않게)
+    if (o.deadline && o.deadline - Date.now() < 120_000) break;
     messages.push(assistantTurn(call.message), { role: "user", content: figureRepairText(result.errors) });
   }
   return { figure: result!, usage: usage! };

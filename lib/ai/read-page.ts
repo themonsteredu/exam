@@ -17,7 +17,7 @@ export const PAGE_EFFORT: Effort = "medium";
 
 export async function readPage(
   image: ImageInput,
-  o: { page: number; total: number; before?: string; model?: string; effort?: Effort; apiKey?: string; signal?: AbortSignal },
+  o: { page: number; total: number; before?: string; model?: string; effort?: Effort; apiKey?: string; signal?: AbortSignal; deadline?: number },
 ): Promise<{ reading: PageReading; usage: Usage; raw: string }> {
   const { text, usage } = await callClaude({
     system: PAGE_SYSTEM,
@@ -36,6 +36,7 @@ export async function readPage(
     maxTokens: 32000,
     jsonSchema: pageReadingJsonSchema(),
     signal: o.signal,
+    deadline: o.deadline,
   });
   let json: unknown;
   try {
