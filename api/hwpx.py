@@ -18,36 +18,60 @@ from http.server import BaseHTTPRequestHandler
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "py"))
 
-from exam_hwpx.service import build_from_exam, verify_session  # noqa: E402
+from exam_hwpx.service import build_from_exam, session_version_of  # noqa: E402
 
 MAX_BODY = 4_400_000  # Vercel 요청 본문 한도(4.5MB)보다 조금 작게
 GATEWAY_URL = os.environ.get("EXAM_GATEWAY_URL") or "https://vypnobpmyadtcvxhtagn.supabase.co/functions/v1/exam-gateway"
-_key_cache: dict = {}
+_cache: dict = {}
 
 
-def session_key(oidc_token: str | None) -> str | None:
-    """로그인 쿠키 서명 열쇠. 함수가 살아 있는 동안 10분 캐시"""
-    if os.environ.get("APP_SECRET"):
-        return os.environ["APP_SECRET"]
-    if _key_cache.get("value") and time.time() - _key_cache["at"] < 600:
-        return _key_cache["value"]
-    proof = {"x-exam-gateway": os.environ["EXAM_GATEWAY_SECRET"]} if os.environ.get("EXAM_GATEWAY_SECRET") else (
-        {"x-exam-oidc": oidc_token} if oidc_token else None
-    )
-    if not proof:
-        return None
+def _gateway(action: str, payload: dict, oidc_token: str | None):
+    """저장 창구를 부른다 (Vercel OIDC 토큰으로 들어감. 이 작업 환경 시험은 공유 비밀값)"""
+    if os.environ.get("EXAM_GATEWAY_SECRET"):
+        proof = {"x-exam-gateway": os.environ["EXAM_GATEWAY_SECRET"]}
+    elif oidc_token:
+        proof = {"x-exam-oidc": oidc_token}
+    else:
+        raise RuntimeError("저장 창구에 들어갈 증명이 없습니다")
     req = urllib.request.Request(
         GATEWAY_URL,
-        data=json.dumps({"action": "session.key"}).encode(),
+        data=json.dumps({"action": action, **payload}).encode(),
         headers={"content-type": "application/json", **proof},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=15) as res:
-        key = json.loads(res.read().decode("utf-8")).get("data", {}).get("key")
+        return json.loads(res.read().decode("utf-8")).get("data")
+
+
+def _cached(name: str, seconds: int, make):
+    hit = _cache.get(name)
+    if hit and time.time() - hit[1] < seconds:
+        return hit[0]
+    value = make()
+    _cache[name] = (value, time.time())
+    return value
+
+
+def session_key(oidc_token: str | None) -> str:
+    """로그인 쿠키 서명 열쇠. 함수가 살아 있는 동안 10분 캐시"""
+    if os.environ.get("APP_SECRET"):
+        return os.environ["APP_SECRET"]
+    key = _cached("key", 600, lambda: (_gateway("session.key", {}, oidc_token) or {}).get("key"))
     if not key or len(key) < 32:
-        return None
-    _key_cache.update(value=key, at=time.time())
+        _cache.pop("key", None)
+        raise RuntimeError("쿠키 서명 열쇠를 받지 못했습니다")
     return key
+
+
+def current_session_version(oidc_token: str | None) -> int:
+    """지금 세션 판 (비밀번호를 바꾸면 오른다). 60초 캐시 (Next 서버 주소와 같게)"""
+    if os.environ.get("APP_SECRET"):
+        return int(os.environ.get("EXAM_SESSION_VERSION", "1"))
+    data = _cached("version", 60, lambda: _gateway("settings.get", {"keys": ["session_version"]}, oidc_token) or {})
+    try:
+        return int(data.get("session_version") or 1)
+    except (TypeError, ValueError):
+        return 1
 
 
 class handler(BaseHTTPRequestHandler):
@@ -60,14 +84,16 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):  # noqa: N802 (Vercel 이 부르는 이름)
+        oidc = self.headers.get("x-vercel-oidc-token")
         try:
-            key = session_key(self.headers.get("x-vercel-oidc-token"))
+            version = session_version_of(self.headers.get("cookie"), session_key(oidc))
+            current = current_session_version(oidc) if version is not None else None
         except Exception:  # noqa: BLE001 (창구에 닿지 못함)
-            key = None
-        if not key:
             return self._json(503, {"error": "저장소에 연결하지 못했습니다. 잠시 뒤 다시 해 주세요"})
-        if not verify_session(self.headers.get("cookie"), key):
+        if version is None:
             return self._json(401, {"error": "로그인이 필요합니다"})
+        if version != current:
+            return self._json(401, {"error": "비밀번호가 바뀌어 다시 로그인해야 합니다"})
         length = int(self.headers.get("content-length") or 0)
         if length <= 0 or length > MAX_BODY:
             return self._json(413, {"error": "시험지 데이터가 너무 크거나 비었습니다"})

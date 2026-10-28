@@ -5,6 +5,7 @@
 import { Vec, v, add, sub, mul, dist, unit, perp, fromAngle, angleOf, mid, bisectorDir, interiorSweep } from "./geometry";
 import { PointBook } from "./points";
 import type { ElementSpec, FigureSpec, PointRef, Dir } from "./types";
+import { functionExprProblems } from "./validate";
 
 export const FONT_SERIF = "'Liberation Serif', 'Times New Roman', serif";
 export const FONT_SANS = "'S-Core Dream', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif";
@@ -294,8 +295,14 @@ export class FigureRenderer {
   /**
    * 함수 식을 JSXGraph 의 식 해석기(JessieCode)로 읽어 정의역을 40 칸으로 나눠 계산한다.
    * 식은 페이지 JavaScript 로 실행하지 않는다. 그리는 보드가 아직 없으므로 그리지 않는 보드(renderer "no")를 잠깐 쓴다.
+   * 식은 AI 가 쓴 것이므로 해석기에 넣기 전에 쓸 수 있는 이름·글자만 있는지 다시 본다 (검사를 거치지 않고 그리는 길이 있어도 막히게).
    */
   private sampleFunction(el: Extract<ElementSpec, { type: "function" }>): Vec[] | null {
+    const problems = typeof el.expr === "string" ? functionExprProblems(el.expr) : ["함수 식이 글자가 아닙니다"];
+    if (problems.length) {
+      for (const p of problems) this.addIssue(p);
+      return null;
+    }
     const parser = this.JXG.JSXGraph.initBoard(document.createElement("div"), {
       renderer: "no", boundingbox: [-1, 1, 1, -1], showNavigation: false, showCopyright: false,
     });

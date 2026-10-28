@@ -4,12 +4,14 @@ import { FormEvent, Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import "../app.css";
 
-/** 로그인 뒤 돌아갈 곳. 이 사이트 안의 주소만 허락한다 ("/\\다른사이트" 처럼 다른 사이트로 보내는 주소는 처음 화면으로) */
+/** 로그인 뒤 돌아갈 곳. 이 사이트 안의 주소만 허락한다 ("/\\다른사이트", "/.//다른사이트" 처럼 다른 사이트로 보내는 주소는 처음 화면으로).
+ *  주소 전체(https://이 사이트/…)를 돌려주므로 "//" 로 시작하는 길이 다른 사이트로 읽히지 않는다 */
 function safeNext(next: string | null): string {
   if (!next || !next.startsWith("/") || next.startsWith("//") || next.includes("\\")) return "/";
   try {
     const url = new URL(next, window.location.origin);
-    return url.origin === window.location.origin ? url.pathname + url.search + url.hash : "/";
+    if (url.origin !== window.location.origin || url.pathname.startsWith("//")) return "/";
+    return url.href;
   } catch {
     return "/";
   }

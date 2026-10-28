@@ -162,6 +162,16 @@ const FUNCTION_NAMES = new Set([
   "floor", "ceil", "round", "trunc", "min", "max", "sign",
 ]);
 
+/** 함수 식에 쓸 수 없는 이름·글자가 있으면 그 까닭들, 없으면 빈 목록 (엔진도 그리기 전에 다시 본다) */
+export function functionExprProblems(expr: string): string[] {
+  const problems: string[] = [];
+  const bad = (expr.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []).filter((name) => !FUNCTION_NAMES.has(name));
+  if (bad.length) problems.push(`함수 식에 쓸 수 없는 이름 ${[...new Set(bad)].join(", ")} (변수는 x 하나, 곱하기는 *, 거듭제곱은 ^)`);
+  if (/[^A-Za-z0-9_+\-*/^().,\s]/.test(expr)) problems.push(`함수 식에 쓸 수 없는 글자가 있습니다 ('${expr}')`);
+  if (expr.length > 200) problems.push("함수 식이 너무 깁니다 (200자까지)");
+  return problems;
+}
+
 export type FigureCheck = {
   /** 고칠 것이 없으면 검사를 통과한 그림 명령 */
   spec?: FigureSpec;
@@ -262,9 +272,7 @@ export function checkFigureSpec(input: unknown): FigureCheck {
       errors.push(`${path}: 각의 꼭짓점이 다른 점과 같은 자리입니다`);
     }
     if (el.type === "function") {
-      const bad = (el.expr.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []).filter((name) => !FUNCTION_NAMES.has(name));
-      if (bad.length) errors.push(`${path}: 함수 식에 쓸 수 없는 이름 ${[...new Set(bad)].join(", ")} (변수는 x 하나, 곱하기는 *, 거듭제곱은 ^)`);
-      if (/[^A-Za-z0-9_+\-*/^().,\s]/.test(el.expr)) errors.push(`${path}: 함수 식에 쓸 수 없는 글자가 있습니다 ('${el.expr}')`);
+      for (const problem of functionExprProblems(el.expr)) errors.push(`${path}: ${problem}`);
       if (!(el.domain[1] > el.domain[0])) errors.push(`${path}: domain 은 [작은 값, 큰 값] 이어야 합니다`);
     }
     if (el.type === "axes" && !(el.x[1] > el.x[0] && el.y[1] > el.y[0])) errors.push(`${path}: x, y 범위는 [작은 값, 큰 값] 이어야 합니다`);
