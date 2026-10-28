@@ -85,8 +85,10 @@
   - 화면: / (시험지 만들기), /archive (보관함), /settings (API 키·모델·월별 요금·비밀번호), /login
   - 배포: Vercel 팀 themonsteredu, 프로젝트 exam-maker (prj_JayN6FC5KzNlcDowvuG0lw1GJafo), 서버 지역 icn1(서울)
     - 주소: https://exam-maker-themonsteredu.vercel.app (팀 기본 보호 "사용자 도메인 말고 모두"라 버셀 로그인한 팀원만 열린다. 그다음 비밀번호 3035)
-    - 깃허브 기본 브랜치가 옛 claude/new-session-65lm7i 라서 Vercel 실서비스 브랜치도 그것이다. 그래서 다른 브랜치는 Ignored Build Step 으로 빌드하지 않고,
-      실서비스 배포는 Vercel MCP create_deployment (gitSource ref claude/lucid-sagan-4tgi0y, target production) 로 직접 한다. 이 브랜치에 push 하면 미리보기 배포가 생긴다
+    - 깃허브 기본 브랜치가 옛 claude/new-session-65lm7i 라서 Vercel 실서비스 브랜치도 그것이다. 그래서 Ignored Build Step
+      ([ "$VERCEL_ENV" != "production" ] || [ "$VERCEL_GIT_COMMIT_REF" != "claude/lucid-sagan-4tgi0y" ]) 로 미리보기와 다른 브랜치는 빌드하지 않고,
+      실서비스 배포는 Vercel MCP create_deployment (gitSource ref claude/lucid-sagan-4tgi0y, target production) 로 직접 한다 (push 만으로는 배포되지 않는다)
+    - 팀 요금제는 무료(Hobby)로 보인다 (청구 내역 없음). Hobby 는 빌드를 한 번에 하나만 한다
     - 시험: 공유 링크(get_access_to_vercel_url) → node <scratchpad>/e2e/deployed-flow.mjs 로 로그인·보관·한글 파일·내려받기·지우기 확인
   - Vercel 환경변수에 비밀값이 없다. 저장 창구(supabase/functions/exam-gateway)는 Vercel OIDC 토큰(프로젝트 exam-maker, production·preview)만 받아들이고,
     로그인 쿠키 서명 열쇠와 API 키 암호화는 창구가 Supabase 서비스 열쇠로부터 만들어 한다. 미들웨어는 쿠키 모양·만료만, 서버 주소가 서명·세션 판까지 확인
