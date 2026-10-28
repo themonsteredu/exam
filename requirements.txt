@@ -1,0 +1,1 @@
+python-hwpx==6.9.0
