@@ -19,7 +19,7 @@ export function appSecret(): string {
   return "dev-only-secret-not-for-production-use-0123456789";
 }
 
-function b64url(bytes: ArrayBuffer | Uint8Array): string {
+export function b64url(bytes: ArrayBuffer | Uint8Array): string {
   const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   let bin = "";
   for (const b of arr) bin += String.fromCharCode(b);
@@ -69,6 +69,22 @@ export async function readSessionToken(token: string | undefined | null, key: st
 /** 미들웨어용: 모양과 만료만 본다 (서명 열쇠가 없어서). 서명은 서버 주소의 requireSession 이 꼭 확인한다 */
 export function peekSessionToken(token: string | undefined | null, now = Date.now()): boolean {
   return parseToken(token, now) !== null;
+}
+
+/** 요청 머리말의 쿠키 하나 */
+export function cookieValue(req: Request, name: string): string | undefined {
+  const header = req.headers.get("cookie") ?? "";
+  for (const part of header.split(";")) {
+    const [k, ...v] = part.trim().split("=");
+    if (k === name) return v.join("=");
+  }
+  return undefined;
+}
+
+export function isHttps(req: Request): boolean {
+  const proto = req.headers.get("x-forwarded-proto");
+  if (proto) return proto.split(",")[0].trim() === "https";
+  return new URL(req.url).protocol === "https:";
 }
 
 /** 응답에 붙일 Set-Cookie 값 */

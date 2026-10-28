@@ -113,7 +113,7 @@ export default function MakePage() {
 
       {ready && !ready.keySaved && (
         <p className="notice error">
-          아직 AI 열쇠(API 키)가 없습니다. <a href="/settings">설정</a>에서 열쇠를 먼저 넣어 주세요.
+          이 기기에는 아직 AI 열쇠(API 키)가 없습니다. <a href="/settings">설정</a>에서 열쇠를 먼저 넣어 주세요.
         </p>
       )}
 

@@ -7,9 +7,10 @@
 // --cached : 이미 읽어 둔 결과(output/ai/*.page.json, *.figures.json)가 있으면 AI 를 다시 부르지 않는다 (요금 없음)
 // --out : 결과 폴더 (모델끼리 견줄 때 모델마다 다른 폴더로. 예: --out=output/ai/haiku --page-model=claude-haiku-5-5)
 // --page-model, --figure-model : 쪽 읽기·그림 읽기에 쓸 모델 (claude-haiku-5-5, claude-sonnet-5-5, claude-opus-5-5, claude-opus-5)
-// --via=<배포한 프로그램 주소 또는 Vercel 공유 링크> : 배포한 프로그램을 거쳐 읽는다. 키는 프로그램 설정에 저장한 것을 쓰므로
-//         이 작업 환경에 키가 없어도 된다 (키를 보지 않는다). 프로그램 비밀번호는 환경변수 EXAM_PASSWORD 로 준다.
-//         쪽 사진은 프로그램 화면과 같이 JPEG 로 보낸다. --page-effort, --figure-effort 는 쓰지 않는다. 요금은 프로그램의 월별 기록에도 남는다
+// --via=<배포한 프로그램 주소 또는 Vercel 공유 링크> : 배포한 프로그램을 거쳐 읽는다. 프로그램 비밀번호는 환경변수 EXAM_PASSWORD 로 준다.
+//         쪽 사진은 프로그램 화면과 같이 JPEG 로 보낸다. --page-effort, --figure-effort 는 쓰지 않는다.
+//         주의: API 키는 기기(브라우저)마다 따로 저장된다 (2026-10-28). 이 스크립트는 로그인할 때 새 기기로 들어가므로
+//         원장님 기기에 넣은 키를 쓰지 못한다 ("이 기기에는 AI 열쇠가 없습니다"). 모델 비교는 프로그램 화면 안에서 하는 방법으로 할 것
 //
 // 결과: output/ai/<이름>.page.json (쪽 읽기 답), <이름>.figures.json (그림 읽기 답), <이름>.exam.json (시험지 JSON),
 //       output/ai/usage.json (이번에 쓴 토큰과 요금)

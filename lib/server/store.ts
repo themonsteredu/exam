@@ -1,15 +1,15 @@
-// 저장소: 설정, 월별 사용 기록, 보관함 문서, 파일, 로그인 쿠키 서명 열쇠, API 키.
+// 저장소: 설정, 월별 사용 기록, 보관함 문서, 파일, 로그인 쿠키 서명 열쇠, 기기마다 따로 둔 API 키와 모델.
 // 배포에서는 Supabase 함수 exam-gateway 를 거친다. Vercel 에는 비밀값이 없다:
 //   Vercel 이 주는 OIDC 토큰(이 프로젝트에서 도는 코드라는 증명)으로 창구에 들어가고,
 //   쿠키 서명 열쇠와 API 키 암호화는 창구가 맡는다 (Vercel 은 Supabase 서비스 열쇠도 갖지 않는다).
 // EXAM_GATEWAY_SECRET 이 있으면 OIDC 대신 그 값으로 들어간다 (이 작업 환경에서 실제 창구를 시험할 때만).
 // EXAM_STORE=local 이면 .data 폴더를 쓴다 (이 작업 환경에서 화면을 시험할 때만).
 
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { getVercelOidcToken } from "@vercel/oidc";
-import { openApiKey, sealApiKey } from "./secrets";
+import { openApiKey, sealApiKey, type SealedKey } from "./secrets";
 import { appSecret } from "./session";
 
 /** 저장 창구 주소 (비밀이 아니다) */
@@ -43,6 +43,8 @@ export type UsageRow = {
   cacheRead: number;
   usd: number;
   docId?: string;
+  /** 어느 열쇠로 쓴 요금인지 묶는 표시 (열쇠의 SHA-256 앞 32자리) */
+  keyTag?: string;
 };
 
 export type MonthUsage = { month: string; calls: number; usd: number };
@@ -55,15 +57,26 @@ export const LOGIN_LIMIT = { ip: 10, all: 50, day: 200 };
 
 export type SignedUpload = { url: string; headers: Record<string, string> };
 
-/** 저장된 API 키 정보 (키 자체는 없다) */
-export type ApiKeyInfo = { saved: boolean; last4?: string; savedAt?: string; broken?: boolean };
+/** 기기에 저장된 API 키 정보 (키 자체는 없다). tag 는 이 열쇠로 쓴 요금을 묶는 표시 */
+export type ApiKeyInfo = { saved: boolean; last4?: string; savedAt?: string; broken?: boolean; tag?: string };
+
+/** 기기 하나의 AI 설정 (열쇠 자체는 없다). models 는 저장된 그대로 (auth.ts 의 pickModels 로 고른다) */
+export type DeviceInfo = { apiKey: ApiKeyInfo; models: unknown };
+
+/** AI 를 부를 때 쓰는 기기 설정 (열쇠 포함. 서버에서만) */
+export type DeviceKey = { key: string | null; broken: boolean; tag: string | null; models: unknown };
+
+/** 기기 값 (lib/server/device.ts 의 deviceTag: SHA-256 16진수) */
+export const DEVICE = /^[0-9a-f]{64}$/;
+const KEY_TAG = /^[0-9a-f]{32}$/;
 
 export interface Store {
   getSettings(keys: string[]): Promise<Record<string, unknown>>;
   setSetting(key: string, value: unknown): Promise<void>;
   deleteSetting(key: string): Promise<void>;
   addUsage(row: UsageRow): Promise<void>;
-  monthlyUsage(months: number): Promise<MonthUsage[]>;
+  /** 열쇠 하나(keyTag)로 쓴 달마다 요금 */
+  monthlyUsage(keyTag: string, months: number): Promise<MonthUsage[]>;
   /** 비밀번호를 확인하기 전에 부른다: 시도를 "틀림" 으로 먼저 적고 허락 여부를 돌려준다 (막히면 적지 않는다) */
   loginBegin(ip: string): Promise<LoginGate>;
   /** 비밀번호가 맞았을 때: 먼저 적은 시도를 "맞음" 으로 바꾼다 */
@@ -79,11 +92,18 @@ export interface Store {
   downloadUrl(filePath: string, downloadName?: string): Promise<string>;
   /** 로그인 쿠키 서명 열쇠 */
   sessionKey(): Promise<string>;
-  apiKeyInfo(): Promise<ApiKeyInfo>;
+  /** 기기 하나의 AI 설정 (device 는 DEVICE 모양) */
+  deviceInfo(device: string): Promise<DeviceInfo>;
   /** AI 를 부를 때만 쓴다. 풀 수 없으면 broken */
-  getApiKey(): Promise<{ key: string | null; broken: boolean }>;
-  setApiKey(key: string): Promise<ApiKeyInfo>;
-  deleteApiKey(): Promise<void>;
+  getApiKey(device: string): Promise<DeviceKey>;
+  setApiKey(device: string, key: string): Promise<ApiKeyInfo>;
+  deleteApiKey(device: string): Promise<void>;
+  setModels(device: string, models: { page: string; figure: string }): Promise<void>;
+}
+
+/** 같은 열쇠의 요금을 묶는 표시 (supabase/functions/exam-gateway 와 같은 계산). 열쇠를 되살릴 수 없다 */
+export function keyTagOf(key: string): string {
+  return createHash("sha256").update(`exam-key:${key}`).digest("hex").slice(0, 32);
 }
 
 /** 파일 경로: originals/<문서 id>/…, generated/<문서 id>/… 만 허용 (다른 앱 파일에 닿지 않게).
@@ -156,8 +176,8 @@ class GatewayStore implements Store {
   async addUsage(row: UsageRow) {
     await this.call("usage.add", { row });
   }
-  monthlyUsage(months: number) {
-    return this.call<MonthUsage[]>("usage.monthly", { months });
+  monthlyUsage(keyTag: string, months: number) {
+    return this.call<MonthUsage[]>("usage.monthly", { keyTag, months });
   }
   loginBegin(ip: string) {
     return this.call<LoginGate>("login.begin", { ip });
@@ -189,24 +209,30 @@ class GatewayStore implements Store {
   async sessionKey() {
     return (await this.call<{ key: string }>("session.key")).key;
   }
-  apiKeyInfo() {
-    return this.call<ApiKeyInfo>("apikey.info");
+  deviceInfo(device: string) {
+    return this.call<DeviceInfo>("device.info", { device });
   }
-  getApiKey() {
-    return this.call<{ key: string | null; broken: boolean }>("apikey.get");
+  getApiKey(device: string) {
+    return this.call<DeviceKey>("apikey.get", { device });
   }
-  setApiKey(key: string) {
-    return this.call<ApiKeyInfo>("apikey.set", { key });
+  setApiKey(device: string, key: string) {
+    return this.call<ApiKeyInfo>("apikey.set", { device, key });
   }
-  async deleteApiKey() {
-    await this.call("apikey.delete");
+  async deleteApiKey(device: string) {
+    await this.call("apikey.delete", { device });
+  }
+  async setModels(device: string, models: { page: string; figure: string }) {
+    await this.call("models.set", { device, models });
   }
 }
 
 // ------------------------------------------------------------------ 이 작업 환경용 (.data 폴더)
 
+type LocalDevice = { sealed?: SealedKey; tag?: string; models?: unknown };
+
 type LocalData = {
   settings: Record<string, unknown>;
+  devices?: Record<string, LocalDevice>;
   usage: (UsageRow & { at: string })[];
   logins: { id?: number; at: string; ok: boolean; ip: string }[];
   docs: DocRow[];
@@ -270,10 +296,11 @@ class LocalStore implements Store {
       d.usage.push({ ...row, at: new Date().toISOString() });
     });
   }
-  async monthlyUsage(months: number) {
+  async monthlyUsage(keyTag: string, months: number) {
     const d = await this.load();
     const byMonth = new Map<string, MonthUsage>();
     for (const u of d.usage) {
+      if (!KEY_TAG.test(keyTag) || u.keyTag !== keyTag) continue;
       const month = u.at.slice(0, 7);
       const m = byMonth.get(month) ?? { month, calls: 0, usd: 0 };
       m.calls++;
@@ -353,23 +380,48 @@ class LocalStore implements Store {
   async sessionKey() {
     return appSecret();
   }
-  async apiKeyInfo(): Promise<ApiKeyInfo> {
-    const sealed = (await this.load()).settings.anthropic_key as { last4?: string; saved_at?: string } | undefined;
-    if (!sealed) return { saved: false };
-    return { saved: true, last4: sealed.last4, savedAt: sealed.saved_at, broken: !openApiKey(sealed) };
+  private async device(device: string): Promise<LocalDevice> {
+    if (!DEVICE.test(device)) throw new Error("기기 값이 이상합니다");
+    return (await this.load()).devices?.[device] ?? {};
   }
-  async getApiKey() {
-    const sealed = (await this.load()).settings.anthropic_key;
-    const key = sealed ? openApiKey(sealed) : null;
-    return { key, broken: !!sealed && !key };
+  private changeDevice(device: string, fn: (v: LocalDevice) => void): Promise<void> {
+    if (!DEVICE.test(device)) throw new Error("기기 값이 이상합니다");
+    return this.change((d) => {
+      d.devices ??= {};
+      fn((d.devices[device] ??= {}));
+    });
   }
-  async setApiKey(key: string) {
+  async deviceInfo(device: string): Promise<DeviceInfo> {
+    const v = await this.device(device);
+    const apiKey: ApiKeyInfo = v.sealed
+      ? { saved: true, last4: v.sealed.last4, savedAt: v.sealed.saved_at, broken: !openApiKey(v.sealed), tag: v.tag }
+      : { saved: false };
+    return { apiKey, models: v.models ?? null };
+  }
+  async getApiKey(device: string): Promise<DeviceKey> {
+    const v = await this.device(device);
+    const key = v.sealed ? openApiKey(v.sealed) : null;
+    return { key, broken: !!v.sealed && !key, tag: v.tag ?? null, models: v.models ?? null };
+  }
+  async setApiKey(device: string, key: string) {
     const sealed = sealApiKey(key);
-    await this.setSetting("anthropic_key", sealed);
-    return { saved: true, last4: sealed.last4, savedAt: sealed.saved_at, broken: false };
+    const tag = keyTagOf(key);
+    await this.changeDevice(device, (v) => {
+      v.sealed = sealed;
+      v.tag = tag;
+    });
+    return { saved: true, last4: sealed.last4, savedAt: sealed.saved_at, broken: false, tag };
   }
-  async deleteApiKey() {
-    await this.deleteSetting("anthropic_key");
+  async deleteApiKey(device: string) {
+    await this.changeDevice(device, (v) => {
+      delete v.sealed;
+      delete v.tag;
+    });
+  }
+  async setModels(device: string, models: { page: string; figure: string }) {
+    await this.changeDevice(device, (v) => {
+      v.models = models;
+    });
   }
 }
 

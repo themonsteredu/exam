@@ -1,8 +1,8 @@
-// 설정 화면에 보여 줄 것: API 키 저장 여부(끝 4자리만), 고른 모델, 달마다 쓴 AI 요금.
-// API 키 자체는 절대 돌려주지 않는다.
-import { requireSession } from "@/lib/server/auth";
-import { isModel, modelFor, type Pass } from "@/lib/ai/claude";
-import { getStore } from "@/lib/server/store";
+// 설정 화면에 보여 줄 것: 이 기기의 API 키 저장 여부(끝 4자리만), 이 기기에서 고른 모델, 이 열쇠로 달마다 쓴 AI 요금.
+// API 키 자체는 절대 돌려주지 않는다. AI 열쇠와 모델은 기기(브라우저)마다 따로다 (lib/server/device.ts).
+import { pickModels, requireSession } from "@/lib/server/auth";
+import { deviceOf } from "@/lib/server/device";
+import { getStore, type DeviceInfo } from "@/lib/server/store";
 import { KRW_PER_USD, MODEL_INFO } from "@/lib/ai/models-info";
 
 export const runtime = "nodejs";
@@ -12,14 +12,13 @@ export async function GET(req: Request) {
   if (denied) return denied;
   try {
     const store = getStore();
-    const [info, s, usage] = await Promise.all([store.apiKeyInfo(), store.getSettings(["models"]), store.monthlyUsage(12)]);
-    const saved = (s.models ?? {}) as Partial<Record<Pass, unknown>>;
+    const device = await deviceOf(req);
+    const info: DeviceInfo = device ? await store.deviceInfo(device) : { apiKey: { saved: false }, models: null };
+    const key = info.apiKey;
+    const usage = key.saved && key.tag ? await store.monthlyUsage(key.tag, 12) : [];
     return Response.json({
-      apiKey: info.saved ? { saved: true, last4: info.last4 ?? "", savedAt: info.savedAt ?? "", broken: !!info.broken } : { saved: false },
-      models: {
-        page: isModel(saved.page) ? saved.page : modelFor("page"),
-        figure: isModel(saved.figure) ? saved.figure : modelFor("figure"),
-      },
+      apiKey: key.saved ? { saved: true, last4: key.last4 ?? "", savedAt: key.savedAt ?? "", broken: !!key.broken } : { saved: false },
+      models: pickModels(info.models),
       modelOptions: MODEL_INFO,
       usage,
       krwPerUsd: KRW_PER_USD,

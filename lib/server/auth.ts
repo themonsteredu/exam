@@ -1,8 +1,11 @@
 // 서버 주소에서 쓰는 로그인 확인과 설정 읽기.
 
 import { isModel, modelFor, type Pass, type Usage } from "@/lib/ai/claude";
-import { readSessionToken, SESSION_COOKIE } from "./session";
+import { deviceOf } from "./device";
+import { cookieValue, readSessionToken, SESSION_COOKIE } from "./session";
 import { getStore, LOGIN_LIMIT, type LoginGate, type UsageRow } from "./store";
+
+export { isHttps } from "./session";
 
 let cachedVersion: { value: number; at: number } | null = null;
 let cachedKey: { value: string; at: number } | null = null;
@@ -27,15 +30,6 @@ export async function sessionVersion(fresh = false): Promise<number> {
 
 export function forgetSessionVersion() {
   cachedVersion = null;
-}
-
-function cookieValue(req: Request, name: string): string | undefined {
-  const header = req.headers.get("cookie") ?? "";
-  for (const part of header.split(";")) {
-    const [k, ...v] = part.trim().split("=");
-    if (k === name) return v.join("=");
-  }
-  return undefined;
 }
 
 /** 로그인되어 있으면 null, 아니면 401 응답. 쿠키 서명과 세션 판을 모두 본다 (미들웨어는 모양과 만료만 본다) */
@@ -69,31 +63,31 @@ export function clientIp(req: Request): string {
   return (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() || req.headers.get("x-real-ip") || "unknown";
 }
 
-export function isHttps(req: Request): boolean {
-  const proto = req.headers.get("x-forwarded-proto");
-  if (proto) return proto.split(",")[0].trim() === "https";
-  return new URL(req.url).protocol === "https:";
-}
+export type AiConfig = { apiKey: string | null; keyBroken: boolean; keyTag: string | null; models: Record<Pass, string> };
 
-export type AiConfig = { apiKey: string | null; keyBroken: boolean; models: Record<Pass, string> };
-
-/** 설정에 저장한 API 키(저장 창구가 풀어 준다)와 모델 */
-export async function aiConfig(): Promise<AiConfig> {
-  const store = getStore();
-  const [apiKey, s] = await Promise.all([store.getApiKey(), store.getSettings(["models"])]);
-  const saved = (s.models ?? {}) as Partial<Record<Pass, unknown>>;
+/** 저장된 모델 고르기 (없거나 모르는 모델이면 기본값) */
+export function pickModels(saved: unknown): Record<Pass, string> {
+  const s = (saved ?? {}) as Partial<Record<Pass, unknown>>;
   return {
-    apiKey: apiKey.key,
-    keyBroken: apiKey.broken,
-    models: {
-      page: isModel(saved.page) ? saved.page : modelFor("page"),
-      figure: isModel(saved.figure) ? saved.figure : modelFor("figure"),
-    },
+    page: isModel(s.page) ? s.page : modelFor("page"),
+    figure: isModel(s.figure) ? s.figure : modelFor("figure"),
   };
 }
 
-/** AI 사용량을 월별 요금 기록에 넣는다. 기록이 실패해도 읽기 결과는 돌려준다 */
-export async function logUsage(kind: UsageRow["kind"], usage: Usage | undefined, docId?: string): Promise<void> {
+/** 이 기기(브라우저)에 저장한 API 키(저장 창구가 풀어 준다)와 모델. 기기 표시가 없으면 키 없음 */
+export async function aiConfig(req: Request): Promise<AiConfig> {
+  const device = await deviceOf(req);
+  const saved = device ? await getStore().getApiKey(device) : null;
+  return {
+    apiKey: saved?.key ?? null,
+    keyBroken: !!saved?.broken,
+    keyTag: saved?.tag ?? null,
+    models: pickModels(saved?.models),
+  };
+}
+
+/** AI 사용량을 월별 요금 기록에 넣는다 (열쇠별로 묶는 표시와 함께). 기록이 실패해도 읽기 결과는 돌려준다 */
+export async function logUsage(kind: UsageRow["kind"], usage: Usage | undefined, docId: string | undefined, keyTag: string | null): Promise<void> {
   if (!usage) return;
   try {
     await getStore().addUsage({
@@ -105,6 +99,7 @@ export async function logUsage(kind: UsageRow["kind"], usage: Usage | undefined,
       cacheRead: usage.cacheRead,
       usd: usage.usd,
       docId,
+      keyTag: keyTag ?? undefined,
     });
   } catch (err) {
     console.error("사용량 기록 실패", err);

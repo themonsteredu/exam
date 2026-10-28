@@ -35,7 +35,10 @@ export default function SettingsPage() {
     <main className="page" style={{ maxWidth: 820 }}>
       <div className="page-head">
         <h1>설정</h1>
-        <p className="lead">AI 열쇠(API 키), 쓸 AI 모델, 달마다 쓴 AI 요금, 비밀번호를 여기서 정합니다.</p>
+        <p className="lead">
+          AI 열쇠(API 키), 쓸 AI 모델, 달마다 쓴 AI 요금, 비밀번호를 여기서 정합니다. AI 열쇠와 모델은 이 기기(이 브라우저)에만 따로 저장되므로, 여러
+          사람이 함께 써도 AI 요금은 각자 자기 열쇠로 나갑니다.
+        </p>
       </div>
       {loadError && <p className="notice error">{loadError}</p>}
       {s && (
@@ -72,7 +75,7 @@ function KeyCard({ s, onChange }: { s: Settings; onChange: () => void }) {
   }
 
   async function remove() {
-    if (!confirm("저장된 API 키를 지울까요? 지우면 AI 읽기를 할 수 없습니다.")) return;
+    if (!confirm("이 기기에 저장된 API 키를 지울까요? 지우면 이 기기에서 AI 읽기를 할 수 없습니다.")) return;
     setBusy(true);
     try {
       await api("/api/settings/api-key", { method: "DELETE" });
@@ -97,11 +100,12 @@ function KeyCard({ s, onChange }: { s: Settings; onChange: () => void }) {
           </p>
         )
       ) : (
-        <p className="notice">아직 열쇠가 없습니다. 열쇠를 넣어야 AI 가 시험지를 읽을 수 있습니다.</p>
+        <p className="notice">이 기기에는 아직 열쇠가 없습니다. 열쇠를 넣어야 AI 가 시험지를 읽을 수 있습니다.</p>
       )}
       <p className="muted small">
         Claude 콘솔(platform.claude.com)의 API Keys 화면에서 만든 열쇠를 붙여 넣으세요. 저장하기 전에 맞는 열쇠인지 확인합니다(요금 없음).
-        열쇠는 서버에 암호로 잠가 두고, 화면에는 끝 네 자리만 보입니다.
+        넣은 열쇠는 이 기기(이 브라우저)에서만 쓰입니다. 다른 사람이나 다른 기기는 각자 자기 열쇠를 넣으면 되고, AI 요금은 그 열쇠의 주인에게
+        나갑니다. 열쇠는 서버에 암호로 잠가 두고, 화면에는 끝 네 자리만 보입니다. 브라우저의 방문 기록(쿠키)을 지우면 열쇠를 다시 넣어야 합니다.
       </p>
       <label className="field">
         새 열쇠
@@ -153,7 +157,9 @@ function ModelCard({ s, onChange }: { s: Settings; onChange: () => void }) {
   return (
     <section className="card">
       <h2>AI 모델</h2>
-      <p className="muted small">쪽 읽기(글·수식 옮기기)와 그림 읽기(그림을 그림 명령으로)에 쓸 모델을 따로 고를 수 있습니다. 비싼 모델일수록 정확합니다.</p>
+      <p className="muted small">
+        이 기기에서 쪽 읽기(글·수식 옮기기)와 그림 읽기(그림을 그림 명령으로)에 쓸 모델을 따로 고를 수 있습니다. 비싼 모델일수록 정확합니다.
+      </p>
       <div className="stack">
         <label className="field">
           쪽 읽기
@@ -196,7 +202,7 @@ function UsageCard({ s }: { s: Settings }) {
   const now = s.usage.find((u) => u.month === thisMonth);
   return (
     <section className="card">
-      <h2>달마다 쓴 AI 요금</h2>
+      <h2>달마다 쓴 AI 요금 (이 열쇠)</h2>
       <p>
         이번 달: <strong>{won(now?.usd ?? 0, s.krwPerUsd)}</strong> <span className="muted small">(AI 를 {now?.calls ?? 0}번 불렀습니다)</span>
       </p>
@@ -224,10 +230,11 @@ function UsageCard({ s }: { s: Settings }) {
           </table>
         </div>
       ) : (
-        <p className="muted">아직 기록이 없습니다.</p>
+        <p className="muted">{s.apiKey.saved ? "아직 기록이 없습니다." : "열쇠를 넣으면 그 열쇠로 쓴 요금이 여기에 나옵니다."}</p>
       )}
       <p className="muted small">
-        이 프로그램이 AI 를 부를 때마다 적은 어림값입니다 (1달러 {s.krwPerUsd.toLocaleString("ko-KR")}원으로 계산). 실제 청구액은 Claude 콘솔의 Usage 화면에서 볼 수 있습니다.
+        이 프로그램이 이 기기의 열쇠로 AI 를 부를 때마다 적은 어림값입니다 (1달러 {s.krwPerUsd.toLocaleString("ko-KR")}원으로 계산). 같은 열쇠를 다른
+        기기에도 넣었다면 함께 더해집니다. 실제 청구액은 Claude 콘솔의 Usage 화면에서 볼 수 있습니다.
       </p>
     </section>
   );
@@ -253,7 +260,7 @@ function PasswordCard() {
       setCurrent("");
       setNext("");
       setAgain("");
-      setMsg({ ok: true, text: "비밀번호를 바꿨습니다. 다른 기기에서는 새 비밀번호로 다시 들어가야 합니다." });
+      setMsg({ ok: true, text: "비밀번호를 바꿨습니다. 다른 기기와 다른 사람은 새 비밀번호로 다시 들어가야 합니다." });
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -264,7 +271,10 @@ function PasswordCard() {
   return (
     <form className="card" onSubmit={save}>
       <h2>비밀번호 바꾸기</h2>
-      <p className="muted small">숫자 네 자리는 남이 짐작하기 쉽습니다. 더 긴 비밀번호로 바꾸면 더 안전합니다.</p>
+      <p className="muted small">
+        비밀번호는 이 프로그램을 쓰는 모든 사람이 함께 씁니다. 바꾸면 모두 새 비밀번호로 다시 들어와야 합니다. 숫자 네 자리는 남이 짐작하기 쉬우니
+        더 긴 비밀번호로 바꾸면 더 안전합니다.
+      </p>
       <label className="field">
         지금 비밀번호
         <input type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} />
