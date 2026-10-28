@@ -40,6 +40,9 @@ export type MakeResult = {
   saveProblem?: string;
 };
 
+/** 한글 파일 만들기에 보낼 시험지 데이터(그림 PNG 포함)의 상한: Vercel 요청 한도 4.5MB 와 Python 함수의 4.4MB 보다 조금 작게 */
+const MAX_HWPX_BODY = 4_300_000;
+
 function sumUsd(u?: Usage) {
   return u?.usd ?? 0;
 }
@@ -213,9 +216,21 @@ async function run(
   // 3) 합치기 → 그림 PNG
   const exam = assembleExam(pages, figures);
   if (o.title) exam.title = o.title;
+  // 읽은 결과를 먼저 보관한다 (뒤에서 한글 파일 만들기가 실패해도 요금을 낸 읽기 결과는 남게)
+  await patchJson(`/api/documents/${docId}`, { exam_json: stripPngs(exam), cost_usd: progress.usd }).catch(() => undefined);
   tell({ step: "draw", message: "그림을 그리는 중입니다." });
-  const rendered = await renderExamFigures(o.JXG, exam);
-  const withPng = attachFigurePngs(exam, rendered);
+  let rendered = await renderExamFigures(o.JXG, exam);
+  let body = JSON.stringify(attachFigurePngs(exam, rendered));
+  const bytes = (text: string) => new Blob([text]).size; // 한글은 글자 하나가 3바이트
+  if (bytes(body) > MAX_HWPX_BODY) {
+    // 그림이 아주 많으면 서버 한 번 요청 한도(4.5MB)를 넘는다 → 그림을 한도 안의 가장 낮은 해상도(300dpi)로 다시 그린다
+    rendered = await renderExamFigures(o.JXG, exam, 300);
+    body = JSON.stringify(attachFigurePngs(exam, rendered));
+  }
+  if (bytes(body) > MAX_HWPX_BODY) {
+    throw new ApiError("그림이 너무 많아 한글 파일을 한 번에 만들 수 없습니다. PDF 를 몇 쪽씩 나눠서 다시 올려 주세요.", 413);
+  }
+  const withPng = JSON.parse(body);
   const failedFigures = rendered.filter((r) => !r.png).length;
 
   // 4) 한글 파일
@@ -224,7 +239,7 @@ async function run(
   const res = await fetch(o.hwpxEndpoint, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(withPng),
+    body,
     credentials: "same-origin",
     signal,
   });

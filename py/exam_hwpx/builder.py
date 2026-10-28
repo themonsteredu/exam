@@ -202,7 +202,7 @@ class ExamBuilder:
 
     def build_header_table(self):
         """맨 위 제목 상자 + 응시대상·실시 일자 줄 (1단)."""
-        t, h = self.tpl, self.exam["header"]
+        t, h = self.tpl, self.exam.get("header") or {}
         thick, thin = t["border"]["thick"], t["border"]["thin"]
         first = self.doc.paragraphs[0]
         table = first.add_table(2, 3, width=self.text_width(), border_fill_id_ref=self.border(thick, thick, thick, thick))
@@ -214,8 +214,10 @@ class ExamBuilder:
         table.set_cell_border_fill(1, 1, self.border(thin, thick, thick, thick))
         table.set_cell_border_fill(1, 2, self.border(thick, thick, thick, thick))
         heading = t["fonts"]["heading"]
+        # 원본에 제목 상자가 없던 학습지·문제 사진이면 header 가 비어 있다 → 화면에서 적은 시험지 제목을 쓴다
+        title = h.get("title") or self.exam.get("title") or ""
         cells = [
-            ((0, 0), h["title"], t["sizes"]["title"], True, heading),
+            ((0, 0), title, t["sizes"]["title"], True, heading),
             ((1, 0), h.get("target_label", "응시대상"), t["sizes"]["header_row"], False, heading),
             ((1, 1), h.get("target", ""), t["sizes"]["header_row"], False, heading),
             ((1, 2), h.get("date", ""), t["sizes"]["header_row"], False, heading),
@@ -446,7 +448,8 @@ class ExamBuilder:
             self.build_bogi(item["bogi"], no)
         for i, choice in enumerate(item.get("choices", [])):
             cp = self.doc.add_paragraph("")
-            cp.add_run(f"{CHOICE_MARKS[i]}  ", char_pr_id_ref=self.run_style(size=t["sizes"]["choice"]))
+            mark = CHOICE_MARKS[i] if i < len(CHOICE_MARKS) else f"({i + 1})"
+            cp.add_run(f"{mark}  ", char_pr_id_ref=self.run_style(size=t["sizes"]["choice"]))
             self.add_pieces(cp, choice, size=t["sizes"]["choice"], where=f"{no}번 선택지 {i + 1}")
             self.para_format(cp, alignment="LEFT", line_spacing_percent=t["line_spacing"]["choice"],
                              indent_left_mm=0, spacing_before_pt=4 if i == 0 else 0)
@@ -537,7 +540,7 @@ class ExamBuilder:
         self.build_footer()
         report = self.doc.validate()
         if not getattr(report, "ok", True):
-            self.warnings.append(f"검사 결과: {report}")
+            self.warnings.append(f"검사 결과: {str(report)[:300]}")
         return postprocess(self.doc.to_bytes())
 
 

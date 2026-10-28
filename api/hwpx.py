@@ -21,6 +21,19 @@ sys.path.insert(0, os.path.join(ROOT, "py"))
 from exam_hwpx.service import build_from_exam, session_version_of  # noqa: E402
 
 MAX_BODY = 4_400_000  # Vercel 요청 본문 한도(4.5MB)보다 조금 작게
+MAX_WARNINGS_HEADER = 6000  # 알림 머리말 크기 상한 (머리말 크기 한도를 넘지 않게)
+
+
+def warnings_header(warnings: list[str]) -> str:
+    """알림을 머리말에 담는다. 많으면 앞의 것만 줄여서 담고 나머지는 개수만 (머리말이 너무 커지지 않게)"""
+    shown = [w if len(w) <= 150 else w[:147] + "..." for w in warnings[:20]]
+    while True:
+        rest = len(warnings) - len(shown)
+        items = shown + ([f"외 {rest}개"] if rest else [])
+        value = urllib.parse.quote(json.dumps(items, ensure_ascii=False))
+        if len(value) <= MAX_WARNINGS_HEADER or not shown:
+            return value
+        shown = shown[:-1]
 GATEWAY_URL = os.environ.get("EXAM_GATEWAY_URL") or "https://vypnobpmyadtcvxhtagn.supabase.co/functions/v1/exam-gateway"
 # 이 작업 환경 시험(EXAM_STORE=local)에서만 APP_SECRET 을 서명 열쇠로 쓴다 (Next 의 LocalStore 와 같은 조건)
 LOCAL_TEST = os.environ.get("EXAM_STORE") == "local" and bool(os.environ.get("APP_SECRET"))
@@ -114,7 +127,7 @@ class handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("content-type", "application/hwp+zip")
         self.send_header("content-length", str(len(data)))
-        self.send_header("x-hwpx-warnings", urllib.parse.quote(json.dumps(warnings, ensure_ascii=False)))
+        self.send_header("x-hwpx-warnings", warnings_header(warnings))
         self.end_headers()
         self.wfile.write(data)
 
