@@ -1,0 +1,274 @@
+"use client";
+
+import { DragEvent, useEffect, useRef, useState } from "react";
+import { api, patchJson, postJson, saveBlob, won } from "@/lib/client/api";
+import { makeExam, type MakeResult, type Progress, type Step } from "@/lib/client/make-exam";
+import { loadFigureFonts } from "@/lib/figure/engine";
+import { piecesToHtml } from "@/lib/ai/latex-view";
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+const STEPS: { key: Step; label: string }[] = [
+  { key: "upload", label: "원본 보관" },
+  { key: "page", label: "쪽 읽기" },
+  { key: "figure", label: "그림 읽기" },
+  { key: "draw", label: "그림 그리기" },
+  { key: "hwpx", label: "한글 파일" },
+  { key: "save", label: "보관함 저장" },
+];
+
+type Ready = { keySaved: boolean; hwpxEndpoint: string; krwPerUsd: number };
+
+export default function MakePage() {
+  const [ready, setReady] = useState<Ready | null>(null);
+  const [JXG, setJXG] = useState<any>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [title, setTitle] = useState("");
+  const [over, setOver] = useState(false);
+  const [progress, setProgress] = useState<Progress | null>(null);
+  const [result, setResult] = useState<MakeResult | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const abort = useRef<AbortController | null>(null);
+  const input = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const s = await api<any>("/api/settings");
+        setReady({ keySaved: !!s.apiKey?.saved && !s.apiKey?.broken, hwpxEndpoint: s.hwpxEndpoint, krwPerUsd: s.krwPerUsd });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+      await loadFigureFonts();
+      const mod: any = await import("jsxgraph");
+      setJXG(mod.default || mod.JXG || mod);
+    })();
+  }, []);
+
+  function choose(list: FileList | null) {
+    if (!list || !list.length) return;
+    const picked = [...list];
+    setFiles(picked);
+    setResult(null);
+    setError("");
+    if (!title) setTitle(picked[0].name.replace(/\.[^.]+$/, ""));
+  }
+
+  function onDrop(e: DragEvent) {
+    e.preventDefault();
+    setOver(false);
+    choose(e.dataTransfer.files);
+  }
+
+  async function start() {
+    if (!files.length || !JXG || !ready) return;
+    setBusy(true);
+    setError("");
+    setResult(null);
+    const controller = new AbortController();
+    abort.current = controller;
+    let docId: string | null = null;
+    try {
+      docId = (await postJson<{ doc: { id: string } }>("/api/documents", { title })).doc.id;
+      const out = await makeExam({
+        files,
+        title: title.trim() || "시험지",
+        docId,
+        JXG,
+        hwpxEndpoint: ready.hwpxEndpoint,
+        onProgress: setProgress,
+        signal: controller.signal,
+      });
+      setResult(out);
+      saveBlob(out.hwpx, out.fileName);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
+      if (docId) await patchJson(`/api/documents/${docId}`, { status: "failed", note: msg.slice(0, 500) }).catch(() => undefined);
+    } finally {
+      setBusy(false);
+      abort.current = null;
+    }
+  }
+
+  const stepIndex = progress ? STEPS.findIndex((s) => s.key === progress.step) : -1;
+  const pct = result
+    ? 100
+    : progress
+    ? Math.round(
+        (100 * (progress.pagesDone + progress.figuresDone + (stepIndex >= 3 ? 1 : 0) + (result ? 1 : 0))) /
+          Math.max(1, progress.pagesTotal + progress.figuresTotal + 2),
+      )
+    : 0;
+
+  return (
+    <main className="page" style={{ maxWidth: 900 }}>
+      <div className="page-head">
+        <h1>시험지 만들기</h1>
+        <p className="lead">시험지 PDF 나 사진을 올리면 AI 가 읽어서 학교 양식의 한글 파일로 만들어 줍니다. 원본과 만든 파일은 보관함에 저장됩니다.</p>
+      </div>
+
+      {ready && !ready.keySaved && (
+        <p className="notice error">
+          아직 AI 열쇠(API 키)가 없습니다. <a href="/settings">설정</a>에서 열쇠를 먼저 넣어 주세요.
+        </p>
+      )}
+
+      <section className="card">
+        <label className="field">
+          시험지 제목
+          <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="예: 2학년 2학기 중간고사" disabled={busy} />
+        </label>
+        <div
+          className={`drop${over ? " over" : ""}`}
+          onClick={() => input.current?.click()}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setOver(true);
+          }}
+          onDragLeave={() => setOver(false)}
+          onDrop={onDrop}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && input.current?.click()}
+        >
+          <input
+            ref={input}
+            type="file"
+            accept="application/pdf,image/*"
+            multiple
+            onChange={(e) => choose(e.target.files)}
+            disabled={busy}
+          />
+          <strong>PDF 나 사진을 여기에 끌어 놓거나 눌러서 고르세요</strong>
+          <span className="muted small">사진은 여러 장을 한꺼번에 고를 수 있습니다. 고른 순서대로 1쪽, 2쪽이 됩니다.</span>
+        </div>
+        {files.length > 0 && (
+          <ul className="files small">
+            {files.map((f) => (
+              <li key={f.name + f.size}>
+                {f.name} <span className="muted">({(f.size / 1024 / 1024).toFixed(1)}MB)</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="row">
+          <button className="primary" type="button" onClick={start} disabled={busy || !files.length || !JXG || !ready?.keySaved}>
+            {busy ? "만드는 중" : "한글 파일 만들기"}
+          </button>
+          {busy && (
+            <button type="button" onClick={() => abort.current?.abort()}>
+              멈추기
+            </button>
+          )}
+          {!JXG && <span className="muted small">그림 도구를 불러오는 중입니다.</span>}
+        </div>
+      </section>
+
+      {progress && (
+        <section className="card" aria-live="polite">
+          <h2>진행 상황</h2>
+          <div className="bar" aria-hidden>
+            <span style={{ width: `${pct}%` }} />
+          </div>
+          <ul className="progress-list">
+            {STEPS.map((s, i) => (
+              <li key={s.key} className={i < stepIndex || result ? "done" : i === stepIndex ? "now" : ""}>
+                <span className="state">{i < stepIndex || result ? "끝" : i === stepIndex ? "하는 중" : "기다림"}</span>
+                <span>
+                  {s.label}
+                  {s.key === "page" && progress.pagesTotal > 0 && ` ${progress.pagesDone}/${progress.pagesTotal}쪽`}
+                  {s.key === "figure" && progress.figuresTotal > 0 && ` ${progress.figuresDone}/${progress.figuresTotal}개`}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="muted small">
+            {busy ? progress.message : result ? "다 됐습니다." : ""} 지금까지 AI 요금: 약 {won(progress.usd, ready?.krwPerUsd)}
+          </p>
+        </section>
+      )}
+
+      {error && (
+        <p className="notice error" role="alert">
+          {error}
+          {error.includes("열쇠") && (
+            <>
+              {" "}
+              <a href="/settings">설정으로 가기</a>
+            </>
+          )}
+        </p>
+      )}
+
+      {result && <ResultView result={result} rate={ready?.krwPerUsd} />}
+    </main>
+  );
+}
+
+function ResultView({ result, rate }: { result: MakeResult; rate?: number }) {
+  const items = (result.exam.sections ?? []).flatMap((s: any) => (s.items ?? []).map((it: any) => ({ ...it, _section: s.title })));
+  return (
+    <section className="card">
+      <h2>다 만들었습니다</h2>
+      <p>
+        문항 {items.length}개를 옮겼습니다. 한글 파일을 내려받았고 보관함에도 저장했습니다. 이번 AI 요금은 약 {won(result.usd, rate)} 입니다.
+      </p>
+      {(result.unsure > 0 || result.failedFigures > 0) && (
+        <p className="notice error">
+          {result.unsure > 0 && `AI 가 확신이 낮다고 표시한 곳이 ${result.unsure}군데 있습니다. `}
+          {result.failedFigures > 0 && `그리지 못한 그림이 ${result.failedFigures}개 있어 빈 자리로 넣었습니다. `}
+          아래에서 붉은 테두리 문항을 원본과 견주어 확인해 주세요.
+        </p>
+      )}
+      {result.warnings.length > 0 && (
+        <details>
+          <summary>한글 파일 알림 {result.warnings.length}개</summary>
+          <ul className="small">
+            {result.warnings.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+      <div className="row">
+        <button className="primary" type="button" onClick={() => saveBlob(result.hwpx, result.fileName)}>
+          한글 파일 다시 내려받기
+        </button>
+      </div>
+      {result.exam.unsure?.length > 0 && <p className="muted small">쪽 전체: {result.exam.unsure.join(" / ")}</p>}
+      <div className="items">
+        {items.map((it: any, i: number) => (
+          <article key={i} className={`item-card${it.unsure?.length || it.figure?.render_error ? " flag" : ""}`}>
+            <div className="stem">
+              <strong>{it.label ?? `${it.no}.`}</strong> <span dangerouslySetInnerHTML={{ __html: piecesToHtml(it.stem) }} />
+              {it.points ? <span className="muted"> [{it.points}점]</span> : null}
+            </div>
+            {it.figure?.png && <img className="figure" src={`data:image/png;base64,${it.figure.png}`} alt={`${it.no}번 그림`} />}
+            {it.figure?.render_error && <p className="notice error small">그림을 그리지 못했습니다: {it.figure.render_error}</p>}
+            {it.bogi?.length > 0 && (
+              <div className="small">
+                &lt;보기&gt;{" "}
+                {it.bogi.map((line: any, j: number) => (
+                  <div key={j} dangerouslySetInnerHTML={{ __html: piecesToHtml(line) }} />
+                ))}
+              </div>
+            )}
+            {it.choices?.length > 0 && (
+              <div className="choices">
+                {it.choices.map((c: any, j: number) => (
+                  <span key={j}>
+                    {"①②③④⑤⑥⑦⑧"[j]} <span dangerouslySetInnerHTML={{ __html: piecesToHtml(c) }} />
+                  </span>
+                ))}
+              </div>
+            )}
+            {it.unsure?.length > 0 && <p className="muted small">확인할 곳: {it.unsure.join(" / ")}</p>}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+

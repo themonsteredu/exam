@@ -6,7 +6,7 @@ import type { BetaMessageParam } from "@anthropic-ai/sdk/resources/beta/messages
 import { z } from "zod";
 import { checkFigureSpec } from "@/lib/figure/validate";
 import type { FigureSpec, PointRef } from "@/lib/figure/types";
-import { addUsage, assistantTurn, callClaude, extractJson, type Effort, type Usage } from "./claude";
+import { addUsage, assistantTurn, callClaude, extractJson, modelFor, ReadError, type Effort, type Usage } from "./claude";
 import type { Piece, Region } from "./page-schema";
 import { FIGURE_SYSTEM, figureRepairText, figureUserText, piecesToText } from "./prompts";
 import type { ImageInput } from "./read-page";
@@ -58,8 +58,9 @@ export type FigureContext = {
 export async function readFigure(
   image: ImageInput,
   item: FigureContext,
-  o: { effort?: Effort; maxAttempts?: number; signal?: AbortSignal } = {},
+  o: { model?: string; effort?: Effort; maxAttempts?: number; apiKey?: string; signal?: AbortSignal } = {},
 ): Promise<{ figure: FigureReading; usage: Usage }> {
+  const model = modelFor("figure", o.model);
   const maxAttempts = o.maxAttempts ?? 2;
   const messages: BetaMessageParam[] = [
     {
@@ -83,13 +84,22 @@ export async function readFigure(
   let usage: Usage | undefined;
   let result: FigureReading | undefined;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const call = await callClaude({
-      system: FIGURE_SYSTEM,
-      messages,
-      effort: o.effort ?? FIGURE_EFFORT,
-      maxTokens: 32000,
-      signal: o.signal,
-    });
+    let call;
+    try {
+      call = await callClaude({
+        system: FIGURE_SYSTEM,
+        messages,
+        model,
+        apiKey: o.apiKey,
+        effort: o.effort ?? FIGURE_EFFORT,
+        maxTokens: 32000,
+        signal: o.signal,
+      });
+    } catch (err) {
+      // 앞서 고쳐 받느라 쓴 토큰도 요금 기록에 넣게 붙여 보낸다
+      if (err instanceof ReadError && usage) err.usage = err.usage ? addUsage(usage, err.usage) : usage;
+      throw err;
+    }
     usage = addUsage(usage, call.usage);
     result = judge(call.text, image, attempt);
     if (!result.errors.length || attempt === maxAttempts) break;

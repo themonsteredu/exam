@@ -1,0 +1,239 @@
+// 시험지 만들기 전체 흐름 (브라우저):
+//  원본 보관 → 쪽마다 [그림으로 바꾸기 → 쪽 읽기 → 그림 잘라 읽기(동시에 3개까지)] → 합치기 → 그림 PNG → 한글 파일 → 내려받기·보관
+
+import { assembleExam, figureJobs, toExamPieces, type FigureResult, type PageMeta } from "@/lib/ai/assemble";
+import type { Usage } from "@/lib/ai/claude";
+import type { PageReading } from "@/lib/ai/page-schema";
+import type { FigureReading } from "@/lib/ai/read-figure";
+import { continuationHint } from "@/lib/ai/read-page";
+import { attachFigurePngs, renderExamFigures } from "@/lib/figure/render-exam";
+import { ApiError, patchJson, postJson, uploadFile, type FileRef } from "./api";
+import { figureImage, openSources, pageImage } from "./pages";
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+export type Step = "upload" | "page" | "figure" | "draw" | "hwpx" | "save";
+
+export type Progress = {
+  step: Step;
+  message: string;
+  pagesDone: number;
+  pagesTotal: number;
+  figuresDone: number;
+  figuresTotal: number;
+  usd: number;
+};
+
+export type MakeResult = {
+  exam: any;
+  hwpx: Blob;
+  fileName: string;
+  warnings: string[];
+  usd: number;
+  unsure: number;
+  failedFigures: number;
+};
+
+function sumUsd(u?: Usage) {
+  return u?.usd ?? 0;
+}
+
+/** 일을 n 개씩 동시에 돌린다 */
+function limiter(n: number) {
+  let running = 0;
+  const waiting: (() => void)[] = [];
+  return async function run<T>(task: () => Promise<T>): Promise<T> {
+    if (running >= n) await new Promise<void>((resolve) => waiting.push(resolve));
+    running++;
+    try {
+      return await task();
+    } finally {
+      running--;
+      waiting.shift()?.();
+    }
+  };
+}
+
+export function stripPngs(exam: any): any {
+  const copy = JSON.parse(JSON.stringify(exam));
+  for (const s of copy.sections ?? []) {
+    for (const it of s.items ?? []) {
+      if (it.figure) {
+        delete it.figure.png;
+        delete it.figure.png_size;
+      }
+    }
+  }
+  return copy;
+}
+
+export function countUnsure(exam: any): number {
+  let n = (exam.unsure ?? []).length;
+  for (const s of exam.sections ?? []) for (const it of s.items ?? []) n += (it.unsure ?? []).length;
+  return n;
+}
+
+export async function makeExam(o: {
+  files: File[];
+  title: string;
+  docId: string;
+  JXG: any;
+  hwpxEndpoint: string;
+  onProgress: (p: Progress) => void;
+  signal: AbortSignal;
+}): Promise<MakeResult> {
+  const progress: Progress = { step: "upload", message: "원본 파일을 보관함에 올리는 중입니다.", pagesDone: 0, pagesTotal: 0, figuresDone: 0, figuresTotal: 0, usd: 0 };
+  const tell = (patch: Partial<Progress>) => {
+    Object.assign(progress, patch);
+    o.onProgress({ ...progress });
+  };
+  const check = () => {
+    if (o.signal.aborted) throw new ApiError("멈췄습니다.", 0);
+  };
+  tell({});
+
+  // 1) 원본 보관 (읽기와 함께 진행)
+  const uploads = (async () => {
+    const refs: FileRef[] = [];
+    for (let i = 0; i < o.files.length; i++) {
+      refs.push(await uploadFile(o.docId, "original", o.files[i], o.files[i].name, i, o.signal));
+    }
+    await patchJson(`/api/documents/${o.docId}`, { original_files: refs });
+    return refs;
+  })();
+  // 실패는 마지막(보관)에서 알린다. 그 사이 처리되지 않은 실패로 남지 않게
+  uploads.catch(() => undefined);
+
+  // 2) 쪽마다 읽기
+  const sources = await openSources(o.files);
+  tell({ step: "page", pagesTotal: sources.length, message: `쪽 1/${sources.length} 을 읽는 중입니다.` });
+  const pages: { meta: PageMeta; reading: PageReading }[] = [];
+  const figures = new Map<string, FigureResult>();
+  const figureTasks: Promise<void>[] = [];
+  const runFigure = limiter(3);
+  let lastSection: string | undefined;
+  let lastNo: number | undefined;
+
+  for (let i = 0; i < sources.length; i++) {
+    check();
+    tell({ step: "page", message: `쪽 ${i + 1}/${sources.length} 을 읽는 중입니다 (${sources[i].label}).` });
+    const canvas = await sources[i].render();
+    const { image, scale } = pageImage(canvas);
+    let res: { reading: PageReading; usage: Usage };
+    try {
+      res = await postJson("/api/read/page", {
+        image: `data:${image.mediaType};base64,${image.data}`,
+        page: i + 1,
+        total: sources.length,
+        before: continuationHint(lastSection, lastNo),
+        docId: o.docId,
+      }, o.signal);
+    } catch (err) {
+      throw new ApiError(`${i + 1}쪽을 읽지 못했습니다: ${err instanceof Error ? err.message : err}`, err instanceof ApiError ? err.status : 0);
+    }
+    tell({ usd: progress.usd + sumUsd(res.usage) });
+    const page = i + 1;
+    pages.push({ meta: { page, original: { width: canvas.width, height: canvas.height }, scale }, reading: res.reading });
+    for (const s of res.reading.sections) {
+      if (s.title) lastSection = s.title;
+      if (s.items.length) lastNo = s.items[s.items.length - 1].no;
+    }
+
+    // 그림: 지금 쪽 그림에서 잘라 두고, 읽기는 뒤에서 동시에
+    const jobs = figureJobs(page, res.reading);
+    tell({ figuresTotal: progress.figuresTotal + jobs.length });
+    for (const job of jobs) {
+      const cut = figureImage(canvas, job.region, scale);
+      const item = {
+        no: job.item.no,
+        stem: toExamPieces(job.item.stem),
+        choices: job.item.choices.map(toExamPieces),
+        bogi: job.item.bogi.map(toExamPieces),
+      };
+      figureTasks.push(
+        runFigure(async () => {
+          check();
+          try {
+            const r = await postJson<{ figure: FigureReading; usage: Usage }>("/api/read/figure", {
+              image: `data:${cut.image.mediaType};base64,${cut.image.data}`,
+              item,
+              docId: o.docId,
+            }, o.signal);
+            figures.set(job.key, { crop: cut.crop, scale: cut.scale, reading: r.figure });
+            tell({ usd: progress.usd + sumUsd(r.usage) });
+          } catch (err) {
+            if (o.signal.aborted) throw err;
+            figures.set(job.key, { crop: cut.crop, scale: cut.scale, error: err instanceof Error ? err.message : String(err) });
+          } finally {
+            tell({ figuresDone: progress.figuresDone + 1 });
+          }
+        }),
+      );
+    }
+    // 쪽 그림은 여기서 놓는다 (큰 그림을 여러 장 들고 있지 않게)
+    canvas.width = 0;
+    canvas.height = 0;
+    tell({ pagesDone: i + 1 });
+  }
+
+  tell({ step: "figure", message: "그림을 읽는 중입니다." });
+  await Promise.all(figureTasks);
+  check();
+
+  // 3) 합치기 → 그림 PNG
+  const exam = assembleExam(pages, figures);
+  if (o.title) exam.title = o.title;
+  tell({ step: "draw", message: "그림을 그리는 중입니다." });
+  const rendered = await renderExamFigures(o.JXG, exam);
+  const withPng = attachFigurePngs(exam, rendered);
+  const failedFigures = rendered.filter((r) => !r.png).length;
+
+  // 4) 한글 파일
+  check();
+  tell({ step: "hwpx", message: "한글 파일을 만드는 중입니다." });
+  const res = await fetch(o.hwpxEndpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(withPng),
+    credentials: "same-origin",
+    signal: o.signal,
+  });
+  if (!res.ok) {
+    let msg = `한글 파일을 만들지 못했습니다 (${res.status}).`;
+    try {
+      const body = await res.json();
+      if (body.error) msg = `${body.error}${body.detail ? ` (${body.detail})` : ""}`;
+    } catch {
+      /* 그대로 */
+    }
+    throw new ApiError(msg, res.status);
+  }
+  const hwpx = await res.blob();
+  let warnings: string[] = [];
+  try {
+    warnings = JSON.parse(decodeURIComponent(res.headers.get("x-hwpx-warnings") || "[]"));
+  } catch {
+    /* 알림 없음 */
+  }
+
+  // 5) 보관
+  tell({ step: "save", message: "보관함에 저장하는 중입니다." });
+  const fileName = `${(o.title || "시험지").replace(/[\\/:*?"<>|]/g, "_")}.hwpx`;
+  const items = (exam.sections ?? []).reduce((n: number, s: any) => n + (s.items?.length ?? 0), 0);
+  let saveError: string | undefined;
+  try {
+    await uploads;
+    const ref = await uploadFile(o.docId, "generated", new Blob([hwpx], { type: "application/hwp+zip" }), fileName, 0, o.signal);
+    await patchJson(`/api/documents/${o.docId}`, {
+      hwpx_path: ref.path,
+      exam_json: stripPngs(exam),
+      status: "done",
+      cost_usd: progress.usd,
+      item_count: items,
+    });
+  } catch (err) {
+    saveError = err instanceof Error ? err.message : String(err);
+  }
+  if (saveError) warnings.unshift(`보관함에 저장하지 못했습니다: ${saveError} (파일은 내려받을 수 있습니다)`);
+  return { exam: withPng, hwpx, fileName, warnings, usd: progress.usd, unsure: countUnsure(exam), failedFigures };
+}

@@ -15,6 +15,7 @@ import { FIGURE_SYSTEM } from "@/lib/ai/prompts";
 import { assembleExam, figureKey, toExamPieces, type FigureResult } from "@/lib/ai/assemble";
 import { figureCropRect, figureSendSize, fitForClaude, imageSizeFromBytes } from "@/lib/ai/image-geometry";
 import { judge } from "@/lib/ai/read-figure";
+import { isModel, modelFor, priceOf, supportsFallback, usageOf } from "@/lib/ai/claude";
 import { compareExams } from "@/lib/ai/compare";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -191,6 +192,35 @@ console.log("5) 조각 정리, AI 답 읽기, 사진 크기");
   const js = imageSizeFromBytes(jpg);
   ok(ps?.width === 651 && ps?.height === 564 && ps.type === "image/png", `PNG 크기 읽기 ${JSON.stringify(ps)}`);
   ok(js?.width === 1126 && js?.height === 2000 && js.type === "image/jpeg", `JPEG 크기 읽기 ${JSON.stringify(js)}`);
+}
+
+console.log("6) 모델과 요금 계산");
+{
+  const t = { input: 10_000, output: 10_000, cacheWrite: 0, cacheRead: 0 };
+  ok(Math.abs(priceOf("claude-opus-5-5", t) - 0.24) < 1e-9, `Opus 5.5 입력·출력 1만 토큰씩 $${priceOf("claude-opus-5-5", t)}`);
+  ok(Math.abs(priceOf("claude-sonnet-5-5", t) - 0.12) < 1e-9, `Sonnet 5.5 $${priceOf("claude-sonnet-5-5", t)}`);
+  ok(Math.abs(priceOf("claude-sonnet-5-5", { input: 0, output: 0, cacheWrite: 0, cacheRead: 1_000_000 }) - 0.1) < 1e-9, "Sonnet 5.5 캐시 읽기 $0.10");
+  {
+    const msg: any = {
+      model: "claude-opus-5",
+      usage: {
+        input_tokens: 100, output_tokens: 200, cache_creation_input_tokens: 0, cache_read_input_tokens: 0,
+        iterations: [
+          { type: "message", model: null, input_tokens: 1000, output_tokens: 50, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+          { type: "fallback_message", model: "claude-opus-5", input_tokens: 100, output_tokens: 200, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        ],
+      },
+    };
+    const u = usageOf(msg, "claude-opus-5-5");
+    const want = (1000 * 4 + 50 * 20) / 1e6 + (100 * 5 + 200 * 25) / 1e6;
+    ok(Math.abs(u.usd - want) < 1e-12 && u.input === 1100 && u.output === 250, `다른 모델이 대신 답해도 두 시도 요금을 모두 셈 ($${u.usd.toFixed(6)})`);
+  }
+  ok(Math.abs(priceOf("claude-haiku-5-5", t) - 0.006) < 1e-9, `Haiku 5.5 $${priceOf("claude-haiku-5-5", t)}`);
+  ok(Math.abs(priceOf("claude-haiku-5-5", { ...t, input: 120_000 }) - (120_000 * 0.5 + 10_000 * 2.5) / 1e6) < 1e-9, "Haiku 5.5 는 입력 10만 토큰을 넘으면 비싼 요금표");
+  ok(Math.abs(priceOf("claude-opus-5-5", { input: 0, output: 0, cacheWrite: 1_000_000, cacheRead: 1_000_000 }) - (5 + 0.2)) < 1e-9, "캐시 쓰기 1.25배, Opus 5.5 캐시 읽기 0.05배");
+  ok(!supportsFallback("claude-haiku-5-5") && supportsFallback("claude-opus-5-5") && supportsFallback("claude-sonnet-5-5"), "Haiku 에는 대체 모델 설정을 보내지 않음");
+  ok(isModel("claude-sonnet-5-5") && !isModel("gpt-4") && !isModel("claude-fable-5-1"), "허용한 모델만 고를 수 있음");
+  ok(modelFor("page", "claude-haiku-5-5") === "claude-haiku-5-5", "요청에서 준 모델을 씀");
 }
 
 console.log(failed ? `\n${failed}개 실패` : "\n모두 통과");

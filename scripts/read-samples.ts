@@ -1,10 +1,12 @@
 // samples 사진을 AI 로 읽는다 (4단계 확인용). 요금이 든다.
-//   node scripts/read-samples.mjs [사진 이름 …] [--cached] [--page-effort=medium] [--figure-effort=high]
+//   node scripts/read-samples.mjs [사진 이름 …] [--cached] [--out=output/ai] [--page-model=…] [--figure-model=…] [--page-effort=medium] [--figure-effort=high]
 //
 // 사진 이름을 주지 않으면 samples 의 네 사진을 모두 읽는다.
 //   exam_p1.jpg, cubes_problem4.png : 쪽 읽기 → 그림 읽기 → 시험지 JSON
 //   cubes_worksheet.png, rect_p.jpg : 그림만 있는 사진이라 그림 읽기만
 // --cached : 이미 읽어 둔 결과(output/ai/*.page.json, *.figures.json)가 있으면 AI 를 다시 부르지 않는다 (요금 없음)
+// --out : 결과 폴더 (모델끼리 견줄 때 모델마다 다른 폴더로. 예: --out=output/ai/haiku --page-model=claude-haiku-5-5)
+// --page-model, --figure-model : 쪽 읽기·그림 읽기에 쓸 모델 (claude-haiku-5-5, claude-sonnet-5-5, claude-opus-5-5, claude-opus-5)
 //
 // 결과: output/ai/<이름>.page.json (쪽 읽기 답), <이름>.figures.json (그림 읽기 답), <이름>.exam.json (시험지 JSON),
 //       output/ai/usage.json (이번에 쓴 토큰과 요금)
@@ -13,7 +15,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
-import { addUsage, type Effort, type Usage } from "@/lib/ai/claude";
+import { addUsage, isModel, modelFor, type Effort, type Usage } from "@/lib/ai/claude";
 import { assembleExam, figureJobs, toExamPieces, type FigureResult, type PageMeta } from "@/lib/ai/assemble";
 import { figureCropRect, figureSendSize, fitForClaude } from "@/lib/ai/image-geometry";
 import type { PageReading } from "@/lib/ai/page-schema";
@@ -22,7 +24,6 @@ import { readPage, type ImageInput } from "@/lib/ai/read-page";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const root = process.env.EXAM_ROOT || process.cwd();
-const OUT = path.join(root, "output", "ai");
 
 type Sample = { file: string; mode: "page" | "figure"; context?: FigureContext };
 
@@ -46,6 +47,15 @@ const flag = (name: string) => args.find((a) => a.startsWith(`--${name}=`))?.spl
 const cached = args.includes("--cached");
 const pageEffort = (flag("page-effort") as Effort) || undefined;
 const figureEffort = (flag("figure-effort") as Effort) || undefined;
+const OUT = path.resolve(root, flag("out") ?? path.join("output", "ai"));
+const pageModel = flag("page-model");
+const figureModel = flag("figure-model");
+for (const m of [pageModel, figureModel]) {
+  if (m && !isModel(m)) {
+    console.error(`모르는 모델 이름: ${m}`);
+    process.exit(1);
+  }
+}
 const names = args.filter((a) => !a.startsWith("--"));
 const chosen = names.length ? SAMPLES.filter((s) => names.includes(s.file)) : SAMPLES;
 if (names.length && chosen.length !== names.length) {
@@ -129,7 +139,7 @@ async function pool<T, R>(items: T[], n: number, fn: (t: T) => Promise<R>): Prom
 async function readFigureSaved(label: string, image: ImageInput, context: FigureContext) {
   const t0 = Date.now();
   try {
-    const { figure, usage } = await readFigure(image, context, { effort: figureEffort });
+    const { figure, usage } = await readFigure(image, context, { model: figureModel, effort: figureEffort });
     note(label, usage, (Date.now() - t0) / 1000);
     return { reading: figure, usage };
   } catch (err) {
@@ -148,7 +158,7 @@ async function runPage(sample: Sample) {
   const pageFile = path.join(OUT, `${stem}.page.json`);
   const page = await cachedJson(pageFile, async () => {
     const t0 = Date.now();
-    const { reading, usage } = await readPage(image, { page: 1, total: 1, effort: pageEffort });
+    const { reading, usage } = await readPage(image, { page: 1, total: 1, model: pageModel, effort: pageEffort });
     note(`${stem} 쪽 읽기`, usage, (Date.now() - t0) / 1000);
     return { reading, usage, sent: { width: image.width, height: image.height, scale } };
   });
@@ -196,6 +206,7 @@ if (!cached && !process.env.ANTHROPIC_API_KEY) {
   process.exit(1);
 }
 await mkdir(OUT, { recursive: true });
+console.log(`쪽 읽기 모델 ${modelFor("page", pageModel)}, 그림 읽기 모델 ${modelFor("figure", figureModel)}, 결과 폴더 ${path.relative(root, OUT)}`);
 for (const sample of chosen) {
   try {
     if (sample.mode === "page") await runPage(sample);

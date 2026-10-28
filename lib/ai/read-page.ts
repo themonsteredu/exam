@@ -1,7 +1,7 @@
 // 1차 읽기: 시험지 한 쪽 사진 → 머리 표, 안내 상자, 문항, 그림 위치.
 // 서버 전용 (Claude 를 부른다).
 
-import { callClaude, ReadError, type Effort, type Usage } from "./claude";
+import { callClaude, modelFor, ReadError, type Effort, type Usage } from "./claude";
 import { PageReadingS, pageReadingJsonSchema, type PageReading } from "./page-schema";
 import { PAGE_SYSTEM, pageUserText } from "./prompts";
 
@@ -17,10 +17,12 @@ export const PAGE_EFFORT: Effort = "medium";
 
 export async function readPage(
   image: ImageInput,
-  o: { page: number; total: number; before?: string; effort?: Effort; signal?: AbortSignal },
+  o: { page: number; total: number; before?: string; model?: string; effort?: Effort; apiKey?: string; signal?: AbortSignal },
 ): Promise<{ reading: PageReading; usage: Usage; raw: string }> {
   const { text, usage } = await callClaude({
     system: PAGE_SYSTEM,
+    model: modelFor("page", o.model),
+    apiKey: o.apiKey,
     messages: [
       {
         role: "user",
@@ -39,11 +41,15 @@ export async function readPage(
   try {
     json = JSON.parse(text);
   } catch {
-    throw new ReadError("bad_answer", "AI 의 답을 읽지 못했습니다. 다시 시도해 주세요.", text.slice(0, 500));
+    const err = new ReadError("bad_answer", "AI 의 답을 읽지 못했습니다. 다시 시도해 주세요.", text.slice(0, 500));
+    err.usage = usage;
+    throw err;
   }
   const parsed = PageReadingS.safeParse(json);
   if (!parsed.success) {
-    throw new ReadError("bad_answer", "AI 의 답이 정해진 모양과 다릅니다. 다시 시도해 주세요.", parsed.error.message.slice(0, 500));
+    const err = new ReadError("bad_answer", "AI 의 답이 정해진 모양과 다릅니다. 다시 시도해 주세요.", parsed.error.message.slice(0, 500));
+    err.usage = usage;
+    throw err;
   }
   return { reading: parsed.data, usage, raw: text };
 }
