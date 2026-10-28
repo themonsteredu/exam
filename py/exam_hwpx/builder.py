@@ -32,6 +32,32 @@ def png_size(data: bytes) -> tuple[int, int]:
     return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
 
 
+def hancom_picture_sizes(pic_element, png: bytes) -> None:
+    """그림 크기 정보를 한글이 직접 저장하는 방식으로 맞춘다.
+
+    한글은 그림 파일의 원래 크기를 픽셀 x 75 (96dpi 기준 HWPUNIT)로 imgDim·imgClip 에 적고,
+    크기를 바꾸지 않은 그림의 curSz 는 0 으로 둔다. 보이는 크기는 sz·orgSz·imgRect 가 정한다.
+    python-hwpx 는 imgDim·imgClip 에 보이는 크기를, curSz 에도 같은 크기를 적는데,
+    이 파일을 이전 버전 한글(Windows)에서 열면 그림 자리만 잡히고 그림은 비어 보였다.
+    """
+    px_w, px_h = png_size(png)
+    natural_w, natural_h = str(px_w * 75), str(px_h * 75)
+    cur = pic_element.find(f"{_HP}curSz")
+    if cur is not None:
+        cur.set("width", "0")
+        cur.set("height", "0")
+    clip = pic_element.find(f"{_HP}imgClip")
+    if clip is not None:
+        clip.set("left", "0")
+        clip.set("top", "0")
+        clip.set("right", natural_w)
+        clip.set("bottom", natural_h)
+    dim = pic_element.find(f"{_HP}imgDim")
+    if dim is not None:
+        dim.set("dimwidth", natural_w)
+        dim.set("dimheight", natural_h)
+
+
 def png_with_dpi(data: bytes, dpi: float) -> bytes:
     """PNG 에 해상도(pHYs) 정보를 넣는다. 다른 프로그램에 붙여 넣어도 크기가 맞게."""
     ppm = max(1, round(dpi / 0.0254))
@@ -273,7 +299,6 @@ class ExamBuilder:
         w_mm = self.figure_width_mm(fig)
         px_w, px_h = png_size(png)
         h_mm = w_mm * px_h / px_w
-        png = png_with_dpi(png, px_w / (w_mm / 25.4))
         if fig.get("place") == "right":
             self.add_floating_figure(stem_paragraph, png, w_mm, h_mm)
             return
@@ -281,7 +306,8 @@ class ExamBuilder:
         gap = self.tpl["figure"]["gap_pt"]
         item_id = self.add_image(png)
         p = self.doc.add_paragraph("", include_run=False)
-        p.add_picture(item_id, width=mm(w_mm), height=mm(h_mm), treat_as_char=True, align=align)
+        pic = p.add_picture(item_id, width=mm(w_mm), height=mm(h_mm), treat_as_char=True, align=align)
+        hancom_picture_sizes(pic.element, png)
         # 문제 글의 내어쓰기를 물려받지 않게 왼쪽 여백을 0 으로 둔다
         self.para_format(p, alignment=align, line_spacing_percent=100, indent_left_mm=0, first_line_indent_mm=0,
                          spacing_before_pt=gap, spacing_after_pt=gap)
@@ -310,6 +336,7 @@ class ExamBuilder:
             },
             text_wrap="SQUARE",
         )
+        hancom_picture_sizes(pic.element, png)
         pic.element.set("textFlow", "LEFT_ONLY")
         margin = pic.element.find(f"{_HP}outMargin")
         if margin is not None:
@@ -427,7 +454,9 @@ class ExamBuilder:
 def postprocess(data: bytes) -> bytes:
     """저장 뒤 손보기.
 
-    - 한국어를 어절 단위로 줄바꿈 (BREAK_WORD → KEEP_WORD)
+    - 한국어를 어절 단위로 줄바꿈: 모든 문단의 breakNonLatinWord 를 BREAK_WORD 로.
+      한글에서는 이 값이 이름과 반대로 동작한다. BREAK_WORD 가 어절을 지키고 KEEP_WORD 는 글자 사이에서 끊는다
+      (python-hwpx form_fit/measure.py 설명과 같고, KEEP_WORD 로 만든 파일은 한글에서 "구 / 하면"처럼 끊겼다)
     - 꼬리말의 쪽 번호 위치 컨트롤(pageNum) 제거: 꼬리말 글 안의 번호와 겹쳐 두 번 찍히지 않게
     - header.xml 의 binDataList 제거: 한글이 저장한 파일에는 없고, 그 안의 번호(0, 1, 2)가
       그림이 가리키는 이름(image1 …)과 달라 그림을 찾지 못하는 보기 프로그램이 있다
@@ -444,7 +473,7 @@ def postprocess(data: bytes) -> bytes:
                 continue
             body = src.read(name)
             if name == "Contents/header.xml":
-                body = body.replace(b'breakNonLatinWord="BREAK_WORD"', b'breakNonLatinWord="KEEP_WORD"')
+                body = body.replace(b'breakNonLatinWord="KEEP_WORD"', b'breakNonLatinWord="BREAK_WORD"')
                 body = re.sub(rb"<hh:binDataList\b[^>]*?(?:/>|>.*?</hh:binDataList>)", b"", body, flags=re.S)
             if name.startswith("Contents/section") and name.endswith(".xml"):
                 text = body.decode("utf-8")
