@@ -24,7 +24,7 @@ SCHOOL_A_2026 = {
     },
     "sizes": {
         "title": 17,
-        "header_row": 12,
+        "header_row": 11,
         "box": 9.5,
         "section_title": 12,
         "body": 11,

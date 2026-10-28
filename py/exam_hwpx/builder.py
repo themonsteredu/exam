@@ -132,7 +132,7 @@ class ExamBuilder:
         thick, thin = t["border"]["thick"], t["border"]["thin"]
         first = self.doc.paragraphs[0]
         table = first.add_table(2, 3, width=self.text_width(), border_fill_id_ref=self.border(thick, thick, thick, thick))
-        table.set_column_widths([16, 37, 47])
+        table.set_column_widths([14, 34, 52])
         table.merge_cells("A1:C1")
         # 칸마다 테두리: 바깥은 굵게, 안쪽은 가늘게
         table.set_cell_border_fill(0, 0, self.border(thick, thick, thick, thick))
