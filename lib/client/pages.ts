@@ -95,16 +95,30 @@ function resized(src: HTMLCanvasElement, width: number, height: number, sx = 0, 
   return c;
 }
 
-function toInput(c: HTMLCanvasElement, type: "image/jpeg" | "image/png"): ImageInput {
-  const url = c.toDataURL(type, 0.92);
+function toInput(c: HTMLCanvasElement, type: "image/jpeg" | "image/png", quality = 0.92): ImageInput {
+  const url = c.toDataURL(type, quality);
   return { data: url.slice(url.indexOf(",") + 1), mediaType: type, width: c.width, height: c.height };
+}
+
+/** 서버 한 번 요청 한도(Vercel 4.5MB) 안에 들어가게: 보낼 글자(base64)가 이보다 길면 JPEG 로, 그래도 길면 화질을 낮춘다 */
+const MAX_IMAGE_CHARS = 3_400_000;
+
+function toInputWithin(c: HTMLCanvasElement, type: "image/jpeg" | "image/png"): ImageInput {
+  let input = toInput(c, type);
+  if (input.data.length <= MAX_IMAGE_CHARS) return input;
+  // 휴대폰으로 찍은 사진은 PNG 로 줄어들지 않아 커진다
+  for (const quality of [0.92, 0.85, 0.75, 0.6]) {
+    input = toInput(c, "image/jpeg", quality);
+    if (input.data.length <= MAX_IMAGE_CHARS) break;
+  }
+  return input;
 }
 
 /** AI 에게 보낼 쪽 사진 (긴 변 2576px, 370만 픽셀 이하) 과 줄인 비율 */
 export function pageImage(page: HTMLCanvasElement): { image: ImageInput; scale: number } {
   const fit = fitForClaude(page.width, page.height);
   const c = fit.scale < 1 ? resized(page, fit.width, fit.height) : page;
-  return { image: toInput(c, "image/jpeg"), scale: c.width / page.width };
+  return { image: toInputWithin(c, "image/jpeg"), scale: c.width / page.width };
 }
 
 /** 쪽 읽기에서 받은 그림 자리를 원본 쪽 그림에서 잘라 키운다 */
@@ -112,7 +126,7 @@ export function figureImage(page: HTMLCanvasElement, region: FigureRegion, pageS
   const crop = figureCropRect(region, pageScale, { width: page.width, height: page.height });
   const send = figureSendSize(crop.w, crop.h);
   const c = resized(page, send.width, send.height, crop.x, crop.y, crop.w, crop.h);
-  return { image: toInput(c, "image/png"), crop, scale: send.width / crop.w };
+  return { image: toInputWithin(c, "image/png"), crop, scale: send.width / crop.w };
 }
 
 /** 미리보기용 작은 그림 */
