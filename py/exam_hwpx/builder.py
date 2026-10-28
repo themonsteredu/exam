@@ -251,7 +251,7 @@ class ExamBuilder:
                 p,
                 alignment=line.get("align", "JUSTIFY"),
                 line_spacing_percent=t["line_spacing"]["box"],
-                indent_left_mm=3.5 if hanging else 0,
+                indent_left_mm=0,
                 first_line_indent_mm=-3.5 if hanging else 0,
             )
         self.para_format(p_anchor, line_spacing_percent=100, spacing_after_pt=3)
@@ -373,7 +373,7 @@ class ExamBuilder:
             p.add_run(f" [{item['points']}점]", char_pr_id_ref=self.run_style(size=size))
         self.para_format(
             p, alignment="JUSTIFY", line_spacing_percent=t["line_spacing"]["body"],
-            indent_left_mm=5.5, first_line_indent_mm=-5.5,
+            indent_left_mm=0, first_line_indent_mm=-5.5,
             spacing_before_pt=0 if (is_first or item.get("break_before")) else t["item_gap_pt"],
         )
         self.build_figure(item, p)
