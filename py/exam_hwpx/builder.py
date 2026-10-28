@@ -373,6 +373,8 @@ class ExamBuilder:
             p.add_run(f" [{item['points']}점]", char_pr_id_ref=self.run_style(size=size))
         self.para_format(
             p, alignment="JUSTIFY", line_spacing_percent=t["line_spacing"]["body"],
+            # 내어쓰기: 첫 줄(문제 번호)은 단 왼쪽 끝에서, 다음 줄부터 5.5mm 들여 시작한다.
+            # 한글은 왼쪽 여백에서 첫 줄을 시작하고 내어쓰기 값만큼 나머지 줄을 민다 (왼쪽 여백 0 이어야 번호가 선택지 번호와 같은 세로줄에 선다)
             indent_left_mm=0, first_line_indent_mm=-5.5,
             spacing_before_pt=0 if (is_first or item.get("break_before")) else t["item_gap_pt"],
         )
