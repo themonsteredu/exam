@@ -39,6 +39,10 @@ SCHOOL_A_2026 = {
     "border": {"thick": "0.4 mm", "thin": "0.12 mm"},
     # 문제와 문제 사이 빈 공간 (풀이 공간)
     "item_gap_pt": 40,
+    # 그림: 위아래 여백, 오른쪽에 둘 때 단 너비에 대한 최대 비율
+    "figure": {"gap_pt": 6, "right_max_ratio": 0.5},
+    # 수식 속 대문자(점 이름)를 정자체로
+    "upright_point_names": True,
 }
 
 TEMPLATES = {SCHOOL_A_2026["id"]: SCHOOL_A_2026}

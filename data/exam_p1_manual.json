@@ -22,7 +22,10 @@
     {
       "kind": "score",
       "lines": [
-        { "text": "**※ 문항 배점 안내 ※**", "align": "CENTER" },
+        {
+          "text": "**※ 문항 배점 안내 ※**",
+          "align": "CENTER"
+        },
         "**▶선택형 ( 20)문항: 총 ( 80 )점**",
         "( 3 )점 × ( 5 )문항, ( 4 )점 × ( 10 )문항, ( 5 )점 × ( 5 )문항",
         "**▶서술형 ( 3 )문항: 총 ( 20 )점**",
@@ -39,71 +42,741 @@
           "no": 1,
           "points": 4,
           "stem": [
-            { "t": "그림과 같이 " },
-            { "m": "\\overline{AB}=\\overline{AC}" },
-            { "t": "인 이등변삼각형 ABC에서 " },
-            { "m": "\\overline{CB}=\\overline{CD}" },
-            { "t": "가 되도록 " },
-            { "m": "\\overline{AB}" },
-            { "t": " 위에 점 D를 잡았다. " },
-            { "m": "\\angle A=38^{\\circ}" },
-            { "t": "일 때, " },
-            { "m": "\\angle ADC" },
-            { "t": "의 크기를 구하면?" }
+            {
+              "t": "그림과 같이 "
+            },
+            {
+              "m": "\\overline{AB}=\\overline{AC}"
+            },
+            {
+              "t": "인 이등변삼각형 ABC에서 "
+            },
+            {
+              "m": "\\overline{CB}=\\overline{CD}"
+            },
+            {
+              "t": "가 되도록 "
+            },
+            {
+              "m": "\\overline{AB}"
+            },
+            {
+              "t": " 위에 점 D를 잡았다. "
+            },
+            {
+              "m": "\\angle A=38^{\\circ}"
+            },
+            {
+              "t": "일 때, "
+            },
+            {
+              "m": "\\angle ADC"
+            },
+            {
+              "t": "의 크기를 구하면?"
+            }
           ],
-          "figure": { "size_mm": [41, 51], "align": "CENTER", "commands": {} },
+          "figure": {
+            "box": {
+              "page": 1,
+              "x": 185,
+              "y": 860,
+              "w": 240,
+              "h": 300
+            },
+            "place": "below",
+            "align": "CENTER",
+            "width_mm": 41,
+            "size_mm": [
+              41,
+              51
+            ],
+            "commands": {
+              "base": 11,
+              "points": [
+                {
+                  "id": "B",
+                  "at": [
+                    0,
+                    0
+                  ]
+                },
+                {
+                  "id": "C",
+                  "at": [
+                    11,
+                    0
+                  ]
+                },
+                {
+                  "id": "A",
+                  "isoApex": {
+                    "base": [
+                      "B",
+                      "C"
+                    ],
+                    "angle": 38
+                  }
+                },
+                {
+                  "id": "D",
+                  "circleLine": {
+                    "center": "C",
+                    "through": "B",
+                    "line": [
+                      "A",
+                      "B"
+                    ],
+                    "other": "B"
+                  }
+                }
+              ],
+              "elements": [
+                {
+                  "type": "segment",
+                  "points": [
+                    "A",
+                    "B"
+                  ]
+                },
+                {
+                  "type": "segment",
+                  "points": [
+                    "A",
+                    "C"
+                  ]
+                },
+                {
+                  "type": "segment",
+                  "points": [
+                    "B",
+                    "C"
+                  ]
+                },
+                {
+                  "type": "segment",
+                  "points": [
+                    "D",
+                    "C"
+                  ]
+                },
+                {
+                  "type": "label",
+                  "at": "A",
+                  "text": "A",
+                  "dir": "N"
+                },
+                {
+                  "type": "label",
+                  "at": "B",
+                  "text": "B",
+                  "dir": "SW"
+                },
+                {
+                  "type": "label",
+                  "at": "C",
+                  "text": "C",
+                  "dir": "E"
+                },
+                {
+                  "type": "label",
+                  "at": "D",
+                  "text": "D",
+                  "dir": "W"
+                },
+                {
+                  "type": "label",
+                  "at": "A",
+                  "text": "38°",
+                  "dir": "S",
+                  "offset": 3.3,
+                  "size": 0.85
+                }
+              ]
+            }
+          },
           "choices": [
-            [{ "m": "98^{\\circ}" }],
-            [{ "m": "102^{\\circ}" }],
-            [{ "m": "106^{\\circ}" }],
-            [{ "m": "109^{\\circ}" }],
-            [{ "m": "110^{\\circ}" }]
-          ]
+            [
+              {
+                "m": "98^{\\circ}"
+              }
+            ],
+            [
+              {
+                "m": "102^{\\circ}"
+              }
+            ],
+            [
+              {
+                "m": "106^{\\circ}"
+              }
+            ],
+            [
+              {
+                "m": "109^{\\circ}"
+              }
+            ],
+            [
+              {
+                "m": "110^{\\circ}"
+              }
+            ]
+          ],
+          "source": {
+            "page": 1,
+            "x": 30,
+            "y": 700,
+            "w": 530,
+            "h": 660
+          }
         },
         {
           "no": 2,
           "points": 4,
           "break_before": "column",
           "stem": [
-            { "t": "그림과 같이 " },
-            { "m": "\\overline{AB}=\\overline{AC}" },
-            { "t": "인 이등변삼각형 ABC에서 " },
-            { "m": "\\angle B" },
-            { "t": "의 이등분선과 " },
-            { "m": "\\angle C" },
-            { "t": "의 외각의 이등분선의 교점을 D라고 하자. " },
-            { "m": "\\angle A=56^{\\circ}" },
-            { "t": " 일 때, " },
-            { "m": "\\angle D" },
-            { "t": "의 크기를 구하면?" }
+            {
+              "t": "그림과 같이 "
+            },
+            {
+              "m": "\\overline{AB}=\\overline{AC}"
+            },
+            {
+              "t": "인 이등변삼각형 ABC에서 "
+            },
+            {
+              "m": "\\angle B"
+            },
+            {
+              "t": "의 이등분선과 "
+            },
+            {
+              "m": "\\angle C"
+            },
+            {
+              "t": "의 외각의 이등분선의 교점을 D라고 하자. "
+            },
+            {
+              "m": "\\angle A=56^{\\circ}"
+            },
+            {
+              "t": " 일 때, "
+            },
+            {
+              "m": "\\angle D"
+            },
+            {
+              "t": "의 크기를 구하면?"
+            }
           ],
-          "figure": { "size_mm": [50, 36], "align": "CENTER", "commands": {} },
+          "figure": {
+            "box": {
+              "page": 1,
+              "x": 700,
+              "y": 405,
+              "w": 290,
+              "h": 195
+            },
+            "place": "below",
+            "align": "CENTER",
+            "width_mm": 50,
+            "size_mm": [
+              50,
+              36
+            ],
+            "commands": {
+              "base": 9.5,
+              "points": [
+                {
+                  "id": "B",
+                  "at": [
+                    0,
+                    0
+                  ]
+                },
+                {
+                  "id": "C",
+                  "at": [
+                    9.5,
+                    0
+                  ]
+                },
+                {
+                  "id": "A",
+                  "isoApex": {
+                    "base": [
+                      "B",
+                      "C"
+                    ],
+                    "angle": 56
+                  }
+                },
+                {
+                  "id": "E",
+                  "glider": {
+                    "line": [
+                      "B",
+                      "C"
+                    ],
+                    "from": "C",
+                    "dist": 3.8
+                  }
+                },
+                {
+                  "id": "D",
+                  "intersect": [
+                    {
+                      "bisector": [
+                        "A",
+                        "B",
+                        "C"
+                      ]
+                    },
+                    {
+                      "bisector": [
+                        "A",
+                        "C",
+                        "E"
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "elements": [
+                {
+                  "type": "segment",
+                  "points": [
+                    "B",
+                    "E"
+                  ],
+                  "extendEnd": 1.73
+                },
+                {
+                  "type": "segment",
+                  "points": [
+                    "A",
+                    "B"
+                  ]
+                },
+                {
+                  "type": "segment",
+                  "points": [
+                    "A",
+                    "C"
+                  ]
+                },
+                {
+                  "type": "segment",
+                  "points": [
+                    "B",
+                    "D"
+                  ]
+                },
+                {
+                  "type": "segment",
+                  "points": [
+                    "C",
+                    "D"
+                  ]
+                },
+                {
+                  "type": "angle",
+                  "points": [
+                    "C",
+                    "B",
+                    "D"
+                  ],
+                  "symbol": "dot",
+                  "radius": 1.25
+                },
+                {
+                  "type": "angle",
+                  "points": [
+                    "D",
+                    "B",
+                    "A"
+                  ],
+                  "symbol": "dot",
+                  "radius": 1.25
+                },
+                {
+                  "type": "angle",
+                  "points": [
+                    "E",
+                    "C",
+                    "D"
+                  ],
+                  "symbol": "cross",
+                  "radius": 1.0
+                },
+                {
+                  "type": "angle",
+                  "points": [
+                    "D",
+                    "C",
+                    "A"
+                  ],
+                  "symbol": "cross",
+                  "radius": 1.0
+                },
+                {
+                  "type": "angle",
+                  "points": [
+                    "B",
+                    "D",
+                    "C"
+                  ],
+                  "radius": 1.1
+                },
+                {
+                  "type": "dot",
+                  "at": "E",
+                  "size": 1.3
+                },
+                {
+                  "type": "label",
+                  "at": "A",
+                  "text": "56°",
+                  "dir": "S",
+                  "offset": 1.55,
+                  "size": 0.8
+                },
+                {
+                  "type": "label",
+                  "at": "A",
+                  "text": "A",
+                  "dir": "N"
+                },
+                {
+                  "type": "label",
+                  "at": "B",
+                  "text": "B",
+                  "dir": "W"
+                },
+                {
+                  "type": "label",
+                  "at": "C",
+                  "text": "C",
+                  "dir": "S"
+                },
+                {
+                  "type": "label",
+                  "at": "D",
+                  "text": "D",
+                  "dir": "NE"
+                },
+                {
+                  "type": "label",
+                  "at": "E",
+                  "text": "E",
+                  "dir": "S"
+                }
+              ]
+            }
+          },
           "choices": [
-            [{ "m": "28^{\\circ}" }],
-            [{ "m": "29^{\\circ}" }],
-            [{ "m": "30^{\\circ}" }],
-            [{ "m": "31^{\\circ}" }],
-            [{ "m": "32^{\\circ}" }]
-          ]
+            [
+              {
+                "m": "28^{\\circ}"
+              }
+            ],
+            [
+              {
+                "m": "29^{\\circ}"
+              }
+            ],
+            [
+              {
+                "m": "30^{\\circ}"
+              }
+            ],
+            [
+              {
+                "m": "31^{\\circ}"
+              }
+            ],
+            [
+              {
+                "m": "32^{\\circ}"
+              }
+            ]
+          ],
+          "source": {
+            "page": 1,
+            "x": 575,
+            "y": 240,
+            "w": 551,
+            "h": 600
+          }
         },
         {
           "no": 3,
           "points": 3,
           "stem": [
-            { "t": "그림과 같은 " },
-            { "m": "\\triangle ABE" },
-            { "t": "에서 " },
-            { "m": "x" },
-            { "t": "의 값을 구하면?" }
+            {
+              "t": "그림과 같은 "
+            },
+            {
+              "m": "\\triangle ABE"
+            },
+            {
+              "t": "에서 "
+            },
+            {
+              "m": "x"
+            },
+            {
+              "t": "의 값을 구하면?"
+            }
           ],
-          "figure": { "size_mm": [80, 38], "align": "RIGHT", "commands": {} },
+          "figure": {
+            "box": {
+              "page": 1,
+              "x": 685,
+              "y": 1035,
+              "w": 441,
+              "h": 215
+            },
+            "place": "below",
+            "align": "CENTER",
+            "width_mm": 78,
+            "size_mm": [
+              78,
+              38
+            ],
+            "commands": {
+              "base": 11,
+              "points": [
+                {
+                  "id": "C",
+                  "at": [
+                    0,
+                    0
+                  ]
+                },
+                {
+                  "id": "A",
+                  "at": [
+                    0,
+                    9.4
+                  ]
+                },
+                {
+                  "id": "E",
+                  "at": [
+                    7.05,
+                    0
+                  ]
+                },
+                {
+                  "id": "B",
+                  "at": [
+                    -16.281,
+                    0
+                  ]
+                },
+                {
+                  "id": "D",
+                  "intersect": [
+                    {
+                      "through": [
+                        "A",
+                        "B"
+                      ]
+                    },
+                    {
+                      "through": [
+                        "C"
+                      ],
+                      "dirOf": [
+                        "C",
+                        "B"
+                      ],
+                      "turn": -30
+                    }
+                  ]
+                }
+              ],
+              "elements": [
+                {
+                  "type": "segment",
+                  "points": [
+                    "B",
+                    "E"
+                  ],
+                  "extendEnd": 0.9
+                },
+                {
+                  "type": "segment",
+                  "points": [
+                    "A",
+                    "B"
+                  ]
+                },
+                {
+                  "type": "segment",
+                  "points": [
+                    "A",
+                    "E"
+                  ]
+                },
+                {
+                  "type": "segment",
+                  "points": [
+                    "A",
+                    "C"
+                  ]
+                },
+                {
+                  "type": "segment",
+                  "points": [
+                    "D",
+                    "C"
+                  ]
+                },
+                {
+                  "type": "rightAngle",
+                  "points": [
+                    "E",
+                    "C",
+                    "A"
+                  ],
+                  "size": 0.75
+                },
+                {
+                  "type": "angle",
+                  "points": [
+                    "C",
+                    "B",
+                    "A"
+                  ],
+                  "radius": 2.0,
+                  "label": "30°",
+                  "labelDist": 3.6
+                },
+                {
+                  "type": "angle",
+                  "points": [
+                    "A",
+                    "D",
+                    "C"
+                  ],
+                  "radius": 1.1,
+                  "label": "60°",
+                  "labelDist": 2.3
+                },
+                {
+                  "type": "dimension",
+                  "points": [
+                    "B",
+                    "D"
+                  ],
+                  "bulge": 0.12,
+                  "label": "x",
+                  "italic": true,
+                  "gapStart": 0.9,
+                  "gapEnd": 0.9
+                },
+                {
+                  "type": "dimension",
+                  "points": [
+                    "A",
+                    "C"
+                  ],
+                  "bulge": 0.13,
+                  "label": "8",
+                  "gapStart": 0.9,
+                  "gapEnd": 1.2
+                },
+                {
+                  "type": "dimension",
+                  "points": [
+                    "A",
+                    "E"
+                  ],
+                  "bulge": 0.1,
+                  "label": "10",
+                  "gapStart": 0.9,
+                  "gapEnd": 0.9
+                },
+                {
+                  "type": "dimension",
+                  "points": [
+                    "C",
+                    "E"
+                  ],
+                  "bulge": -0.1,
+                  "label": "6",
+                  "gapStart": 0.9,
+                  "gapEnd": 0.9
+                },
+                {
+                  "type": "label",
+                  "at": "A",
+                  "text": "A",
+                  "dir": "N"
+                },
+                {
+                  "type": "label",
+                  "at": "B",
+                  "text": "B",
+                  "dir": "W"
+                },
+                {
+                  "type": "label",
+                  "at": "C",
+                  "text": "C",
+                  "dir": "S"
+                },
+                {
+                  "type": "label",
+                  "at": "D",
+                  "text": "D",
+                  "dir": 115
+                },
+                {
+                  "type": "label",
+                  "at": "E",
+                  "text": "E",
+                  "dir": "SE"
+                }
+              ]
+            }
+          },
           "choices": [
-            [{ "t": "6" }],
-            [{ "t": "7" }],
-            [{ "t": "8" }],
-            [{ "t": "9" }],
-            [{ "t": "10" }]
-          ]
+            [
+              {
+                "t": "6"
+              }
+            ],
+            [
+              {
+                "t": "7"
+              }
+            ],
+            [
+              {
+                "t": "8"
+              }
+            ],
+            [
+              {
+                "t": "9"
+              }
+            ],
+            [
+              {
+                "t": "10"
+              }
+            ]
+          ],
+          "source": {
+            "page": 1,
+            "x": 575,
+            "y": 940,
+            "w": 551,
+            "h": 530
+          }
         }
       ]
     }

@@ -7,20 +7,48 @@ python-hwpx 6.9.0 사용. 사용법:
 
 from __future__ import annotations
 
+import base64
 import copy
 import io
 import re
+import struct
 import zipfile
-from typing import Any
+import zlib
 
 from hwpx import HwpxDocument
-from hwpx.equation.authoring import latex_to_eqedit
 
-from .template import get_template, mm
+from .latex import EquationError, latex_to_plain, to_eqedit
+from .template import MM, get_template, mm
 
 CHOICE_MARKS = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧"]
 _HH = "{http://www.hancom.co.kr/hwpml/2011/head}"
 _HP = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def png_size(data: bytes) -> tuple[int, int]:
+    if not data.startswith(_PNG_SIGNATURE) or len(data) < 24:
+        raise ValueError("PNG 그림이 아닙니다")
+    return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+
+
+def png_with_dpi(data: bytes, dpi: float) -> bytes:
+    """PNG 에 해상도(pHYs) 정보를 넣는다. 다른 프로그램에 붙여 넣어도 크기가 맞게."""
+    ppm = max(1, round(dpi / 0.0254))
+    body = struct.pack(">IIB", ppm, ppm, 1)
+    chunk = struct.pack(">I", len(body)) + b"pHYs" + body + struct.pack(">I", zlib.crc32(b"pHYs" + body) & 0xFFFFFFFF)
+    out = bytearray(data[:8])
+    pos = 8
+    while pos + 8 <= len(data):
+        length = int.from_bytes(data[pos : pos + 4], "big")
+        ctype = data[pos + 4 : pos + 8]
+        end = pos + 12 + length
+        if ctype != b"pHYs":
+            out += data[pos:end]
+        if ctype == b"IHDR":
+            out += chunk
+        pos = end
+    return bytes(out)
 
 
 class ExamBuilder:
@@ -90,16 +118,17 @@ class ExamBuilder:
 
     def add_equation(self, p, latex: str, *, size: float, where: str):
         try:
-            script = latex_to_eqedit(latex)
-            self.doc.shapes.add_equation(
-                script,
-                paragraph=p,
-                base_unit=int(round(size * 100)),
-                char_pr_id_ref=self.run_style(size=size),
-            )
-        except Exception as exc:  # 바꾸지 못한 수식은 글자로
+            script = to_eqedit(latex, upright_uppercase=self.tpl.get("upright_point_names", True))
+        except EquationError as exc:  # 바꾸지 못한 수식은 읽을 수 있는 글자로 넣고 알려 준다
             self.warnings.append(f"{where}: 수식을 글자로 넣음 ({latex}) - {exc}")
-            p.add_run(latex, char_pr_id_ref=self.run_style(size=size))
+            p.add_run(latex_to_plain(latex), char_pr_id_ref=self.run_style(size=size))
+            return
+        self.doc.shapes.add_equation(
+            script,
+            paragraph=p,
+            base_unit=int(round(size * 100)),
+            char_pr_id_ref=self.run_style(size=size),
+        )
 
     def add_pieces(self, p, pieces: list[dict], *, size: float, where: str):
         for i, piece in enumerate(pieces):
@@ -211,12 +240,85 @@ class ExamBuilder:
         self.para_format(p, alignment="CENTER", line_spacing_percent=130)
         self.para_format(p_anchor, line_spacing_percent=100, spacing_before_pt=10, spacing_after_pt=10)
 
-    def build_figure_slot(self, item: dict):
-        """그림 자리 (1단계에서는 비워 둠, 3단계에서 그림이 들어감)."""
+    # ------------------------------------------------------------------ 그림
+    @staticmethod
+    def figure_png(fig: dict) -> bytes | None:
+        """그림 엔진이 만든 PNG (base64 글자 또는 data: 주소)."""
+        data = fig.get("png")
+        if not data:
+            return None
+        if isinstance(data, str):
+            if data.startswith("data:"):
+                data = data.split(",", 1)[1]
+            data = base64.b64decode(data)
+        png_size(data)  # PNG 인지 확인
+        return data
+
+    def figure_width_mm(self, fig: dict) -> float:
+        width = fig.get("width_mm") or (fig.get("size_mm") or [50])[0]
+        column_mm = self.column_width() / MM
+        limit = column_mm * self.tpl["figure"]["right_max_ratio"] if fig.get("place") == "right" else column_mm - 1
+        return min(float(width), limit)
+
+    def build_figure(self, item: dict, stem_paragraph):
+        """그림을 문제 글 아래(place=below, 기본) 또는 오른쪽(place=right)에 넣는다.
+        PNG 가 아직 없으면 그림 크기만큼 빈 자리를 둔다."""
         fig = item.get("figure")
         if not fig:
             return
-        w_mm, h_mm = fig.get("size_mm", [50, 40])
+        png = self.figure_png(fig)
+        if png is None:
+            self.build_figure_placeholder(fig)
+            return
+        w_mm = self.figure_width_mm(fig)
+        px_w, px_h = png_size(png)
+        h_mm = w_mm * px_h / px_w
+        png = png_with_dpi(png, px_w / (w_mm / 25.4))
+        if fig.get("place") == "right":
+            self.add_floating_figure(stem_paragraph, png, w_mm, h_mm)
+            return
+        align = fig.get("align", "CENTER")
+        gap = self.tpl["figure"]["gap_pt"]
+        pic = self.doc.add_picture(png, "png", width=mm(w_mm), height=mm(h_mm), align=align)
+        self.para_format(pic.paragraph, alignment=align, line_spacing_percent=100,
+                         spacing_before_pt=gap, spacing_after_pt=gap)
+
+    def add_floating_figure(self, p, png: bytes, w_mm: float, h_mm: float):
+        """문제 글 오른쪽에 그림을 띄워 두고, 글은 그림 왼쪽으로 흐르게 한다."""
+        item = self.doc.media.add_image(png, "png")
+        pic = p.add_picture(
+            item.item_id,
+            width=mm(w_mm),
+            height=mm(h_mm),
+            treat_as_char=False,
+            pos_overrides={
+                "flowWithText": "1",
+                "allowOverlap": "0",
+                "vertRelTo": "PARA",
+                "vertAlign": "TOP",
+                "horzRelTo": "COLUMN",
+                "horzAlign": "RIGHT",
+                "vertOffset": 0,
+                "horzOffset": 0,
+            },
+            text_wrap="SQUARE",
+        )
+        pic.element.set("textFlow", "LEFT_ONLY")
+        margin = pic.element.find(f"{_HP}outMargin")
+        if margin is not None:
+            margin.set("left", str(mm(3)))
+            margin.set("bottom", str(mm(1.5)))
+        # 그림이 든 줄 조각을 문단 맨 앞으로 옮긴다 (한글은 문단 첫머리에 붙은 그림을 기준으로 둔다)
+        for run in p.element.findall(f"{_HP}run"):
+            if pic.element in list(run):
+                p.element.remove(run)
+                p.element.insert(0, run)
+                break
+        p.section.mark_dirty()
+
+    def build_figure_placeholder(self, fig: dict):
+        """그림 자리: 그림이 아직 없을 때 크기만큼 비워 둔다 (연한 점선 상자)."""
+        w_mm, h_mm = fig.get("size_mm", [fig.get("width_mm", 50), 40])
         p_anchor = self.doc.add_paragraph("")
         bf = self.doc.styles.ensure_border_fill(border_color="#C8C8C8", border_width="0.12 mm", border_type="DASH")
         table = p_anchor.add_table(1, 1, width=mm(w_mm), border_fill_id_ref=bf)
@@ -240,7 +342,7 @@ class ExamBuilder:
             indent_left_mm=5.5, first_line_indent_mm=-5.5,
             spacing_before_pt=0 if (is_first or item.get("break_before")) else t["item_gap_pt"],
         )
-        self.build_figure_slot(item)
+        self.build_figure(item, p)
         for i, choice in enumerate(item.get("choices", [])):
             cp = self.doc.add_paragraph("")
             cp.add_run(f"{CHOICE_MARKS[i]}  ", char_pr_id_ref=self.run_style(size=t["sizes"]["choice"]))
