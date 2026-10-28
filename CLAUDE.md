@@ -84,14 +84,14 @@
   - 사용자 결정: 저장은 기존 Supabase 프로젝트 aiapp(vypnobpmyadtcvxhtagn, 서울)에 exam_ 표와 exam-files 보관함을 따로. 비밀번호 3035 는 프로그램 전체. 월별 요금은 프로그램이 직접 기록
   - 화면: / (시험지 만들기), /archive (보관함), /settings (API 키·모델·월별 요금·비밀번호), /login
   - 배포: Vercel 팀 themonsteredu, 프로젝트 exam-maker (prj_JayN6FC5KzNlcDowvuG0lw1GJafo), 서버 지역 icn1(서울)
-    - 주소: https://exam-maker-one.vercel.app (또는 exam-maker-themonsteredu.vercel.app). 보호를 "all" 로 바꿔 둠: 버셀에 로그인한 팀원만 열리고, 그다음 비밀번호 3035
-      (팀 기본값 "사용자 도메인 말고 모두" 에서는 exam-maker-one.vercel.app 이 누구에게나 열렸다. 숫자 4자리 비밀번호만으로 공개하지 않으려고 바꿈.
-      선생님들도 쓰게 하려면 사용자와 정해서 보호를 풀고 더 긴 비밀번호로)
+    - 주소: https://exam-maker-one.vercel.app (누구나 열림, 그다음 비밀번호 3035). 보호는 all_except_custom_domains (2026-10-28 사용자 요청으로 "all" 에서 되돌림):
+      exam-maker-one.vercel.app 만 공개, exam-maker-themonsteredu.vercel.app 과 배포마다 붙는 주소는 버셀 로그인이 필요하다 (시험은 공개 주소로)
     - 깃허브 기본 브랜치가 옛 claude/new-session-65lm7i 라서 Vercel 실서비스 브랜치도 그것이다. 그래서 Ignored Build Step
       ([ "$VERCEL_ENV" != "production" ] || [ "$VERCEL_GIT_COMMIT_REF" != "claude/lucid-sagan-4tgi0y" ]) 로 미리보기와 다른 브랜치는 빌드하지 않고,
       실서비스 배포는 Vercel MCP create_deployment (gitSource ref claude/lucid-sagan-4tgi0y, target production) 로 직접 한다 (push 만으로는 배포되지 않는다)
     - 팀 요금제는 무료(Hobby)로 보인다 (청구 내역 없음). Hobby 는 빌드를 한 번에 하나만 한다
-    - 시험: 공유 링크(get_access_to_vercel_url) → node <scratchpad>/e2e/deployed-flow.mjs 로 로그인·보관·한글 파일·내려받기·지우기 확인
+    - 시험: node <scratchpad>/e2e/deployed-flow.mjs <출력 폴더> https://exam-maker-one.vercel.app/ (로그인·보관·한글 파일·내려받기·지우기),
+      node <scratchpad>/e2e/deployed-devices.mjs https://exam-maker-one.vercel.app <출력 폴더> (기기별 열쇠·모델, 가짜 열쇠는 Anthropic 이 거절)
   - Vercel 환경변수에 비밀값이 없다. 저장 창구(supabase/functions/exam-gateway)는 Vercel OIDC 토큰(프로젝트 exam-maker, production·preview)만 받아들이고,
     로그인 쿠키 서명 열쇠와 API 키 암호화는 창구가 Supabase 서비스 열쇠로부터 만들어 한다. 미들웨어는 쿠키 모양·만료만, 서버 주소가 서명·세션 판까지 확인
     - 비밀값을 대화 기록에 찍지 않는다 (보안 검사가 막는다). 시험용 공유 비밀값(EXAM_GATEWAY_SECRET)은 이 작업 환경 scratchpad 파일에만 있다
@@ -104,11 +104,17 @@
     pdf.js legacy 판, 세션 판 낡은 기억, 한국 시간 달, 제목 상자 없는 시험지, 알림 머리말 크기, 한글 파일 요청 4.3MB(넘으면 300dpi)
   - 사용자 결정(2026-10-28, 배포 뒤): "점검 그만하고 올려". 다른 사람도 쓰게 한다 → 버셀 로그인 막음을 풀고(보호 all_except_custom_domains),
     AI 열쇠는 각자 설정에서 넣는다
-    - 기기별 열쇠(코드 완료·로컬 시험 통과, 커밋함): 쿠키 exam_device(무작위, HttpOnly, 400일, 미들웨어가 붙임) → 그 SHA-256 으로
-      exam_devices 표에 열쇠(창구가 잠금)·모델. 요금은 열쇠별(key_tag) 기록·표시. 키 없는 기기의 AI 읽기는 바로 거절 (서버 환경변수 키로 넘어가지 않음)
-    - 배포 순서 (아직 안 함): ① Supabase 마이그레이션 supabase/migrations/20261029_exam_devices.sql ② exam-gateway 배포 ③ Vercel 실서비스 배포
-      ④ ssoProtection 풀기 ⑤ 공개 주소 시험. ①은 지우는 문장(drop) 없이 새 함수 exam_usage_monthly_by_key 를 더하기만 한다
-      (drop 이 있던 판은 apply_migration 이 사용자 허락 창을 띄웠고, 두 번 모두 답이 없어 시간 초과·적용 안 됨을 확인. 예전 창구도 계속 돌아간다)
+    - 기기별 열쇠 (배포 완료 2026-10-28, 실서비스 dpl_7u5QKqvAQbPdsgJPKJKXu3cVNZRD, 커밋 10d9692, 창구 v5): 쿠키 exam_device(무작위, HttpOnly, 400일, 미들웨어가 붙임)
+      → 그 SHA-256 으로 exam_devices 표에 열쇠(창구가 잠금)·모델. 요금은 열쇠별(key_tag) 기록·표시. 키 없는 기기의 AI 읽기는 바로 거절
+      (서버 환경변수 키로 넘어가지 않음). 공개 주소에서 두 기기 분리·가짜 열쇠 거절·보관·한글 파일·지우기 모두 확인
+    - 마이그레이션 20261029_exam_devices.sql 은 지우는 문장(drop) 없이 새 함수 exam_usage_monthly_by_key 를 더하기만 한다
+      (drop 이 있던 판은 apply_migration 이 사용자 허락 창을 띄웠고 두 번 모두 답이 없어 시간 초과. 더하기만 하는 판은 창 없이 적용됨)
+    - 구독: 사용자는 Max (아이폰 앱으로 구독한 것으로 보임). 웹 프로그램은 구독 로그인으로 못 돌린다 (code.claude.com/docs/en/legal-and-compliance).
+      대신 Max 에 든 매달 API 크레딧(5x 100달러, 20x 200달러, 달마다 사라짐, 7일 뒤부터)을 claude.ai 웹 설정 → 결제 → API credits 에서 콘솔 조직에 연결하고,
+      그 조직의 키를 설정에 넣으면 이 프로그램이 크레딧으로 돈다 (platform.claude.com/docs/en/about-claude/api-credits-for-subscribers).
+      크레딧은 계정 주인만 쓸 수 있다 (anthropic.com/legal/credit-terms) → 다른 선생님은 각자 키.
+      다른 길(claude.ai 안에서 여는 페이지의 sample 기능: 보는 사람 구독으로 돌지만 사진을 약 1.2MP 로 줄이고 바깥 연결이 막혀 한글 파일 만들기를 브라우저로 옮겨야 함)은
+      크레딧으로 충분하면 만들 필요 없음
   - 남은 일: 세 모델 비교 → 가장 싼 쓸 만한 조합을 기본값으로. 열쇠가 기기마다 따로라서 read-samples --via 로는 원장님 열쇠를 쓸 수 없다
     → 프로그램 화면 안에 '모델 비교' 기능을 만들어 원장님 기기에서 돌리고, 결과는 보관함(DB)에서 읽어 판단할 것.
     그림 속 기울인 글자를 Latin Modern Math(수학 기울임 글자)로 (조사: 한글 수식 글꼴 x 와 0.987 로 가장 닮음, 지금 Liberation Serif Italic 은 0.089),
