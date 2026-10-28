@@ -279,15 +279,22 @@ class ExamBuilder:
             return
         align = fig.get("align", "CENTER")
         gap = self.tpl["figure"]["gap_pt"]
-        pic = self.doc.add_picture(png, "png", width=mm(w_mm), height=mm(h_mm), align=align)
-        self.para_format(pic.paragraph, alignment=align, line_spacing_percent=100,
+        item_id = self.add_image(png)
+        p = self.doc.add_paragraph("", include_run=False)
+        p.add_picture(item_id, width=mm(w_mm), height=mm(h_mm), treat_as_char=True, align=align)
+        # 문제 글의 내어쓰기를 물려받지 않게 왼쪽 여백을 0 으로 둔다
+        self.para_format(p, alignment=align, line_spacing_percent=100, indent_left_mm=0, first_line_indent_mm=0,
                          spacing_before_pt=gap, spacing_after_pt=gap)
+
+    def add_image(self, png: bytes) -> str:
+        """그림 파일을 문서에 넣고 그 이름(id)을 돌려준다. 한글이 저장하는 방식대로 image1, image2 … 로 붙인다."""
+        self._image_count = getattr(self, "_image_count", 0) + 1
+        return self.doc.media.add_image(png, "png", item_id=f"image{self._image_count}").item_id
 
     def add_floating_figure(self, p, png: bytes, w_mm: float, h_mm: float):
         """문제 글 오른쪽에 그림을 띄워 두고, 글은 그림 왼쪽으로 흐르게 한다."""
-        item = self.doc.media.add_image(png, "png")
         pic = p.add_picture(
-            item.item_id,
+            self.add_image(png),
             width=mm(w_mm),
             height=mm(h_mm),
             treat_as_char=False,
@@ -324,7 +331,7 @@ class ExamBuilder:
         table = p_anchor.add_table(1, 1, width=mm(w_mm), border_fill_id_ref=bf)
         self._set_row_height(table, 0, mm(h_mm))
         self.para_format(p_anchor, alignment=fig.get("align", "CENTER"), line_spacing_percent=100,
-                         spacing_before_pt=6, spacing_after_pt=6)
+                         indent_left_mm=0, first_line_indent_mm=0, spacing_before_pt=6, spacing_after_pt=6)
 
     def build_item(self, item: dict, is_first: bool):
         t = self.tpl
@@ -422,7 +429,10 @@ def postprocess(data: bytes) -> bytes:
 
     - 한국어를 어절 단위로 줄바꿈 (BREAK_WORD → KEEP_WORD)
     - 꼬리말의 쪽 번호 위치 컨트롤(pageNum) 제거: 꼬리말 글 안의 번호와 겹쳐 두 번 찍히지 않게
-    - zip 을 다시 쓸 때 mimetype 을 맨 앞에, 압축 없이
+    - header.xml 의 binDataList 제거: 한글이 저장한 파일에는 없고, 그 안의 번호(0, 1, 2)가
+      그림이 가리키는 이름(image1 …)과 달라 그림을 찾지 못하는 보기 프로그램이 있다
+    - zip 을 다시 쓸 때 mimetype 을 맨 앞에, 압축 없이.
+      한글이 저장하는 대로 그림 파일(BinData)과 version.xml 도 압축하지 않는다
     """
     src = zipfile.ZipFile(io.BytesIO(data))
     out = io.BytesIO()
@@ -435,12 +445,13 @@ def postprocess(data: bytes) -> bytes:
             body = src.read(name)
             if name == "Contents/header.xml":
                 body = body.replace(b'breakNonLatinWord="BREAK_WORD"', b'breakNonLatinWord="KEEP_WORD"')
+                body = re.sub(rb"<hh:binDataList\b[^>]*?(?:/>|>.*?</hh:binDataList>)", b"", body, flags=re.S)
             if name.startswith("Contents/section") and name.endswith(".xml"):
                 text = body.decode("utf-8")
                 text = re.sub(r'<hp:run charPrIDRef="\d+"><hp:ctrl><hp:pageNum [^>]*/></hp:ctrl></hp:run>', "", text)
                 body = text.encode("utf-8")
-            if name == "mimetype":
-                dst.writestr(zipfile.ZipInfo("mimetype"), body, compress_type=zipfile.ZIP_STORED)
+            if name == "mimetype" or name == "version.xml" or name.startswith("BinData/"):
+                dst.writestr(zipfile.ZipInfo(name), body, compress_type=zipfile.ZIP_STORED)
             else:
                 dst.writestr(name, body)
     return out.getvalue()
