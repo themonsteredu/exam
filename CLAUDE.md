@@ -78,3 +78,19 @@
       (글꼴: https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_six@1.2/S-CoreDream-{4Regular,5Medium,6Bold}.woff 와 public/fonts 의 Liberation Serif 를 한 폴더에 모아 python3 scripts/subset-fonts.py)
     - python3 scripts/make_hwpx.py <시험지.json> <출력.hwpx> : AI 결과로 한글 파일
   - 키가 생기면 할 일: check-ai → read-samples → report-samples → 보고서와 한글 파일(이름을 새로 붙여)을 사용자에게 보내고, 결과가 나쁜 곳은 지시문(prompts.ts)을 고쳐 다시 읽기 (--cached 로 요금 아끼기). 쓴 요금을 사용자에게 알린다
+  - 사용자 결정(2026-10-28): 키는 이 작업 환경이 아니라 배포한 프로그램의 설정 화면에 넣는다. 그 키로 samples 를 읽어 품질이 괜찮은 가장 싼 모델을 고른다
+    (배포한 프로그램의 /api/read/page·figure 에 model 을 바꿔 보내 시험. 요금은 설정의 월별 기록에 남는다)
+- 설정·보관함·배포 (사용자 요청으로 6단계 일부를 먼저 함). 설계: docs/설계-설정-저장-배포.md
+  - 사용자 결정: 저장은 기존 Supabase 프로젝트 aiapp(vypnobpmyadtcvxhtagn, 서울)에 exam_ 표와 exam-files 보관함을 따로. 비밀번호 3035 는 프로그램 전체. 월별 요금은 프로그램이 직접 기록
+  - 화면: / (시험지 만들기), /archive (보관함), /settings (API 키·모델·월별 요금·비밀번호), /login
+  - 배포: Vercel 팀 themonsteredu, 프로젝트 exam-maker (prj_JayN6FC5KzNlcDowvuG0lw1GJafo), 서버 지역 icn1(서울)
+    - 주소: https://exam-maker-themonsteredu.vercel.app (팀 기본 보호 "사용자 도메인 말고 모두"라 버셀 로그인한 팀원만 열린다. 그다음 비밀번호 3035)
+    - 깃허브 기본 브랜치가 옛 claude/new-session-65lm7i 라서 Vercel 실서비스 브랜치도 그것이다. 그래서 다른 브랜치는 Ignored Build Step 으로 빌드하지 않고,
+      실서비스 배포는 Vercel MCP create_deployment (gitSource ref claude/lucid-sagan-4tgi0y, target production) 로 직접 한다. 이 브랜치에 push 하면 미리보기 배포가 생긴다
+    - 시험: 공유 링크(get_access_to_vercel_url) → node <scratchpad>/e2e/deployed-flow.mjs 로 로그인·보관·한글 파일·내려받기·지우기 확인
+  - Vercel 환경변수에 비밀값이 없다. 저장 창구(supabase/functions/exam-gateway)는 Vercel OIDC 토큰(프로젝트 exam-maker, production·preview)만 받아들이고,
+    로그인 쿠키 서명 열쇠와 API 키 암호화는 창구가 Supabase 서비스 열쇠로부터 만들어 한다. 미들웨어는 쿠키 모양·만료만, 서버 주소가 서명·세션 판까지 확인
+    - 비밀값을 대화 기록에 찍지 않는다 (보안 검사가 막는다). 시험용 공유 비밀값(EXAM_GATEWAY_SECRET)은 이 작업 환경 scratchpad 파일에만 있다
+  - Supabase 보관함은 한글 파일 이름을 받지 않는다 → 보관함 안 이름은 1.jpg·<시각>.hwpx, 한글 이름은 내려받기 주소의 download= 에 한 번만 인코딩해 붙인다
+    (이 작업 환경 브라우저는 C 로캘이라 한글 이름이 download 로 보인다. LANG=C.UTF-8 로 띄우면 제대로 나온다)
+  - 로그인 제한: DB 함수 exam_login_begin (15분 같은 곳 10번, 모두 50번, 24시간 200번). 동시에 보내도 건너뛰지 못함을 확인

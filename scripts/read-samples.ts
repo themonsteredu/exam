@@ -7,6 +7,9 @@
 // --cached : 이미 읽어 둔 결과(output/ai/*.page.json, *.figures.json)가 있으면 AI 를 다시 부르지 않는다 (요금 없음)
 // --out : 결과 폴더 (모델끼리 견줄 때 모델마다 다른 폴더로. 예: --out=output/ai/haiku --page-model=claude-haiku-5-5)
 // --page-model, --figure-model : 쪽 읽기·그림 읽기에 쓸 모델 (claude-haiku-5-5, claude-sonnet-5-5, claude-opus-5-5, claude-opus-5)
+// --via=<배포한 프로그램 주소 또는 Vercel 공유 링크> : 배포한 프로그램을 거쳐 읽는다. 키는 프로그램 설정에 저장한 것을 쓰므로
+//         이 작업 환경에 키가 없어도 된다 (키를 보지 않는다). 프로그램 비밀번호는 환경변수 EXAM_PASSWORD 로 준다.
+//         쪽 사진은 프로그램 화면과 같이 JPEG 로 보낸다. --page-effort, --figure-effort 는 쓰지 않는다. 요금은 프로그램의 월별 기록에도 남는다
 //
 // 결과: output/ai/<이름>.page.json (쪽 읽기 답), <이름>.figures.json (그림 읽기 답), <이름>.exam.json (시험지 JSON),
 //       output/ai/usage.json (이번에 쓴 토큰과 요금)
@@ -56,6 +59,7 @@ for (const m of [pageModel, figureModel]) {
     process.exit(1);
   }
 }
+const via = args.find((a) => a.startsWith("--via="))?.slice("--via=".length);
 const names = args.filter((a) => !a.startsWith("--"));
 const chosen = names.length ? SAMPLES.filter((s) => names.includes(s.file)) : SAMPLES;
 if (names.length && chosen.length !== names.length) {
@@ -78,10 +82,11 @@ async function pageImage(orig: { data: Buffer; width: number; height: number; pn
   const fit = fitForClaude(orig.width, orig.height);
   let pipe = sharp(orig.data);
   if (fit.scale < 1) pipe = pipe.resize(fit.width, fit.height, { kernel: "lanczos3" });
-  const buf = orig.png ? await pipe.png().toBuffer() : await pipe.jpeg({ quality: 90 }).toBuffer();
+  const png = orig.png && !via; // 배포한 프로그램을 거칠 때는 프로그램 화면처럼 JPEG 로
+  const buf = png ? await pipe.png().toBuffer() : await pipe.jpeg({ quality: via ? 92 : 90 }).toBuffer();
   const meta = await sharp(buf).metadata();
   return {
-    image: { data: buf.toString("base64"), mediaType: orig.png ? "image/png" : "image/jpeg", width: meta.width!, height: meta.height! },
+    image: { data: buf.toString("base64"), mediaType: png ? "image/png" : "image/jpeg", width: meta.width!, height: meta.height! },
     scale: meta.width! / orig.width,
   };
 }
@@ -99,6 +104,55 @@ async function figureImage(orig: { data: Buffer }, crop: { x: number; y: number;
 }
 
 let failures = 0;
+
+/** 배포한 프로그램에 들어가 서버 주소를 부른다 (Vercel 보호는 공유 링크 쿠키로, 프로그램은 비밀번호로) */
+async function viaClient(share: string) {
+  const base = new URL(share).origin;
+  const jar = new Map<string, string>();
+  const take = (res: Response) => {
+    for (const c of res.headers.getSetCookie()) {
+      const kv = c.split(";")[0];
+      const i = kv.indexOf("=");
+      if (i > 0) jar.set(kv.slice(0, i).trim(), kv.slice(i + 1));
+    }
+  };
+  const cookie = () => [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
+  let url = share;
+  for (let i = 0; i < 5; i++) {
+    const res = await fetch(url, { redirect: "manual", headers: { cookie: cookie() } });
+    take(res);
+    const next = res.headers.get("location");
+    if (!next || res.status < 300 || res.status >= 400) break;
+    url = new URL(next, url).toString();
+  }
+  if (!process.env.EXAM_PASSWORD) throw new Error("프로그램 비밀번호(EXAM_PASSWORD)가 없습니다");
+  const login = await fetch(`${base}/api/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie: cookie() },
+    body: JSON.stringify({ password: process.env.EXAM_PASSWORD }),
+  });
+  take(login);
+  if (!login.ok) throw new Error(`프로그램에 로그인하지 못했습니다 (${login.status})`);
+  return async <T>(p: string, body: unknown): Promise<T> => {
+    const res = await fetch(`${base}${p}`, { method: "POST", headers: { "content-type": "application/json", cookie: cookie() }, body: JSON.stringify(body) });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json.error ?? `프로그램 오류 ${res.status}`);
+    return json as T;
+  };
+}
+
+let post: Awaited<ReturnType<typeof viaClient>> | null = null;
+const dataUrl = (image: ImageInput) => `data:${image.mediaType};base64,${image.data}`;
+
+async function callReadPage(image: ImageInput) {
+  if (post) return post<{ reading: PageReading; usage: Usage }>("/api/read/page", { image: dataUrl(image), page: 1, total: 1, model: pageModel });
+  return readPage(image, { page: 1, total: 1, model: pageModel, effort: pageEffort });
+}
+
+async function callReadFigure(image: ImageInput, context: FigureContext) {
+  if (post) return post<Awaited<ReturnType<typeof readFigure>>>("/api/read/figure", { image: dataUrl(image), item: context, model: figureModel });
+  return readFigure(image, context, { model: figureModel, effort: figureEffort });
+}
 
 /** 읽은 결과를 저장한다. 실패한 그림이 들어 있으면 저장하지 않는다 (--cached 로 다시 쓸 때 실패를 되풀이하지 않게) */
 async function cachedJson<T>(file: string, make: () => Promise<T>, complete: (v: T) => boolean = () => true): Promise<T> {
@@ -139,7 +193,7 @@ async function pool<T, R>(items: T[], n: number, fn: (t: T) => Promise<R>): Prom
 async function readFigureSaved(label: string, image: ImageInput, context: FigureContext) {
   const t0 = Date.now();
   try {
-    const { figure, usage } = await readFigure(image, context, { model: figureModel, effort: figureEffort });
+    const { figure, usage } = await callReadFigure(image, context);
     note(label, usage, (Date.now() - t0) / 1000);
     return { reading: figure, usage };
   } catch (err) {
@@ -158,7 +212,7 @@ async function runPage(sample: Sample) {
   const pageFile = path.join(OUT, `${stem}.page.json`);
   const page = await cachedJson(pageFile, async () => {
     const t0 = Date.now();
-    const { reading, usage } = await readPage(image, { page: 1, total: 1, model: pageModel, effort: pageEffort });
+    const { reading, usage } = await callReadPage(image);
     note(`${stem} 쪽 읽기`, usage, (Date.now() - t0) / 1000);
     return { reading, usage, sent: { width: image.width, height: image.height, scale } };
   });
@@ -201,12 +255,17 @@ async function runFigure(sample: Sample) {
   }, allRead);
 }
 
-if (!cached && !process.env.ANTHROPIC_API_KEY) {
+if (via) post = await viaClient(via);
+if (!cached && !via && !process.env.ANTHROPIC_API_KEY) {
   console.error("AI 열쇠(ANTHROPIC_API_KEY)가 없어 AI 를 부를 수 없습니다. 저장해 둔 결과만 쓰려면 --cached 를 붙이세요.");
   process.exit(1);
 }
 await mkdir(OUT, { recursive: true });
-console.log(`쪽 읽기 모델 ${modelFor("page", pageModel)}, 그림 읽기 모델 ${modelFor("figure", figureModel)}, 결과 폴더 ${path.relative(root, OUT)}`);
+console.log(
+  via
+    ? `배포한 프로그램을 거쳐 읽습니다. 쪽 읽기 모델 ${pageModel ?? "설정에 고른 것"}, 그림 읽기 모델 ${figureModel ?? "설정에 고른 것"}, 결과 폴더 ${path.relative(root, OUT)}`
+    : `쪽 읽기 모델 ${modelFor("page", pageModel)}, 그림 읽기 모델 ${modelFor("figure", figureModel)}, 결과 폴더 ${path.relative(root, OUT)}`,
+);
 for (const sample of chosen) {
   try {
     if (sample.mode === "page") await runPage(sample);
