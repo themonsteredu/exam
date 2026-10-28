@@ -53,6 +53,14 @@
 
 ## 진행 상황
 - 1단계: 완료 (사용자 확인함). py/exam_hwpx, scripts/make_step1.py → output/step1_exam_p1.hwpx
-- 2단계: 그림 엔진 lib/figure (types.ts 그림 명령 형식, engine.ts 그리기·PNG, geometry.ts 계산, examples.ts 예시 A~F), 확인 화면 components/figure-test (Next 페이지 app/figure-test 와 점검 페이지가 같이 씀). 사용자 확인 대기 중
+- 2단계: 완료 (사용자 확인함). 그림 엔진 lib/figure (types.ts 그림 명령 형식, engine.ts 그리기·PNG, geometry.ts 계산, examples.ts 예시 A~F, render-exam.ts 시험지 그림 일괄 PNG), 확인 화면 components/figure-test (Next 페이지 app/figure-test 와 점검 페이지가 같이 씀)
   - 점검 페이지(사용자가 바로 여는 주소): https://claude.ai/artifact/LvPQzVC3soDs8HtzVXUcGw
   - 다시 만들기: python3 scripts/subset-fonts.py <원본 글꼴 폴더> <부분 글꼴 폴더> → node scripts/build-figure-artifact.mjs <출력.html> <부분 글꼴 폴더>
+- 3단계: 진행 중. python3 scripts/make_step3.py → output/step3_exam_p1.hwpx (그림 아래 배치), output/step3_figure_right.hwpx (그림 오른쪽 배치 확인용)
+  - 사용자 한글(Windows, 이전 버전)에서 그림·수식·줄 맞춤 확인함. 남은 것: 사용자가 말한 "삼각형 기호 두 개" 위치 확인, 3단계 "확인했다"
+  - 사용자 한글에서 확인된 사항 (바꾸지 말 것):
+    - 그림: imgDim·imgClip = 픽셀 x 75, curSz = 0, PNG 에 pHYs 없음, 그림 이름 image1…, header 의 binDataList 없음, BinData·version.xml 은 압축하지 않음
+      (python-hwpx 기본값으로는 이전 버전 한글에서 그림 자리만 생기고 그림이 안 보였다. scripts/make_picture_test.py 로 비교해서 찾음)
+    - 문제 글: 왼쪽 여백 0 + 내어쓰기 5.5mm (번호가 선택지 번호와 같은 세로줄)
+    - 같은 이름의 파일을 여러 번 보내면 사용자가 예전 파일을 열 수 있다. 보낼 때마다 파일 이름을 다르게 한다
+  - python-hwpx 6.9.0 메모: doc.media.add_image 가 돌려주는 BinaryItem 의 id 는 item.id 가 아니라 item.item_id
