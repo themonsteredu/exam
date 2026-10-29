@@ -77,6 +77,12 @@ export async function renderOriginalPng(data: string, adjustment?: { brightness?
   c.height = Math.ceil(Math.abs(img.height * Math.cos(angle)) + Math.abs(img.width * Math.sin(angle)));
   if (c.width * c.height > 25000000) throw new Error("사진이 너무 큽니다");
   const ctx = c.getContext("2d")!; ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
-  ctx.translate(c.width / 2, c.height / 2); ctx.rotate(angle); ctx.filter = `brightness(${brightness})`; ctx.drawImage(img, -img.width / 2, -img.height / 2);
+  ctx.translate(c.width / 2, c.height / 2); ctx.rotate(angle); ctx.drawImage(img, -img.width / 2, -img.height / 2);
+  // filter 속성이 없는 태블릿 브라우저에서도 같은 보정 결과를 만든다.
+  if (brightness !== 1) {
+    const pixels = ctx.getImageData(0, 0, c.width, c.height);
+    for (let i = 0; i < pixels.data.length; i += 4) for (let channel = 0; channel < 3; channel++) pixels.data[i + channel] = Math.min(255, Math.round(pixels.data[i + channel] * brightness));
+    ctx.putImageData(pixels, 0, 0);
+  }
   return { dataUrl: c.toDataURL("image/png"), width: c.width, height: c.height, warnings: [] as string[] };
 }
