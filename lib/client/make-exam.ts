@@ -11,6 +11,7 @@ import { continuationHint } from "@/lib/ai/read-page";
 import { attachFigurePngs, renderExamFigures } from "@/lib/figure/render-exam";
 import { ApiError, patchJson, postJson, uploadFile, type FileRef } from "./api";
 import { figureImage, openSources, pageImage, precheckFiles } from "./pages";
+import { assertFresh } from "./version";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -129,7 +130,8 @@ async function run(
   };
   tell({ message: "파일을 확인하는 중입니다." });
 
-  // 0) 요금이 들기 전에 파일을 열어 본다 (크기, 종류, 열리는 사진·PDF 인지)
+  // 0) 요금이 들기 전에: 이 화면이 지금 판인지, 파일을 열 수 있는지 (크기, 종류, 열리는 사진·PDF 인지)
+  await assertFresh();
   await precheckFiles(o.files);
   const sources = await openSources(o.files);
   check();

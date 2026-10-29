@@ -121,6 +121,9 @@
     getDocument 에 wasmUrl·cMapUrl·standardFontDataUrl·iccUrl. 미리 확인: 같은 쪽을 보통·엄격(stopAtErrors)으로 그리기 명령 수를 세어 엄격 쪽이 적으면
     "빠짐" (pdf.js 6.4 는 엄격이어도 오류를 내지 않고 명령을 비운다) → AI 요금 전에 "그래도 만들까요?" 확인, 결과 알림에도 남김.
     미들웨어는 /pdfjs/ 를 막지 않는다. 사용자 PDF 로 실제 화면에서 확인 (글자 또렷, 해독기를 막으면 확인 창이 뜨고 AI 요청 0번)
+  - 두 번째 실제 시험(00:30 UTC, 배포 2분 뒤)도 같은 결과: 배포 전에 열어 둔 창(예전 판 화면 코드)으로 만듦 (4번 그림의 x 가 예전 글꼴, 15 도 기울어 있어 확인).
+    고침: next.config 의 NEXT_PUBLIC_APP_VERSION(VERCEL_DEPLOYMENT_ID) 과 /api/version 을 견줘, 예전 판이면 AI 요금 전에 멈추고 "화면 새로 고치기" 알림
+    (lib/client/version.ts, 만들기 화면은 창으로 돌아올 때도 확인). 배포한 뒤에는 사용자에게 꼭 새로 고치라고 말할 것
   - 남은 일: 세 모델 비교 → 가장 싼 쓸 만한 조합을 기본값으로. 열쇠가 기기마다 따로라서 read-samples --via 로는 원장님 열쇠를 쓸 수 없다
     → 프로그램 화면 안에 '모델 비교' 기능을 만들어 원장님 기기에서 돌리고, 결과는 보관함(DB)에서 읽어 판단할 것.
     그림 속 기울인 글자: 코드 완료(아직 배포 안 함, 사용자에게 전후 비교 그림 보냄). public/fonts/ExamMathItalic.woff2 = Latin Modern Math 1.959 의 수학 기울임 글자만

@@ -3,6 +3,7 @@
 import { DragEvent, useEffect, useRef, useState } from "react";
 import { api, patchJson, postJson, saveBlob, won } from "@/lib/client/api";
 import { makeExam, type MakeResult, type Progress, type Step } from "@/lib/client/make-exam";
+import { isStale, STALE_MESSAGE } from "@/lib/client/version";
 import { loadFigureFonts } from "@/lib/figure/engine";
 import { piecesToHtml } from "@/lib/ai/latex-view";
 
@@ -29,6 +30,8 @@ export default function MakePage() {
   const [result, setResult] = useState<MakeResult | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  /** 이 화면을 연 뒤 프로그램이 새 판으로 바뀌었는지 (바뀌었으면 새로 고치라고 알린다) */
+  const [stale, setStale] = useState(false);
   const abort = useRef<AbortController | null>(null);
   const input = useRef<HTMLInputElement>(null);
 
@@ -44,6 +47,12 @@ export default function MakePage() {
       const mod: any = await import("jsxgraph");
       setJXG(mod.default || mod.JXG || mod);
     })();
+    // 창으로 돌아올 때마다 새 판이 나왔는지 본다 (배포 전에 열어 둔 창에서 예전 판으로 만들지 않게)
+    const onVisible = () => {
+      if (document.visibilityState === "visible") isStale().then((v) => v && setStale(true));
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
 
   function choose(list: FileList | null) {
@@ -111,6 +120,15 @@ export default function MakePage() {
         <h1>시험지 만들기</h1>
         <p className="lead">시험지 PDF 나 사진을 올리면 AI 가 읽어서 학교 양식의 한글 파일로 만들어 줍니다. 원본과 만든 파일은 보관함에 저장됩니다.</p>
       </div>
+
+      {(stale || error === STALE_MESSAGE) && (
+        <p className="notice error" role="alert">
+          {STALE_MESSAGE}{" "}
+          <button type="button" onClick={() => window.location.reload()}>
+            화면 새로 고치기
+          </button>
+        </p>
+      )}
 
       {ready && !ready.keySaved && (
         <p className="notice error">
@@ -193,7 +211,7 @@ export default function MakePage() {
         </section>
       )}
 
-      {error && (
+      {error && error !== STALE_MESSAGE && (
         <p className="notice error" role="alert">
           {error}
           {error.includes("열쇠") && (
