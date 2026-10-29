@@ -130,7 +130,10 @@ class SourceLayout:
         spacing = min(150, max(100, round(line_pt / font * 100)))
         for i, line in enumerate(lines):
             p = cell.paragraphs[0] if i == 0 else cell.add_paragraph("")
-            self.b.add_pieces(p, line, size=font, where=f"{no}번 원본 배치")
+            if block.get("literal"):
+                p.add_run("".join(str(part.get("t", "")) for part in line), char_pr_id_ref=self.b.run_style(size=font))
+            else:
+                self.b.add_pieces(p, line, size=font, where=f"{no}번 원본 배치")
             self.b.para_format(p, alignment="CENTER" if boxed and title and i == 0 else block.get("align", "LEFT"),
                 line_spacing_percent=spacing, spacing_before_pt=0, spacing_after_pt=0,
                 indent_left_mm=0, indent_right_mm=0, first_line_indent_mm=0)

@@ -102,7 +102,7 @@ def draw_graphic(layout, anchor, spec, box, sx, sy, no):
             if fitted < 8.5: b.warnings.append(f"{no}번: 표 안 글자가 작습니다. 원본과 비교해 주세요")
             for i, text in enumerate(str(c["text"])[:2000].split("\n")):
                 p = cell.paragraphs[0] if i == 0 else cell.add_paragraph("")
-                b.add_rich_text(p, text, size=fitted)
+                p.add_run(text, char_pr_id_ref=b.run_style(size=fitted))
                 b.para_format(p, alignment="CENTER", line_spacing_percent=110, spacing_before_pt=0, spacing_after_pt=0)
         layout.place(table.element, ox + x * ratio, oy + y * ratio)
     for t in texts:
@@ -111,6 +111,6 @@ def draw_graphic(layout, anchor, spec, box, sx, sy, no):
         if w <= 0 or h <= 0: raise ValueError("자료 글자 영역 오류")
         block = {"role":"text", "box":{"x":ox+x*ratio,"y":oy+y*ratio,"w":w*ratio,"h":h*ratio},
             "lines":[[{"t":line}] for line in str(t["text"])[:2000].split("\n")], "font_pt":max(8.5,number(t["size"])*ratio*72/25.4), "minimum_font_pt":3,
-            "align":str(t.get("align","left")).upper(), "direction": t.get("direction","horizontal")}
+            "align":str(t.get("align","left")).upper(), "direction": t.get("direction","horizontal"), "literal":True}
         if block["align"] not in ("LEFT","CENTER","RIGHT"): raise ValueError("글자 정렬 오류")
         layout.text(anchor, block, 1, 1, no)

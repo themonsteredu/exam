@@ -27,6 +27,9 @@ assert not w,w
 assert not any(p.startswith('BinData/') for p in z.namelist())
 assert len(s.findall('.//hp:line',hp))+len(s.findall('.//hp:polygon',hp))>=4
 assert 'A' in ''.join(s.itertext()) and 'B' in ''.join(s.itertext()) and 'C' in ''.join(s.itertext())
+literal={**sample,'texts':[{**sample['texts'][0],'text':'__A__'}]}
+_,literal_xml,_=run(literal)
+assert '__A__' in ''.join(literal_xml.itertext())
 z,s,w=run(tab)
 assert not w,w
 t=next(t for t in s.findall('.//hp:tbl',hp) if t.get('rowCnt')=='2')
