@@ -180,7 +180,7 @@ class ExamBuilder:
                 text = piece.get("t")
                 # 문단 나눔은 문제 글에서만 쓴다 (build_item 이 미리 나눔). 다른 곳에 섞여 오면 빈칸으로
                 text = "" if text is None else str(text).replace("\n", " ")
-                p.add_run(text, char_pr_id_ref=self.run_style(size=size))
+                self.add_rich_text(p, text, size=size)
 
     # ------------------------------------------------------------------ 부분별
     def text_width(self) -> int:
@@ -421,6 +421,13 @@ class ExamBuilder:
         no = item["no"]
         label = item.get("label") or f"{no}."
         paragraphs = self.split_paragraphs(item.get("stem", []))
+        # 읽은 문제에 이미 총 배점(예: [6점-부분점수])이 있으면 다시 붙이지 않는다.
+        # 소문항의 부분 배점은 총 배점과 다를 수 있으므로 삭제하지 않는다.
+        points = item.get("points")
+        stem_text = "".join(str(part.get("t", "")) for part in item.get("stem", []) if isinstance(part, dict))
+        score_present = bool(points is not None and re.search(
+            r"\[\s*" + re.escape(str(points)) + r"\s*점(?:\s*[-–−]\s*부분\s*점수)?\s*\]", stem_text
+        ))
         first = None
         for k, pieces in enumerate(paragraphs):
             p = self.doc.add_paragraph("")
@@ -429,8 +436,8 @@ class ExamBuilder:
                 self.set_break(p, item.get("break_before"))
                 p.add_run(f"{label} ", char_pr_id_ref=self.run_style(size=size))
             self.add_pieces(p, pieces, size=size, where=f"{no}번 문제 글")
-            if k == len(paragraphs) - 1 and item.get("points") is not None:
-                p.add_run(f" [{item['points']}점]", char_pr_id_ref=self.run_style(size=size))
+            if k == 0 and points and not score_present:
+                p.add_run(f" [{points}점]", char_pr_id_ref=self.run_style(size=size))
             if k == 0:
                 self.para_format(
                     p, alignment="JUSTIFY", line_spacing_percent=t["line_spacing"]["body"],

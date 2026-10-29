@@ -45,6 +45,8 @@ _SYMBOLS = {
     "blacksquare": "■",
     "#": "#",
     "bigcirc": "○",
+    # 시험지의 삼각형 기호는 정자체의 속이 빈 △로 표시한다.
+    "triangle": "△",
     "triangleright": "▷",
     "star": "☆",
     "bigstar": "★",

@@ -16,6 +16,8 @@ export type ExamFigure = {
   gliders?: Record<string, number>;
   png?: string;
   png_size?: [number, number];
+  source_png?: string;
+  source_png_size?: [number, number];
   [key: string]: unknown;
 };
 
@@ -50,7 +52,11 @@ export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGUR
       if (!fig) continue;
       const base = { section: s, index: i, no: items[i].no };
       if (!fig.commands) {
-        results.push({ ...base, error: "그림 명령이 없습니다" });
+        if (fig.source_png) {
+          results.push({ ...base, png: fig.source_png, size: fig.source_png_size });
+        } else {
+          results.push({ ...base, error: "그림 명령이 없습니다" });
+        }
         continue;
       }
       if (!Array.isArray(fig.commands.elements)) {
@@ -60,6 +66,7 @@ export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGUR
       try {
         const out = await renderFigurePng(JXG, fig.commands, {
           widthPx: pxForPrint(figureWidthMm(fig), dpi),
+          minFontPx: pxForPrint(2.3, dpi),
           gliders: fig.gliders,
         });
         results.push({
@@ -93,6 +100,9 @@ export function attachFigurePngs(exam: any, results: FigureRenderResult[]): any 
     }
     if (r.warnings?.length) fig.render_warnings = r.warnings;
     else delete fig.render_warnings;
+    // 전송용 사본에는 같은 그림을 두 번 싣지 않는다. 원본 exam 은 보존한다.
+    delete fig.source_png;
+    delete fig.source_png_size;
   }
   return copy;
 }

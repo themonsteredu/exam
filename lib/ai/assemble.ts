@@ -26,6 +26,9 @@ export type FigureResult = {
   reading?: FigureReading;
   /** 읽기에 실패한 까닭 */
   error?: string;
+  /** 지도·사진·표 등 다시 그릴 수 없는 자료는 원본 그림으로 보존 */
+  sourcePng?: string;
+  sourcePngSize?: [number, number];
 };
 
 /** 양식에서 그림 크기를 정하는 데 쓰는 값 (py/exam_hwpx/template.py 와 같게) */
@@ -43,7 +46,7 @@ export function figureJobs(page: number, reading: PageReading) {
   reading.sections.forEach((section, s) =>
     section.items.forEach((item, i) =>
       item.figures.forEach((region, f) => {
-        if (region.kind === "diagram" && region.w > 2 && region.h > 2) jobs.push({ key: figureKey(page, s, i, f), region, item });
+        if (region.w > 2 && region.h > 2) jobs.push({ key: figureKey(page, s, i, f), region, item });
       }),
     ),
   );
@@ -206,7 +209,13 @@ function makeFigure(
 ): any {
   const box = toOriginal(region, meta.scale);
   const fig: any = { box: { page: meta.page, ...box }, place: region.place, align: "CENTER" };
-  if (region.kind !== "diagram") itemUnsure.push(region.kind === "table" ? "표는 아직 옮기지 못해 자리만 비워 두었습니다" : "그림 모양을 알 수 없어 자리만 비워 두었습니다");
+  if (region.kind !== "diagram") {
+    if (result?.sourcePng) {
+      fig.source_png = result.sourcePng;
+      fig.source_png_size = result.sourcePngSize;
+      itemUnsure.push("지도·사진·표는 원본 그림을 사용했습니다. 잘린 곳이나 필기 표시를 확인해 주세요.");
+    } else itemUnsure.push("지도·사진·표의 원본 영역을 가져오지 못했습니다. 확인해 주세요.");
+  }
 
   // 그림이 실제로 차지하는 크기 (그림 읽기에서 받은 사각형이 있으면 그것, 없으면 쪽 읽기의 사각형)
   let content = box;
