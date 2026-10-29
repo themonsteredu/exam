@@ -38,6 +38,7 @@ export default function MakePage() {
   const [stale, setStale] = useState(false);
   const [review, setReview] = useState<{ exam: any; finish: (exam: any) => void } | null>(null);
   const [recovery, setRecovery] = useState<Recovery | null>(null);
+  const [resuming, setResuming] = useState(false);
   const abort = useRef<AbortController | null>(null);
   const input = useRef<HTMLInputElement>(null);
 
@@ -86,6 +87,8 @@ export default function MakePage() {
     const picked = [...list];
     setFiles(picked);
     setResult(null);
+    setProgress(null);
+    setResuming(false);
     setError("");
     setErrorDetail("");
     setRecovery(null);
@@ -101,6 +104,8 @@ export default function MakePage() {
   async function start(savedWork?: Recovery) {
     if (!JXG || !ready || (!savedWork && (!files.length || !ready.keySaved))) return;
     setBusy(true);
+    setResuming(!!savedWork);
+    setProgress(null);
     setError("");
     setErrorDetail("");
     setResult(null);
@@ -260,7 +265,7 @@ export default function MakePage() {
             ))}
           </ul>
           <p className="muted small">
-            {busy ? progress.message : result ? "다 됐습니다." : stopped ? "작업이 중단됐습니다." : ""} 지금까지 AI 요금: 약 {won(progress.usd, ready?.krwPerUsd)}
+            {busy ? progress.message : result ? "다 됐습니다." : stopped ? "작업이 중단됐습니다." : ""} {resuming ? "이전 읽기의 AI 요금" : "지금까지 AI 요금"}: 약 {won(progress.usd, ready?.krwPerUsd)}
           </p>
         </section>
       )}
@@ -280,18 +285,19 @@ export default function MakePage() {
 
       {review && <FigureReview exam={review.exam} onContinue={review.finish} />}
 
-      {result && <ResultView result={result} rate={ready?.krwPerUsd} />}
+      {result && <ResultView result={result} rate={ready?.krwPerUsd} resumed={resuming} />}
     </main>
   );
 }
 
-function ResultView({ result, rate }: { result: MakeResult; rate?: number }) {
+function ResultView({ result, rate, resumed }: { result: MakeResult; rate?: number; resumed: boolean }) {
   const items = (result.exam.sections ?? []).flatMap((s: any) => (s.items ?? []).map((it: any) => ({ ...it, _section: s.title })));
   return (
     <section className="card">
       <h2>다 만들었습니다</h2>
       <p>
-        문항 {items.length}개를 옮겼습니다. 한글 파일을 만들었{result.saved ? "고 보관함에도 저장했" : ""}습니다. 이번 AI 요금은 약 {won(result.usd, rate)} 입니다.
+        문항 {items.length}개를 옮겼습니다. 한글 파일을 만들었{result.saved ? "고 보관함에도 저장했" : ""}습니다.{" "}
+        {resumed ? `이전 읽기의 AI 요금은 약 ${won(result.usd, rate)}이며, 다시 만들기에 추가 AI 요금은 없습니다.` : `이번 AI 요금은 약 ${won(result.usd, rate)}입니다.`}
       </p>
       {result.saveProblem && (
         <p className="notice error" role="alert">
