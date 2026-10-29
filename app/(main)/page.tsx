@@ -77,6 +77,7 @@ export default function MakePage() {
           docId = (await postJson<{ doc: { id: string } }>("/api/documents", { title })).doc.id;
           return docId;
         },
+        confirmProblems: (message) => window.confirm(message),
         JXG,
         hwpxEndpoint: ready.hwpxEndpoint,
         onProgress: setProgress,

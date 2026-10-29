@@ -44,6 +44,6 @@ function pass(req: NextRequest, fresh: string | null): NextResponse {
 }
 
 export const config = {
-  // 글꼴, 빌드 파일, 아이콘은 막지 않는다
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|fonts/|pdf.worker).*)"],
+  // 글꼴, 빌드 파일, 아이콘, PDF 보조 파일은 막지 않는다
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|fonts/|pdfjs/|pdf.worker).*)"],
 };

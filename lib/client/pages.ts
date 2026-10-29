@@ -10,6 +10,8 @@ import type { ImageInput } from "@/lib/ai/read-page";
 export type PageSource = {
   /** 화면에 보여 줄 이름 (예: 시험지.pdf 3쪽) */
   label: string;
+  /** PDF 를 꼼꼼히 읽어 봤을 때 그리지 못하는 부분이 있던 쪽이면 그 설명 (글이나 그림이 빠질 수 있다) */
+  problem?: string;
   /** 쪽 그림 (원본 해상도). 다 쓰면 release */
   render(): Promise<HTMLCanvasElement>;
 };
@@ -29,6 +31,57 @@ async function loadPdfjs(): Promise<any> {
     return pdfjs;
   })();
   return pdfjsPromise;
+}
+
+/**
+ * pdf.js 보조 파일 자리 (scripts/copy-pdfjs-assets.mjs 가 public/pdfjs 에 둔다).
+ * 없으면 pdf.js 는 스캔 PDF 의 흑백 글자 층(CCITT·JBIG2), 글꼴이 박히지 않은 한글 PDF 같은 부분을 오류 없이 건너뛰고 그린다
+ * (2026-10-29: 복사기로 스캔한 시험지의 인쇄 글자가 모두 빠져 AI 가 읽지 못했다).
+ * strict: 그리지 못하는 부분이 있으면 건너뛰지 않고 실패로 알린다 (미리 확인할 때만)
+ */
+function pdfOptions(strict: boolean) {
+  const base = new URL("/pdfjs/", window.location.origin).href;
+  return {
+    wasmUrl: `${base}wasm/`,
+    cMapUrl: `${base}cmaps/`,
+    cMapPacked: true,
+    standardFontDataUrl: `${base}standard_fonts/`,
+    iccUrl: `${base}iccs/`,
+    stopAtErrors: strict,
+  };
+}
+
+/**
+ * 그리지 못하는 부분이 있는 쪽을 찾는다 (그림으로 그리지는 않으므로 빠르다).
+ * pdf.js 6.4 는 엄격하게 읽어도 오류를 내지 않고 그 쪽의 그리기 명령을 비워 버린다 (확인: 해독기를 막으면 보통 25개, 엄격 0개).
+ * 그래서 같은 쪽을 보통·엄격 두 가지로 읽어 그리기 명령 수가 다르거나 엄격 쪽이 실패하면 빠진 것으로 본다.
+ */
+async function brokenPages(pdfjs: any, bytes: Uint8Array, doc: any): Promise<Set<number>> {
+  const broken = new Set<number>();
+  const count = async (d: any, n: number) => {
+    const page = await d.getPage(n);
+    const ops = (await within(page.getOperatorList(), 60_000, "쪽 확인 시간 초과") as any).fnArray.length as number;
+    page.cleanup();
+    return ops;
+  };
+  // 이 판의 pdf.js 는 문서가 아니라 여는 작업(loadingTask)을 닫는다 (시간이 넘어 못 연 경우도 함께 멈춘다)
+  const task = pdfjs.getDocument({ data: bytes.slice(), ...pdfOptions(true) });
+  try {
+    const strict = await within(task.promise, 60_000, "PDF 확인 시간 초과") as any;
+    for (let n = 1; n <= doc.numPages; n++) {
+      try {
+        const [usual, careful] = [await count(doc, n), await count(strict, n)];
+        if (careful < usual) broken.add(n);
+      } catch {
+        broken.add(n);
+      }
+    }
+  } catch {
+    for (let n = 1; n <= doc.numPages; n++) broken.add(n);
+  } finally {
+    await task.destroy().catch(() => undefined);
+  }
+  return broken;
 }
 
 /** 정해진 시간 안에 끝나지 않으면 알린다 (PDF 열기가 멈춰서 화면이 하염없이 기다리지 않게) */
@@ -88,10 +141,12 @@ export async function openSources(files: File[]): Promise<PageSource[]> {
   for (const file of files) {
     if (isPdfFile(file)) {
       const pdfjs = await loadPdfjs();
+      const bytes = new Uint8Array(await file.arrayBuffer());
       let doc: any;
       try {
         doc = await within(
-          pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise,
+          // pdf.js 는 받은 자료를 일꾼(worker)에게 넘겨 버리므로 복사본을 준다 (엄격한 확인에 원본을 한 번 더 쓴다)
+          pdfjs.getDocument({ data: bytes.slice(), ...pdfOptions(false) }).promise,
           60_000,
           `${file.name}: PDF 를 여는 데 너무 오래 걸립니다. 다른 브라우저(크롬 최신판)로 해 보거나 사진으로 올려 주세요.`,
         );
@@ -99,9 +154,11 @@ export async function openSources(files: File[]): Promise<PageSource[]> {
         if (err instanceof Error && err.message.startsWith(file.name)) throw err;
         throw new Error(`${file.name}: PDF 를 열 수 없습니다. 암호가 걸렸거나 망가진 파일일 수 있습니다.`);
       }
+      const broken = await brokenPages(pdfjs, bytes, doc);
       for (let n = 1; n <= doc.numPages; n++) {
         out.push({
           label: `${file.name} ${n}쪽`,
+          problem: broken.has(n) ? "프로그램이 그리지 못하는 부분이 있어 글이나 그림이 빠질 수 있습니다" : undefined,
           async render() {
             const page = await doc.getPage(n);
             const base = page.getViewport({ scale: 1 });

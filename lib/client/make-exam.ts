@@ -87,6 +87,8 @@ export async function makeExam(o: {
   title: string;
   /** 보관함 문서를 만든다 (파일을 열어 본 뒤에 부른다). 만든 문서 id */
   createDoc: () => Promise<string>;
+  /** PDF 에 그리지 못하는 쪽이 있을 때 계속할지 묻는다 (AI 요금이 들기 전에). 없으면 묻지 않고 계속한다 */
+  confirmProblems?: (message: string) => boolean;
   JXG: any;
   hwpxEndpoint: string;
   onProgress: (p: Progress) => void;
@@ -105,7 +107,16 @@ export async function makeExam(o: {
 }
 
 async function run(
-  o: { files: File[]; title: string; createDoc: () => Promise<string>; JXG: any; hwpxEndpoint: string; onProgress: (p: Progress) => void; signal: AbortSignal },
+  o: {
+    files: File[];
+    title: string;
+    createDoc: () => Promise<string>;
+    confirmProblems?: (message: string) => boolean;
+    JXG: any;
+    hwpxEndpoint: string;
+    onProgress: (p: Progress) => void;
+    signal: AbortSignal;
+  },
   signal: AbortSignal,
 ): Promise<MakeResult> {
   const progress: Progress = { step: "upload", message: "원본 파일을 보관함에 올리는 중입니다.", pagesDone: 0, pagesTotal: 0, figuresDone: 0, figuresTotal: 0, usd: 0 };
@@ -122,6 +133,11 @@ async function run(
   await precheckFiles(o.files);
   const sources = await openSources(o.files);
   check();
+  const pageProblems = sources.filter((s) => s.problem).map((s) => `${s.label}: ${s.problem}`);
+  if (pageProblems.length) {
+    const message = `${pageProblems.join("\n")}\n\n그래도 만들까요? (AI 요금이 듭니다)\n안 되면 PDF 를 사진(JPG)으로 바꿔 올리거나 다시 스캔해 주세요.`;
+    if (o.confirmProblems && !o.confirmProblems(message)) throw new ApiError("멈췄습니다.", 0);
+  }
   const docId = await o.createDoc();
 
   // 1) 원본 보관 (읽기와 함께 진행. 화면의 멈춤 버튼만 따른다: AI 읽기가 실패해도 원본은 보관함에 남게)
@@ -260,6 +276,8 @@ async function run(
   } catch {
     /* 알림 없음 */
   }
+  // PDF 에서 그리지 못한 쪽도 결과 알림에 남긴다
+  warnings = [...pageProblems, ...warnings];
 
   // 5) 보관
   tell({ step: "save", message: "보관함에 저장하는 중입니다." });

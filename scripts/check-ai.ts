@@ -163,6 +163,29 @@ console.log("4) 합치기 - 직접 넣은 데이터로 되돌아오는지");
   ok(JSON.stringify(exam.footer) === JSON.stringify(manual.footer), "꼬리말");
 }
 
+console.log("PDF 보조 파일");
+{
+  // pdf.js 판과 public/pdfjs 의 보조 파일 판이 같아야 스캔 PDF 의 글자 층·한글 PDF 가 빠지지 않는다 (scripts/copy-pdfjs-assets.mjs)
+  const want = JSON.parse(readFileSync(path.join(root, "node_modules/pdfjs-dist/package.json"), "utf8")).version;
+  let have = "";
+  try {
+    have = readFileSync(path.join(root, "public/pdfjs/VERSION"), "utf8").trim();
+  } catch {
+    /* 아래에서 알린다 */
+  }
+  ok(have === want, `public/pdfjs 판 ${have || "없음"} = pdfjs-dist ${want} (다르면 node scripts/copy-pdfjs-assets.mjs)`);
+  const files = ["wasm/jbig2.wasm", "wasm/openjpeg.wasm", "wasm/qcms_bg.wasm", "cmaps/KSC-EUC-H.bcmap", "cmaps/UniKS-UCS2-H.bcmap", "standard_fonts/FoxitSerif.pfb", "iccs/CGATS001Compat-v2-micro.icc"];
+  const missing = files.filter((f) => {
+    try {
+      readFileSync(path.join(root, "public/pdfjs", f));
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  ok(missing.length === 0, `해독기·한글 글자표·기본 글꼴·색 프로필 있음 ${missing.join(", ")}`);
+}
+
 console.log("5) 조각 정리, AI 답 읽기, 사진 크기");
 {
   const pieces = toExamPieces([

@@ -115,6 +115,12 @@
       크레딧은 계정 주인만 쓸 수 있다 (anthropic.com/legal/credit-terms) → 다른 선생님은 각자 키.
       다른 길(claude.ai 안에서 여는 페이지의 sample 기능: 보는 사람 구독으로 돌지만 사진을 약 1.2MP 로 줄이고 바깥 연결이 막혀 한글 파일 만들기를 브라우저로 옮겨야 함)은
       크레딧으로 충분하면 만들 필요 없음
+  - 첫 실제 시험(2026-10-29, 문성중 1-2 중간 4쪽 23문항, Opus, 1.15달러): 글이 거의 비고 그림도 부정확. 원인: 캐논 복사기 스캔 PDF 는
+    흐린 배경 JPEG(150ppi) 위에 인쇄 글자가 CCITT 흑백 층(300ppi)으로 따로 있는데, pdf.js 6.4 가 wasmUrl 없이 해독기를 못 띄워 그 층을 말없이 건너뜀
+    → AI 가 흐린 배경만 받음. 고침: public/pdfjs 에 wasm·cmaps·standard_fonts·iccs (scripts/copy-pdfjs-assets.mjs, 판은 check-ai 가 확인),
+    getDocument 에 wasmUrl·cMapUrl·standardFontDataUrl·iccUrl. 미리 확인: 같은 쪽을 보통·엄격(stopAtErrors)으로 그리기 명령 수를 세어 엄격 쪽이 적으면
+    "빠짐" (pdf.js 6.4 는 엄격이어도 오류를 내지 않고 명령을 비운다) → AI 요금 전에 "그래도 만들까요?" 확인, 결과 알림에도 남김.
+    미들웨어는 /pdfjs/ 를 막지 않는다. 사용자 PDF 로 실제 화면에서 확인 (글자 또렷, 해독기를 막으면 확인 창이 뜨고 AI 요청 0번)
   - 남은 일: 세 모델 비교 → 가장 싼 쓸 만한 조합을 기본값으로. 열쇠가 기기마다 따로라서 read-samples --via 로는 원장님 열쇠를 쓸 수 없다
     → 프로그램 화면 안에 '모델 비교' 기능을 만들어 원장님 기기에서 돌리고, 결과는 보관함(DB)에서 읽어 판단할 것.
     그림 속 기울인 글자: 코드 완료(아직 배포 안 함, 사용자에게 전후 비교 그림 보냄). public/fonts/ExamMathItalic.woff2 = Latin Modern Math 1.959 의 수학 기울임 글자만
