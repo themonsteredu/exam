@@ -240,6 +240,22 @@ export function figureImage(page: HTMLCanvasElement, region: FigureRegion, pageS
   return { image: toInputWithin(c, "image/png"), crop, scale: send.width / crop.w };
 }
 
+/** 도형 명령으로 재현하기 어려운 지도·사진·표는 원본의 해당 영역을 PNG로 보존한다. */
+export function sourceFigureImage(page: HTMLCanvasElement, region: FigureRegion, pageScale: number) {
+  if (!(pageScale > 0)) throw new Error("원본 그림의 크기 비율을 확인하지 못했습니다.");
+  const x = Math.max(0, Math.floor(region.x / pageScale));
+  const y = Math.max(0, Math.floor(region.y / pageScale));
+  const right = Math.min(page.width, Math.ceil((region.x + region.w) / pageScale));
+  const bottom = Math.min(page.height, Math.ceil((region.y + region.h) / pageScale));
+  const w = right - x;
+  const h = bottom - y;
+  if (w < 2 || h < 2) throw new Error("원본 그림 영역이 페이지 밖에 있습니다.");
+  const scale = Math.min(1, 1600 / Math.max(w, h));
+  const c = resized(page, Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale)), x, y, w, h);
+  const image = toInput(c, "image/png");
+  return { image, crop: { x, y, w, h } };
+}
+
 /** 미리보기용 작은 그림 */
 export function thumbnail(page: HTMLCanvasElement, maxWidth = 360): string {
   const s = Math.min(1, maxWidth / page.width);

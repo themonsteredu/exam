@@ -127,6 +127,8 @@ export class FigureRenderer {
   private fnSamples = new Map<ElementSpec, Vec[]>();
   /** 이 그림에 쓴 글꼴 → 그 글꼴로 쓴 글자 */
   private fontsUsed = new Map<string, string>();
+  /** 그림 전체에서 가장 작은 글자 크기 (출력 기준 px). */
+  smallestFontPx = Infinity;
 
   constructor(JXG: JXGType, container: HTMLElement, spec: FigureSpec, opts: RenderOptions) {
     this.JXG = JXG;
@@ -465,6 +467,9 @@ export class FigureRenderer {
   }
 
   private text(at: () => Vec, text: string, opts: { sizePx: number; family: string; italic?: boolean; weight?: number; color?: string }) {
+    if (text && Number.isFinite(opts.sizePx) && opts.sizePx > 0) {
+      this.smallestFontPx = Math.min(this.smallestFontPx, opts.sizePx);
+    }
     const t = this.board.create("text", [() => at().x, () => at().y, text], {
       display: "internal",
       // 적힌 글자 그대로 그린다 (A_1, x^2 를 <sub>/<sup> 태그로 바꾸지 않고, <value> 같은 것도 계산하지 않는다)
@@ -898,7 +903,7 @@ export class FigureRenderer {
 export async function renderFigurePng(
   JXG: JXGType,
   spec: FigureSpec,
-  opts: { widthPx: number; gliders?: Record<string, number> },
+  opts: { widthPx: number; gliders?: Record<string, number>; minFontPx?: number },
 ): Promise<{ dataUrl: string; width: number; height: number; warnings: string[] }> {
   if (!(opts.widthPx > 0)) throw new Error("그림의 가로 크기(width_mm)가 올바르지 않습니다");
   await loadFigureFonts();
@@ -912,6 +917,17 @@ export async function renderFigurePng(
   try {
     r = new FigureRenderer(JXG, box, spec, { widthPx: opts.widthPx, gliders: opts.gliders });
     if (r.issues.length) throw new Error(`그림을 다 그리지 못했습니다: ${r.issues.join(" / ")}`);
+    // 인쇄할 때 아주 작은 수치와 점 이름은 글자만 키워 다시 배치한다.
+    // 그림 명령 자체를 바꾸지 않으며, 과도한 확대는 최대 2배로 제한한다.
+    let enlarged = false;
+    if (opts.minFontPx && r.smallestFontPx < opts.minFontPx) {
+      const factor = Math.min(2, opts.minFontPx / r.smallestFontPx * 1.08);
+      const scaled = { ...spec, style: { ...spec.style, labelScale: (spec.style?.labelScale ?? 1) * factor } };
+      r.destroy();
+      r = new FigureRenderer(JXG, box, scaled, { widthPx: opts.widthPx, gliders: opts.gliders });
+      if (r.issues.length) throw new Error(`그림을 다 그리지 못했습니다: ${r.issues.join(" / ")}`);
+      enlarged = true;
+    }
     r.board.fullUpdate();
     const src: HTMLCanvasElement = r.board.renderer.canvasRoot;
     // 캔버스는 화면 배율만큼 크게 그려지므로, 원하는 픽셀 수로 맞춰 흰 바탕에 합친다
@@ -924,7 +940,10 @@ export async function renderFigurePng(
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(src, 0, 0, out.width, out.height);
     const dataUrl = out.toDataURL("image/png");
-    return { dataUrl, width: out.width, height: out.height, warnings: r.fontWarnings() };
+    const warnings = r.fontWarnings();
+    if (enlarged) warnings.push("작은 그림 글자를 키웠습니다. 글자와 선이 겹치지 않는지 확인해 주세요.");
+    if (opts.minFontPx && r.smallestFontPx < opts.minFontPx * 0.95) warnings.push("출력 시 일부 그림 글자가 작습니다. 그림을 키우거나 글자 위치를 조정해 주세요.");
+    return { dataUrl, width: out.width, height: out.height, warnings };
   } finally {
     r?.destroy();
     holder.remove();

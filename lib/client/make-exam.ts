@@ -10,7 +10,7 @@ import type { FigureReading } from "@/lib/ai/read-figure";
 import { continuationHint } from "@/lib/ai/read-page";
 import { attachFigurePngs, renderExamFigures } from "@/lib/figure/render-exam";
 import { ApiError, patchJson, postJson, uploadFile, type FileRef } from "./api";
-import { figureImage, openSources, pageImage, precheckFiles } from "./pages";
+import { figureImage, openSources, pageImage, precheckFiles, sourceFigureImage } from "./pages";
 import { assertFresh } from "./version";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -193,6 +193,16 @@ async function run(
     const jobs = figureJobs(page, res.reading);
     tell({ figuresTotal: progress.figuresTotal + jobs.length });
     for (const job of jobs) {
+      if (job.region.kind !== "diagram") {
+        try {
+          const cut = sourceFigureImage(canvas, job.region, scale);
+          figures.set(job.key, { crop: cut.crop, scale: 1, sourcePng: cut.image.data, sourcePngSize: [cut.image.width, cut.image.height] });
+        } catch (err) {
+          figures.set(job.key, { crop: { x: 0, y: 0, w: 0, h: 0 }, scale: 1, error: err instanceof Error ? err.message : String(err) });
+        }
+        tell({ figuresDone: progress.figuresDone + 1 });
+        continue;
+      }
       const cut = figureImage(canvas, job.region, scale);
       const item = {
         no: job.item.no,
