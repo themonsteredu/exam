@@ -25,7 +25,7 @@ export const FigureRegionS = z.strictObject({
   w: z.number(),
   h: z.number(),
   place: z.enum(["below", "right"]),
-  kind: z.enum(["diagram", "table", "other"]),
+  kind: z.enum(["diagram", "table", "map", "chart", "illustration", "photo", "other"]),
 });
 
 /** 원본에서 따로 배치할 글 상자. lines는 인쇄된 줄 단위이며 편집 가능한 글/수식이다. */

@@ -24,8 +24,9 @@ const figures = new Map([[figureKey(1, 0, 0, 0), {
 }]]);
 const exam = assembleExam([{ meta: { page: 1, original: { width: 1000, height: 1500 }, scale: 1 }, reading }], figures);
 const item = exam.sections[0].items[0];
-assert.equal(item.figure.source_png, "cG5n");
-assert.deepEqual(item.figure.source_png_size, [350, 200]);
+assert.equal(item.figure.original_png, "cG5n");
+assert.deepEqual(item.figure.original_size, [350, 200]);
+assert.equal(item.figure.render_mode, "original");
 assert.ok(item.unsure.some((s: string) => s.includes("필기 표시")));
 const missing = assembleExam([{ meta: { page: 1, original: { width: 1000, height: 1500 }, scale: 1 }, reading }], new Map());
 assert.ok(missing.sections[0].items[0].unsure.some((s: string) => s.includes("가져오지 못했습니다")));

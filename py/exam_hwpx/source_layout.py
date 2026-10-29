@@ -89,15 +89,23 @@ class SourceLayout:
         boxed = role == "box"
         if boxed and title:
             lines.insert(0, [{"t": title}])
+        if block.get("direction") == "vertical":
+            chars = "".join(str(p.get("t", "")) for line in lines for p in line)
+            lines = [[{"t": c}] for c in chars if c != "\n"] or [[{"t": ""}]]
         pad = 1.2 if boxed else 0
         w, h = box["w"] * sx, box["h"] * sy
         available_w, available_h = max(1, w - pad * 2), max(1, h - pad * 2)
         # 원본의 줄 수·줄 폭에 맞추되 학생용 글씨를 무한정 줄이지 않는다.
         font = min(14, max(11, 11 * self.paper_width / 210), available_h * 72 / 25.4 / len(lines) * .80)
         font = max(9.5, font)
+        minimum_font = 9.5
+        if isinstance(block.get("font_pt"), (int, float)):
+            minimum_font = max(3, min(8.5, block.get("minimum_font_pt", 8.5)))
+            font = min(20, max(minimum_font, block["font_pt"]))
         required_w = max(self.line_width(line, font) for line in lines)
         if required_w > mm(available_w):
-            font = max(9.5, font * mm(available_w) / required_w * .98)
+            font = max(minimum_font, font * mm(available_w) / required_w * .98)
+        font = max(minimum_font, min(font, available_h * 72 / 25.4 / len(lines) / 1.12))
         too_wide = any(self.line_width(line, font) > mm(available_w) * 1.03 for line in lines)
         if too_wide or len(lines) * font * 25.4 / 72 > available_h:
             self.b.warnings.append(f"{no}번: 원본 글 영역에 내용이 빽빽합니다. 한글에서 줄바꿈과 겹침을 확인해 주세요")
@@ -123,9 +131,10 @@ class SourceLayout:
         for i, line in enumerate(lines):
             p = cell.paragraphs[0] if i == 0 else cell.add_paragraph("")
             self.b.add_pieces(p, line, size=font, where=f"{no}번 원본 배치")
-            self.b.para_format(p, alignment="CENTER" if boxed and title and i == 0 else "LEFT",
+            self.b.para_format(p, alignment="CENTER" if boxed and title and i == 0 else block.get("align", "LEFT"),
                 line_spacing_percent=spacing, spacing_before_pt=0, spacing_after_pt=0,
                 indent_left_mm=0, indent_right_mm=0, first_line_indent_mm=0)
+        return table
 
     def fallback(self, item):
         """이전 자료: 문항 전체 영역만 있을 때 읽기 순서로 배치하고 한계를 알린다."""
@@ -203,8 +212,21 @@ class SourceLayout:
                     self.text(anchor, {**block, "label": item.get("label")}, sx, sy, item["no"])
                 fig = item.get("figure")
                 if fig:
-                    png = self.b.figure_png(fig)
+                    native_failed = False
                     placement = fig.get("layout_box") or fig.get("box")
+                    if fig.get("graphic") and fig.get("render_mode") != "original" and fig["graphic"].get("kind") != "photo":
+                        before = list(anchor.element)
+                        try:
+                            from .graphic import draw_graphic
+                            draw_graphic(self, anchor, fig["graphic"], placement, sx, sy, item["no"])
+                            continue
+                        except Exception as exc:
+                            native_failed = True
+                            for child in list(anchor.element):
+                                if not any(child is old for old in before):
+                                    anchor.element.remove(child)
+                            self.b.warnings.append(f"{item['no']}번: 편집 가능한 자료를 만들지 못해 원본 이미지로 넣었습니다 ({str(exc)[:100]})")
+                    png = self.b.figure_png({"png": fig["original_png"]}) if native_failed and fig.get("original_png") else self.b.figure_png(fig)
                     if png and valid_box(placement):
                         self.image(anchor, png, placement, sx, sy)
                     else:

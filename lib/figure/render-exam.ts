@@ -5,6 +5,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { loadFigureFonts, pxForPrint, renderFigurePng } from "./engine";
 import type { FigureSpec } from "./types";
+import { renderGraphicPng, renderOriginalPng } from "@/lib/graphic/render";
+import type { GraphicSpec } from "@/lib/graphic/schema";
 
 export const DEFAULT_FIGURE_DPI = 360;
 
@@ -18,10 +20,16 @@ export type ExamFigure = {
   png_size?: [number, number];
   source_png?: string;
   source_png_size?: [number, number];
+  graphic?: GraphicSpec;
+  original_png?: string;
+  original_size?: [number, number];
+  render_mode?: "redraw" | "original";
+  photo_adjustment?: { brightness: number; rotation: number };
   [key: string]: unknown;
 };
 
 export type FigureRenderResult = {
+  usedOriginal?: boolean;
   section: number;
   index: number;
   no: number | string;
@@ -51,6 +59,24 @@ export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGUR
       const fig: ExamFigure | undefined = items[i]?.figure;
       if (!fig) continue;
       const base = { section: s, index: i, no: items[i].no };
+      if (fig.graphic || fig.original_png) {
+        try {
+          const useRedraw = fig.graphic && fig.graphic.kind !== "photo" && fig.render_mode !== "original";
+          const out = useRedraw
+            ? await renderGraphicPng(fig.graphic!, pxForPrint(figureWidthMm(fig), dpi), figureWidthMm(fig))
+            : await renderOriginalPng(fig.original_png || fig.source_png || "", fig.photo_adjustment);
+          results.push({ ...base, png: out.dataUrl.split(",")[1], size: [out.width, out.height], warnings: out.warnings });
+        } catch (e) {
+          if (fig.original_png && fig.render_mode !== "original") {
+            try {
+              const out = await renderOriginalPng(fig.original_png);
+              results.push({ ...base, png: out.dataUrl.split(",")[1], size: [out.width, out.height], usedOriginal: true,
+                warnings: [`자료를 다시 그리지 못해 원본을 사용했습니다: ${e instanceof Error ? e.message : String(e)}`] });
+            } catch { results.push({ ...base, error: "재작성 자료와 원본을 모두 열지 못했습니다" }); }
+          } else results.push({ ...base, error: e instanceof Error ? e.message : String(e) });
+        }
+        continue;
+      }
       if (!fig.commands) {
         if (fig.source_png) {
           results.push({ ...base, png: fig.source_png, size: fig.source_png_size });
@@ -85,11 +111,12 @@ export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGUR
 }
 
 /** renderExamFigures 결과를 시험지 데이터에 붙인 사본을 돌려준다. */
-export function attachFigurePngs(exam: any, results: FigureRenderResult[]): any {
+export function attachFigurePngs(exam: any, results: FigureRenderResult[], keepOriginals = false): any {
   const copy = JSON.parse(JSON.stringify(exam));
   for (const r of results) {
     const fig = copy.sections?.[r.section]?.items?.[r.index]?.figure;
     if (!fig) continue;
+    if (r.usedOriginal) fig.render_mode = "original";
     if (r.png) {
       fig.png = r.png;
       fig.png_size = r.size;
@@ -104,6 +131,10 @@ export function attachFigurePngs(exam: any, results: FigureRenderResult[]): any 
     // 전송용 사본에는 같은 그림을 두 번 싣지 않는다. 원본 exam 은 보존한다.
     delete fig.source_png;
     delete fig.source_png_size;
+    if (!keepOriginals && (!fig.graphic || fig.render_mode === "original")) {
+      delete fig.original_png;
+      delete fig.original_size;
+    }
   }
   return copy;
 }

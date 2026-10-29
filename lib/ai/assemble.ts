@@ -174,7 +174,8 @@ export function assembleExam(
           role: b.role, title: b.title, choice_no: b.choice_no,
           box: toOriginal(b.region, meta.scale), lines: b.lines.map(toExamPieces),
         }));
-        if (item.figure?.commands && item.layout_blocks?.length) {
+        const redraw = item.figure?.commands || (item.figure?.graphic && item.figure.graphic.kind !== "photo");
+        if (redraw && item.layout_blocks?.length) {
           const box = enlargeIntoWhitespace(item.figure.box, item.source, item.layout_blocks.map((b: any) => b.box));
           item.figure.layout_box = box;
           item.figure.width_mm = round1(box.w * mmPerPx);
@@ -233,9 +234,13 @@ function makeFigure(
   const fig: any = { box: { page: meta.page, ...box }, place: region.place, align: "CENTER" };
   if (region.kind !== "diagram") {
     if (result?.sourcePng) {
-      fig.source_png = result.sourcePng;
-      fig.source_png_size = result.sourcePngSize;
-      itemUnsure.push("지도·사진·표는 원본 그림을 사용했습니다. 잘린 곳이나 필기 표시를 확인해 주세요.");
+      fig.original_png = result.sourcePng;
+      fig.original_size = result.sourcePngSize;
+      fig.render_mode = result.reading?.graphic && result.reading.graphic.kind !== "photo" ? "redraw" : "original";
+      fig.asset_kind = result.reading?.graphic?.kind ?? region.kind;
+      if (result.reading?.graphic) fig.graphic = result.reading.graphic;
+      if (fig.render_mode === "redraw") itemUnsure.push("재작성한 자료의 지명·숫자·사물 개수·위치를 원본과 비교해 주세요.");
+      else if (region.kind !== "photo" && result.reading?.graphic?.kind !== "photo") itemUnsure.push("재작성하지 못해 원본을 사용합니다. 잘린 곳이나 필기 표시를 확인해 주세요.");
     } else itemUnsure.push("지도·사진·표의 원본 영역을 가져오지 못했습니다. 확인해 주세요.");
   }
 
@@ -248,10 +253,11 @@ function makeFigure(
   if (result?.error) itemUnsure.push(`그림을 읽지 못했습니다: ${result.error}`);
   if (result && r) {
     if (r.commands) fig.commands = r.commands;
-    else {
+    else if (region.kind === "diagram") {
       fig.commands = r.rawCommands;
       itemUnsure.push(`그림 명령에 고칠 곳이 남아 있습니다: ${r.errors.slice(0, 3).join(" / ")}`);
     }
+    if (region.kind !== "diagram" && r.errors.length) itemUnsure.push(`자료 재작성: ${r.errors.slice(0, 3).join(" / ")}`);
     // 겹쳐 보기 기준점: 원본 사진 픽셀로
     fig.anchors = r.anchors.map((a) => ({
       at: a.at,

@@ -6,6 +6,7 @@ import { makeExam, type MakeResult, type Progress, type Step } from "@/lib/clien
 import { isStale, STALE_MESSAGE } from "@/lib/client/version";
 import { loadFigureFonts } from "@/lib/figure/engine";
 import { piecesToHtml } from "@/lib/ai/latex-view";
+import { FigureReview } from "@/components/app/FigureReview";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -14,6 +15,7 @@ const STEPS: { key: Step; label: string }[] = [
   { key: "page", label: "쪽 읽기" },
   { key: "figure", label: "그림 읽기" },
   { key: "draw", label: "그림 그리기" },
+  { key: "review", label: "자료 비교" },
   { key: "hwpx", label: "한글 파일" },
   { key: "save", label: "보관함 저장" },
 ];
@@ -32,6 +34,7 @@ export default function MakePage() {
   const [busy, setBusy] = useState(false);
   /** 이 화면을 연 뒤 프로그램이 새 판으로 바뀌었는지 (바뀌었으면 새로 고치라고 알린다) */
   const [stale, setStale] = useState(false);
+  const [review, setReview] = useState<{ exam: any; finish: (exam: any) => void } | null>(null);
   const abort = useRef<AbortController | null>(null);
   const input = useRef<HTMLInputElement>(null);
 
@@ -91,6 +94,12 @@ export default function MakePage() {
         hwpxEndpoint: ready.hwpxEndpoint,
         onProgress: setProgress,
         signal: controller.signal,
+        reviewFigures: (exam, signal) => new Promise((resolve, reject) => {
+          const stop = () => { setReview(null); reject(new Error("자료 확인을 멈췄습니다")); };
+          if (signal.aborted) return stop();
+          signal.addEventListener("abort", stop, { once: true });
+          setReview({ exam, finish: value => { signal.removeEventListener("abort", stop); setReview(null); resolve(value); } });
+        }),
       });
       setResult(out);
       saveBlob(out.hwpx, out.fileName);
@@ -222,6 +231,8 @@ export default function MakePage() {
           )}
         </p>
       )}
+
+      {review && <FigureReview exam={review.exam} onContinue={review.finish} />}
 
       {result && <ResultView result={result} rate={ready?.krwPerUsd} />}
     </main>
