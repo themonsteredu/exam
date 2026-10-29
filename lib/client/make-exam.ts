@@ -183,7 +183,16 @@ async function run(
     }
     tell({ usd: progress.usd + sumUsd(res.usage) });
     const page = i + 1;
-    pages.push({ meta: { page, original: { width: canvas.width, height: canvas.height }, scale }, reading: res.reading });
+    const decorations: NonNullable<PageMeta["decorations"]> = [];
+    for (const a of res.reading.page_artifacts ?? []) {
+      try {
+        const cut = sourceFigureImage(canvas, { ...a.region, kind: "other", place: "below" }, scale);
+        decorations.push({ box: cut.crop, png: cut.image.data });
+      } catch {
+        res.reading.unsure.push(`${a.kind}: 원본 안내 영역을 보존하지 못했습니다`);
+      }
+    }
+    pages.push({ meta: { page, original: { width: canvas.width, height: canvas.height }, scale, paperMm: sources[i].paperMm, decorations }, reading: res.reading });
     for (const s of res.reading.sections) {
       if (s.title) lastSection = s.title;
       if (s.items.length) lastNo = s.items[s.items.length - 1].no;

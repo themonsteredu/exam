@@ -8,6 +8,7 @@ import type { ImageInput } from "@/lib/ai/read-page";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 export type PageSource = {
+  paperMm?: { width: number; height: number };
   /** 화면에 보여 줄 이름 (예: 시험지.pdf 3쪽) */
   label: string;
   /** PDF 를 꼼꼼히 읽어 봤을 때 그리지 못하는 부분이 있던 쪽이면 그 설명 (글이나 그림이 빠질 수 있다) */
@@ -156,7 +157,12 @@ export async function openSources(files: File[]): Promise<PageSource[]> {
       }
       const broken = await brokenPages(pdfjs, bytes, doc);
       for (let n = 1; n <= doc.numPages; n++) {
+        const info = await doc.getPage(n);
+        const physical = info.getViewport({ scale: 1 });
+        const paperMm = { width: physical.width * 25.4 / 72, height: physical.height * 25.4 / 72 };
+        info.cleanup();
         out.push({
+          paperMm,
           label: `${file.name} ${n}쪽`,
           problem: broken.has(n) ? "프로그램이 그리지 못하는 부분이 있어 글이나 그림이 빠질 수 있습니다" : undefined,
           async render() {

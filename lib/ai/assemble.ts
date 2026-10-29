@@ -15,6 +15,8 @@ export type PageMeta = {
   original: { width: number; height: number };
   /** AI 에게 보낸 사진 픽셀 = 원본 픽셀 × scale */
   scale: number;
+  paperMm?: { width: number; height: number };
+  decorations?: { box: Region; png: string }[];
 };
 
 /** 그림 하나를 읽은 결과 */
@@ -119,8 +121,7 @@ export function assembleExam(
   figures: Map<string, FigureResult>,
   o: { template?: string; layout?: Layout } = {},
 ): any {
-  const layout = o.layout ?? SCHOOL_A_LAYOUT;
-  const exam: any = { template: o.template ?? "school-A-2026", header: {}, footer: {}, boxes: [], sections: [] };
+  const exam: any = { template: o.template ?? "school-A-2026", layout_mode: "source", header: {}, footer: {}, boxes: [], sections: [] };
   const unsure: string[] = [];
   let prev: { page: number; column: number } | undefined;
 
@@ -142,7 +143,7 @@ export function assembleExam(
   }));
 
   for (const { meta, reading } of pages) {
-    const mmPerPx = mmPerOriginalPx(reading, meta, layout);
+    const mmPerPx = (meta.paperMm?.width ?? 210) / meta.original.width;
     for (const u of reading.unsure) unsure.push(`${meta.page}쪽: ${u}`);
     reading.sections.forEach((section, s) => {
       let target: any;
@@ -164,10 +165,21 @@ export function assembleExam(
         if (diagrams.length) {
           const { f, idx } = diagrams.find(({ f }) => f.kind === "diagram") ?? diagrams[0];
           if (diagrams.length > 1) itemUnsure.push(`그림이 ${diagrams.length}개 있어 첫 그림만 넣었습니다`);
-          item.figure = makeFigure(f, figures.get(figureKey(meta.page, s, i, idx)), meta, mmPerPx, layout, itemUnsure);
+          item.figure = makeFigure(f, figures.get(figureKey(meta.page, s, i, idx)), meta, mmPerPx, itemUnsure);
         }
         item.choices = it.choices.map(toExamPieces);
         item.source = { page: meta.page, ...toOriginal(it.source, meta.scale) };
+        item.column = it.column === 2 ? 2 : 1;
+        if (it.layout_blocks?.length) item.layout_blocks = it.layout_blocks.map(b => ({
+          role: b.role, title: b.title, choice_no: b.choice_no,
+          box: toOriginal(b.region, meta.scale), lines: b.lines.map(toExamPieces),
+        }));
+        if (item.figure?.commands && item.layout_blocks?.length) {
+          const box = enlargeIntoWhitespace(item.figure.box, item.source, item.layout_blocks.map((b: any) => b.box));
+          item.figure.layout_box = box;
+          item.figure.width_mm = round1(box.w * mmPerPx);
+          item.figure.size_mm = [round1(box.w * mmPerPx), round1(box.h * mmPerPx)];
+        }
         if (itemUnsure.length) item.unsure = itemUnsure;
 
         // 원본에서 단이나 쪽이 바뀐 곳은 그대로 나눈다. 부분 제목 상자 바로 앞이면 제목 상자에서 나눈다
@@ -187,16 +199,27 @@ export function assembleExam(
   // 쪽 끝 안내는 마지막 쪽 것만 (한글 파일에서는 쪽 나눔이 원본과 다를 수 있어 문서 끝에 하나만 둔다)
   const note = pages[pages.length - 1]?.reading.page_end_note;
   if (note) exam.page_end_note = note;
-  exam.source_pages = pages.map(({ meta }) => ({ page: meta.page, width: meta.original.width, height: meta.original.height }));
+  exam.source_pages = pages.map(({ meta, reading }) => ({
+    page: meta.page, width: meta.original.width, height: meta.original.height,
+    paper_mm: meta.paperMm ? [round1(meta.paperMm.width), round1(meta.paperMm.height)] : [210, round1(210 * meta.original.height / meta.original.width)],
+    print_area: toOriginal(reading.print_area, meta.scale), decorations: meta.decorations ?? [],
+    rules: (reading.page_rules ?? []).map(r => toOriginal(r, meta.scale)),
+  }));
   if (unsure.length) exam.unsure = unsure;
   return exam;
 }
 
-/** 원본 사진 1픽셀이 양식에서 몇 mm 인지: 인쇄된 영역의 가로를 양식의 본문 가로에 맞춘다 */
-function mmPerOriginalPx(reading: PageReading, meta: PageMeta, layout: Layout): number {
-  const w = reading.print_area.w / meta.scale;
-  if (w > meta.original.width * 0.3) return layout.textWidthMm / w;
-  return layout.textWidthMm / meta.original.width;
+/** 글/선택지 위치를 건드리지 않고 확보된 빈 공간 안에서만 그림을 확대한다. */
+export function enlargeIntoWhitespace(figure: Region, item: Region, text: Region[]): Region {
+  const intersects = (a: Region, b: Region) => a.x < b.x + b.w + 3 && a.x + a.w + 3 > b.x && a.y < b.y + b.h + 3 && a.y + a.h + 3 > b.y;
+  for (const scale of [1.4, 1.25, 1.1]) {
+    const w = figure.w * scale, h = figure.h * scale;
+    const x = Math.max(item.x, Math.min(item.x + item.w - w, figure.x + (figure.w - w) / 2));
+    const y = Math.max(item.y, Math.min(item.y + item.h - h, figure.y + (figure.h - h) / 2));
+    const box = { x, y, w, h };
+    if (w <= item.w && h <= item.h && !text.some(b => intersects(box, b))) return box;
+  }
+  return { x: figure.x, y: figure.y, w: figure.w, h: figure.h };
 }
 
 function makeFigure(
@@ -204,7 +227,6 @@ function makeFigure(
   result: FigureResult | undefined,
   meta: PageMeta,
   mmPerPx: number,
-  layout: Layout,
   itemUnsure: string[],
 ): any {
   const box = toOriginal(region, meta.scale);
@@ -217,17 +239,11 @@ function makeFigure(
     } else itemUnsure.push("지도·사진·표의 원본 영역을 가져오지 못했습니다. 확인해 주세요.");
   }
 
-  // 그림이 실제로 차지하는 크기 (그림 읽기에서 받은 사각형이 있으면 그것, 없으면 쪽 읽기의 사각형)
-  let content = box;
   const r = result?.reading;
-  if (result && r?.contentBox) {
-    const c = r.contentBox;
-    content = { x: result.crop.x + c.x / result.scale, y: result.crop.y + c.y / result.scale, w: c.w / result.scale, h: c.h / result.scale };
-  }
-  const maxW = layout.columnWidthMm * (region.place === "right" ? layout.rightMaxRatio : 0.95);
-  const width = Math.max(12, Math.min(maxW, content.w * mmPerPx));
+  // 원본 배치에서는 원본의 그림 영역 자체가 크기 기준이다. 좁은 학교 양식에 맞춰 다시 줄이지 않는다.
+  const width = Math.max(4, box.w * mmPerPx);
   fig.width_mm = round1(width);
-  fig.size_mm = [round1(width), round1((content.h / content.w) * width)];
+  fig.size_mm = [round1(width), round1((box.h / box.w) * width)];
 
   if (result?.error) itemUnsure.push(`그림을 읽지 못했습니다: ${result.error}`);
   if (result && r) {
