@@ -1,8 +1,9 @@
 "use client";
 
 import { DragEvent, useEffect, useRef, useState } from "react";
-import { api, ApiError, patchJson, postJson, saveBlob, won } from "@/lib/client/api";
-import { makeExam, type MakeResult, type Progress, type Step } from "@/lib/client/make-exam";
+import { api, ApiError, downloadStored, patchJson, postJson, won } from "@/lib/client/api";
+import { makeExam, resumeExam, type MakeResult, type Progress, type Recovery, type Step } from "@/lib/client/make-exam";
+import { loadExamCheckpoint } from "@/lib/client/exam-storage";
 import { isStale, STALE_MESSAGE } from "@/lib/client/version";
 import { loadFigureFonts } from "@/lib/figure/engine";
 import { piecesToHtml } from "@/lib/ai/latex-view";
@@ -36,6 +37,7 @@ export default function MakePage() {
   /** 이 화면을 연 뒤 프로그램이 새 판으로 바뀌었는지 (바뀌었으면 새로 고치라고 알린다) */
   const [stale, setStale] = useState(false);
   const [review, setReview] = useState<{ exam: any; finish: (exam: any) => void } | null>(null);
+  const [recovery, setRecovery] = useState<Recovery | null>(null);
   const abort = useRef<AbortController | null>(null);
   const input = useRef<HTMLInputElement>(null);
 
@@ -59,6 +61,26 @@ export default function MakePage() {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
 
+  useEffect(() => {
+    const docId = new URLSearchParams(window.location.search).get("resume");
+    if (!docId || !/^[0-9a-f-]{36}$/.test(docId)) return;
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const { doc } = await api<{ doc: { title: string; exam_json?: any; cost_usd: number } }>(`/api/documents/${docId}`, { signal: controller.signal });
+        const exam = await loadExamCheckpoint(docId, doc.exam_json, controller.signal);
+        const pageProblems = Array.isArray(doc.exam_json?.pageProblems) ? doc.exam_json.pageProblems.filter((v: unknown): v is string => typeof v === "string") : [];
+        if (!controller.signal.aborted) {
+          setTitle(doc.title);
+          setRecovery({ docId, title: doc.title, exam, usd: doc.cost_usd || 0, pageProblems });
+        }
+      } catch (err) {
+        if (!controller.signal.aborted) setError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => controller.abort();
+  }, []);
+
   function choose(list: FileList | null) {
     if (!list || !list.length) return;
     const picked = [...list];
@@ -66,6 +88,7 @@ export default function MakePage() {
     setResult(null);
     setError("");
     setErrorDetail("");
+    setRecovery(null);
     if (!title) setTitle(picked[0].name.replace(/\.[^.]+$/, ""));
   }
 
@@ -75,17 +98,31 @@ export default function MakePage() {
     choose(e.dataTransfer.files);
   }
 
-  async function start() {
-    if (!files.length || !JXG || !ready) return;
+  async function start(savedWork?: Recovery) {
+    if (!JXG || !ready || (!savedWork && (!files.length || !ready.keySaved))) return;
     setBusy(true);
     setError("");
     setErrorDetail("");
     setResult(null);
     const controller = new AbortController();
     abort.current = controller;
-    let docId: string | null = null;
+    let docId: string | null = savedWork?.docId ?? null;
     try {
-      const out = await makeExam({
+      const common = {
+        JXG,
+        hwpxEndpoint: ready.hwpxEndpoint,
+        onProgress: setProgress,
+        signal: controller.signal,
+        onRecoverable: setRecovery,
+        reviewFigures: (exam: any, signal: AbortSignal): Promise<any> => new Promise((resolve, reject) => {
+          const stop = () => { setReview(null); reject(new Error("자료 확인을 멈췄습니다")); };
+          if (signal.aborted) return stop();
+          signal.addEventListener("abort", stop, { once: true });
+          setReview({ exam, finish: value => { signal.removeEventListener("abort", stop); setReview(null); resolve(value); } });
+        }),
+      };
+      const out = savedWork ? await resumeExam(common, savedWork) : await makeExam({
+        ...common,
         files,
         title: title.trim() || "시험지",
         createDoc: async () => {
@@ -93,19 +130,11 @@ export default function MakePage() {
           return docId;
         },
         confirmProblems: (message) => window.confirm(message),
-        JXG,
-        hwpxEndpoint: ready.hwpxEndpoint,
-        onProgress: setProgress,
-        signal: controller.signal,
-        reviewFigures: (exam, signal) => new Promise((resolve, reject) => {
-          const stop = () => { setReview(null); reject(new Error("자료 확인을 멈췄습니다")); };
-          if (signal.aborted) return stop();
-          signal.addEventListener("abort", stop, { once: true });
-          setReview({ exam, finish: value => { signal.removeEventListener("abort", stop); setReview(null); resolve(value); } });
-        }),
       });
       setResult(out);
-      saveBlob(out.hwpx, out.fileName);
+      setRecovery(null);
+      try { await downloadStored(out.hwpxPath, out.fileName); }
+      catch { setError("파일은 만들어졌지만 자동으로 내려받지 못했습니다. 아래의 다시 내려받기 버튼을 눌러 주세요."); }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const detail = err instanceof ApiError ? err.detail ?? "" : "";
@@ -119,6 +148,7 @@ export default function MakePage() {
   }
 
   const stepIndex = progress ? STEPS.findIndex((s) => s.key === progress.step) : -1;
+  const stopped = !busy && !!error && !result;
   const pct = result
     ? 100
     : progress
@@ -189,7 +219,7 @@ export default function MakePage() {
           </ul>
         )}
         <div className="row">
-          <button className="primary" type="button" onClick={start} disabled={busy || !files.length || !JXG || !ready?.keySaved}>
+          <button className="primary" type="button" onClick={() => start()} disabled={busy || !files.length || !JXG || !ready?.keySaved}>
             {busy ? "만드는 중" : "한글 파일 만들기"}
           </button>
           {busy && (
@@ -201,6 +231,16 @@ export default function MakePage() {
         </div>
       </section>
 
+      {recovery && !busy && !result && (
+        <section className="card" aria-live="polite">
+          <h2>읽은 결과로 다시 만들기</h2>
+          <p>AI를 다시 부르지 않고 읽은 문항과 그림으로 한글 파일을 만듭니다.</p>
+          <button className="primary" type="button" onClick={() => start(recovery)} disabled={!JXG || !ready}>
+            읽은 결과로 한글 파일 만들기
+          </button>
+        </section>
+      )}
+
       {progress && (
         <section className="card" aria-live="polite">
           <h2>진행 상황</h2>
@@ -209,8 +249,8 @@ export default function MakePage() {
           </div>
           <ul className="progress-list">
             {STEPS.map((s, i) => (
-              <li key={s.key} className={i < stepIndex || result ? "done" : i === stepIndex ? "now" : ""}>
-                <span className="state">{i < stepIndex || result ? "끝" : i === stepIndex ? "하는 중" : "기다림"}</span>
+              <li key={s.key} className={i < stepIndex || result ? "done" : i === stepIndex && !stopped ? "now" : ""}>
+                <span className="state">{i < stepIndex || result ? "끝" : i === stepIndex ? stopped ? "중단" : "하는 중" : "기다림"}</span>
                 <span>
                   {s.label}
                   {s.key === "page" && progress.pagesTotal > 0 && ` ${progress.pagesDone}/${progress.pagesTotal}쪽`}
@@ -220,7 +260,7 @@ export default function MakePage() {
             ))}
           </ul>
           <p className="muted small">
-            {busy ? progress.message : result ? "다 됐습니다." : ""} 지금까지 AI 요금: 약 {won(progress.usd, ready?.krwPerUsd)}
+            {busy ? progress.message : result ? "다 됐습니다." : stopped ? "작업이 중단됐습니다." : ""} 지금까지 AI 요금: 약 {won(progress.usd, ready?.krwPerUsd)}
           </p>
         </section>
       )}
@@ -251,7 +291,7 @@ function ResultView({ result, rate }: { result: MakeResult; rate?: number }) {
     <section className="card">
       <h2>다 만들었습니다</h2>
       <p>
-        문항 {items.length}개를 옮겼습니다. 한글 파일을 내려받았{result.saved ? "고 보관함에도 저장했" : ""}습니다. 이번 AI 요금은 약 {won(result.usd, rate)} 입니다.
+        문항 {items.length}개를 옮겼습니다. 한글 파일을 만들었{result.saved ? "고 보관함에도 저장했" : ""}습니다. 이번 AI 요금은 약 {won(result.usd, rate)} 입니다.
       </p>
       {result.saveProblem && (
         <p className="notice error" role="alert">
@@ -276,7 +316,7 @@ function ResultView({ result, rate }: { result: MakeResult; rate?: number }) {
         </details>
       )}
       <div className="row">
-        <button className="primary" type="button" onClick={() => saveBlob(result.hwpx, result.fileName)}>
+        <button className="primary" type="button" onClick={() => downloadStored(result.hwpxPath, result.fileName).catch(() => alert("한글 파일을 내려받지 못했습니다. 다시 시도해 주세요."))}>
           한글 파일 다시 내려받기
         </button>
       </div>

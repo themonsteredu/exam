@@ -3,6 +3,7 @@
 // 받는 것: { docId, kind: "original" | "generated", name, type, size, index? }
 import { requireSession } from "@/lib/server/auth";
 import { DOC_ID, fileExt, getStore } from "@/lib/server/store";
+import { randomUUID } from "node:crypto";
 
 export const runtime = "nodejs";
 
@@ -28,7 +29,7 @@ export async function POST(req: Request) {
   const filePath =
     kind === "original"
       ? `originals/${docId}/${Math.max(0, Math.floor(Number(body.index) || 0)) + 1}.${fileExt(String(body.name ?? ""))}`
-      : `generated/${docId}/${Date.now().toString(36)}.${fileExt(String(body.name ?? ""), "hwpx")}`;
+      : `generated/${docId}/${randomUUID()}.${fileExt(String(body.name ?? ""), "hwpx")}`;
   const type = typeof body.type === "string" && body.type.length < 100 ? body.type : "application/octet-stream";
   try {
     const signed = await getStore().uploadUrl(filePath, type);
