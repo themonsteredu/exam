@@ -2,7 +2,7 @@
 // 모델은 쪽 읽기·그림 읽기마다 고를 수 있다: ANTHROPIC_MODEL_PAGE / ANTHROPIC_MODEL_FIGURE, 없으면 ANTHROPIC_MODEL (기본 claude-opus-5-5).
 // 안전 검사로 거절되면 서버 쪽에서 다른 모델로 한 번 더 시도하게 한다 (fallbacks "default". Haiku 는 이 기능이 없어 보내지 않는다).
 
-import Anthropic from "@anthropic-ai/sdk";
+import Anthropic, { type APIError } from "@anthropic-ai/sdk";
 import type {
   BetaContentBlockParam,
   BetaMessage,
@@ -170,6 +170,26 @@ function getClient(apiKey?: string): Anthropic {
 
 export type CallResult = { message: BetaMessage; text: string; usage: Usage };
 
+/** 진단에는 제공자의 오류 문구만 남긴다. 요청 본문·이미지·열쇠는 남기지 않는다. */
+export function apiErrorDetail(err: APIError): string {
+  const body = err.error as { error?: { message?: unknown }; message?: unknown } | undefined;
+  const raw = body?.error?.message ?? body?.message ?? err.message;
+  const message = String(raw)
+    .replace(/sk-(?:ant-)?[A-Za-z0-9_-]+/g, "[API 키 숨김]")
+    .replace(/Bearer\s+\S+/gi, "Bearer [숨김]")
+    .replace(/data:image\/[^,\s]+,[A-Za-z0-9+/=]+/gi, "[이미지 숨김]")
+    .replace(/[A-Za-z0-9+/=]{200,}/g, "[긴 데이터 숨김]")
+    .slice(0, 800);
+  const id = err.requestID && /^[\w-]+$/.test(err.requestID) ? ` · 요청 ID: ${err.requestID}` : "";
+  return `Claude ${err.status ?? "API"}: ${message}${id}`;
+}
+
+function schemaRejected(err: unknown): err is APIError {
+  if (!(err instanceof Anthropic.BadRequestError)) return false;
+  const message = apiErrorDetail(err);
+  return /schema.{0,100}(?:too complex|compil|not supported|unsupported|invalid)|(?:invalid|unsupported|not supported).{0,100}(?:schema|structured.?outputs?|output_config\.format)|(?:output_config\.format|structured.?outputs?).{0,100}(?:not supported|unsupported|invalid)/i.test(message);
+}
+
 /**
  * Claude 에게 한 번 묻는다. 길게 생각하고 길게 답할 수 있으므로 늘 스트리밍으로 받아 끝난 메시지를 쓴다.
  * jsonSchema 를 주면 답이 꼭 그 모양이 되게 한다(구조화 출력).
@@ -191,8 +211,6 @@ export async function callClaude(req: {
   if (left !== undefined && left < 15_000) {
     throw new ReadError("timeout", "시간이 모자라 AI 읽기를 시작하지 못했습니다. 다시 해 주세요.");
   }
-  // 한도가 있으면: 끝낼 시각 3초 전까지만 기다리고, 넉넉할 때만 한 번 다시 시도한다
-  const limits = left !== undefined ? { timeout: left - 3_000, maxRetries: left > 150_000 ? 1 : 0 } : {};
   // SDK 의 timeout 은 응답 머리가 올 때까지만 잰다. 답을 흘려 받는 동안까지 재려고 전체 시간 제한을 따로 건다
   const overall = left !== undefined ? AbortSignal.timeout(left - 3_000) : undefined;
   const signal = overall ? (req.signal ? AbortSignal.any([req.signal, overall]) : overall) : req.signal;
@@ -200,23 +218,40 @@ export async function callClaude(req: {
   const fallback = supportsFallback(req.model);
   let message: BetaMessage;
   try {
-    stream = anthropic.beta.messages.stream(
-      {
-        model: req.model,
-        max_tokens: req.maxTokens,
-        // 같은 지시문을 여러 번 보내므로 캐시해 둔다 (두 번째부터 입력 요금이 크게 준다)
-        system: [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }],
-        messages: req.messages,
-        thinking: { type: "adaptive" },
-        output_config: {
-          effort: req.effort,
-          ...(req.jsonSchema ? { format: { type: "json_schema" as const, schema: req.jsonSchema } } : {}),
+    const ask = async (structured: boolean) => {
+      const remaining = req.deadline ? req.deadline - Date.now() : undefined;
+      if (remaining !== undefined && remaining < 15_000) throw new ReadError("timeout", "AI 읽기를 마칠 시간이 모자랍니다. 다시 해 주세요.");
+      const system = !structured && req.jsonSchema
+        ? `${req.system}\n\n다음 JSON 스키마를 따르는 JSON 객체 하나만 답한다. 설명이나 코드 블록은 넣지 않는다. 모든 필드를 채우고, 해당 내용이 없으면 빈 배열 또는 빈 문자열을 쓴다.\n${JSON.stringify(req.jsonSchema)}`
+        : req.system;
+      // 복구 호출도 전체 마감 시각을 공유한다. 남은 시간이 짧으면 SDK의 재시도도 끈다.
+      const limits = remaining !== undefined ? { timeout: remaining - 3_000, maxRetries: remaining > 150_000 ? 1 : 0 } : {};
+      stream = anthropic.beta.messages.stream(
+        {
+          model: req.model,
+          max_tokens: req.maxTokens,
+          // 같은 지시문을 여러 번 보내므로 캐시해 둔다 (두 번째부터 입력 요금이 크게 준다)
+          system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
+          messages: req.messages,
+          thinking: { type: "adaptive" },
+          output_config: {
+            effort: req.effort,
+            ...(structured && req.jsonSchema ? { format: { type: "json_schema" as const, schema: req.jsonSchema } } : {}),
+          },
+          ...(fallback ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
         },
-        ...(fallback ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
-      },
-      { signal, ...limits },
-    );
-    message = await stream.finalMessage();
+        { signal, ...limits },
+      );
+      return stream.finalMessage();
+    };
+    try {
+      message = await ask(true);
+    } catch (err) {
+      // 스키마 문법을 컴파일하지 못한 400만 한 번 복구한다. 결제·인증·이미지 오류는 재호출하지 않는다.
+      if (!req.jsonSchema || !schemaRejected(err) || signal?.aborted) throw err;
+      console.warn("AI 구조화 출력 요청 거절: 검증하는 JSON 읽기로 한 번 재시도", apiErrorDetail(err));
+      message = await ask(false);
+    }
   } catch (err) {
     if (overall?.aborted && !req.signal?.aborted) {
       const timeout = new ReadError("timeout", "AI 가 너무 오래 걸려 이번 읽기를 멈췄습니다. 잠시 뒤 다시 해 주세요.");
@@ -252,36 +287,40 @@ export function explainApiError(err: unknown): ReadError {
   if (err instanceof ReadError) return err;
   if (err instanceof Anthropic.APIUserAbortError) return new ReadError("api", "읽기를 멈췄습니다.");
   if (err instanceof Anthropic.APIConnectionTimeoutError) {
-    return new ReadError("timeout", "AI 가 너무 오래 걸려 이번 읽기를 멈췄습니다. 잠시 뒤 다시 해 주세요.", err.message);
+    return new ReadError("timeout", "AI 가 너무 오래 걸려 이번 읽기를 멈췄습니다. 잠시 뒤 다시 해 주세요.", apiErrorDetail(err));
   }
   if (err instanceof Anthropic.AuthenticationError) {
-    return new ReadError("api", "AI 열쇠(ANTHROPIC_API_KEY)가 맞지 않습니다. 열쇠를 다시 확인해 주세요.", err.message);
+    return new ReadError("api", "AI 열쇠(ANTHROPIC_API_KEY)가 맞지 않습니다. 열쇠를 다시 확인해 주세요.", apiErrorDetail(err));
   }
   if (err instanceof Anthropic.PermissionDeniedError) {
-    return new ReadError("api", "이 AI 열쇠로는 이 모델을 쓸 수 없습니다.", err.message);
+    return new ReadError("api", "이 AI 열쇠로는 이 모델을 쓸 수 없습니다.", apiErrorDetail(err));
   }
   if (err instanceof Anthropic.RateLimitError) {
     const body = JSON.stringify(err.error ?? {});
     if (body.includes("enforced_spend_limit_reached")) {
-      return new ReadError("api", "이번 달 AI 사용 한도에 닿았습니다. Claude 콘솔의 결제(Billing) 화면에서 한도를 확인해 주세요.", err.message);
+      return new ReadError("api", "이번 달 AI 사용 한도에 닿았습니다. Claude 콘솔의 결제(Billing) 화면에서 한도를 확인해 주세요.", apiErrorDetail(err));
     }
-    return new ReadError("api", "AI 를 너무 자주 불러 잠시 막혔습니다. 1분쯤 뒤에 다시 해 주세요.", err.message);
+    return new ReadError("api", "AI 를 너무 자주 불러 잠시 막혔습니다. 1분쯤 뒤에 다시 해 주세요.", apiErrorDetail(err));
   }
   if (err instanceof Anthropic.BadRequestError) {
     const msg = err.message || "";
+    const detail = apiErrorDetail(err);
     if (/credit balance/i.test(msg)) {
-      return new ReadError("api", "AI 사용 금액(크레딧)이 모자랍니다. Claude 콘솔의 결제(Billing) 화면에서 충전해 주세요.", msg);
+      return new ReadError("api", "AI 사용 금액(크레딧)이 모자랍니다. Claude 콘솔의 결제(Billing) 화면에서 충전해 주세요.", detail);
     }
     if (/usage limits/i.test(msg)) {
-      return new ReadError("api", "직접 정해 둔 AI 사용 한도에 닿았습니다. Claude 콘솔의 결제(Billing) 화면에서 한도를 올려 주세요.", msg);
+      return new ReadError("api", "직접 정해 둔 AI 사용 한도에 닿았습니다. Claude 콘솔의 결제(Billing) 화면에서 한도를 올려 주세요.", detail);
     }
-    return new ReadError("api", "AI 에게 보낸 요청에 문제가 있습니다.", msg);
+    if (schemaRejected(err)) return new ReadError("api", "AI가 시험지 배치 정보의 요청 형식을 처리하지 못했습니다. 오류 상세를 확인해 주세요.", detail);
+    if (/max_tokens|effort|thinking|fallbacks|anthropic-beta/i.test(detail)) return new ReadError("api", "선택한 AI 모델이 요청 옵션을 받지 못했습니다. 오류 상세를 확인해 주세요.", detail);
+    if (/image|base64|media_type/i.test(detail)) return new ReadError("api", "AI가 보낸 이미지를 읽지 못했습니다. 오류 상세를 확인해 주세요.", detail);
+    return new ReadError("api", "AI가 요청 형식을 거절했습니다. 오류 상세에서 사유를 확인해 주세요.", detail);
   }
   if (err instanceof Anthropic.APIConnectionError) {
-    return new ReadError("api", "AI 서버에 연결하지 못했습니다. 인터넷 연결을 확인하고 다시 해 주세요.", err.message);
+    return new ReadError("api", "AI 서버에 연결하지 못했습니다. 인터넷 연결을 확인하고 다시 해 주세요.", apiErrorDetail(err));
   }
   if (err instanceof Anthropic.APIError) {
-    return new ReadError("api", `AI 서버에서 오류가 났습니다 (${err.status ?? "?"}). 잠시 뒤 다시 해 주세요.`, err.message);
+    return new ReadError("api", `AI 서버에서 오류가 났습니다 (${err.status ?? "?"}). 잠시 뒤 다시 해 주세요.`, apiErrorDetail(err));
   }
   return new ReadError("api", "AI 읽기 중 알 수 없는 오류가 났습니다.", err instanceof Error ? err.message : String(err));
 }

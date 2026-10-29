@@ -1,7 +1,7 @@
 "use client";
 
 import { DragEvent, useEffect, useRef, useState } from "react";
-import { api, patchJson, postJson, saveBlob, won } from "@/lib/client/api";
+import { api, ApiError, patchJson, postJson, saveBlob, won } from "@/lib/client/api";
 import { makeExam, type MakeResult, type Progress, type Step } from "@/lib/client/make-exam";
 import { isStale, STALE_MESSAGE } from "@/lib/client/version";
 import { loadFigureFonts } from "@/lib/figure/engine";
@@ -31,6 +31,7 @@ export default function MakePage() {
   const [progress, setProgress] = useState<Progress | null>(null);
   const [result, setResult] = useState<MakeResult | null>(null);
   const [error, setError] = useState("");
+  const [errorDetail, setErrorDetail] = useState("");
   const [busy, setBusy] = useState(false);
   /** 이 화면을 연 뒤 프로그램이 새 판으로 바뀌었는지 (바뀌었으면 새로 고치라고 알린다) */
   const [stale, setStale] = useState(false);
@@ -64,6 +65,7 @@ export default function MakePage() {
     setFiles(picked);
     setResult(null);
     setError("");
+    setErrorDetail("");
     if (!title) setTitle(picked[0].name.replace(/\.[^.]+$/, ""));
   }
 
@@ -77,6 +79,7 @@ export default function MakePage() {
     if (!files.length || !JXG || !ready) return;
     setBusy(true);
     setError("");
+    setErrorDetail("");
     setResult(null);
     const controller = new AbortController();
     abort.current = controller;
@@ -105,8 +108,10 @@ export default function MakePage() {
       saveBlob(out.hwpx, out.fileName);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      const detail = err instanceof ApiError ? err.detail ?? "" : "";
       setError(msg);
-      if (docId) await patchJson(`/api/documents/${docId}`, { status: "failed", note: msg.slice(0, 500) }).catch(() => undefined);
+      setErrorDetail(detail);
+      if (docId) await patchJson(`/api/documents/${docId}`, { status: "failed", note: `${msg}${detail ? `\n${detail}` : ""}`.slice(0, 500) }).catch(() => undefined);
     } finally {
       setBusy(false);
       abort.current = null;
@@ -221,15 +226,16 @@ export default function MakePage() {
       )}
 
       {error && error !== STALE_MESSAGE && (
-        <p className="notice error" role="alert">
-          {error}
+        <div className="notice error" role="alert">
+          <p>{error}</p>
           {error.includes("열쇠") && (
             <>
               {" "}
               <a href="/settings">설정으로 가기</a>
             </>
           )}
-        </p>
+          {errorDetail && <details><summary>오류 상세</summary><p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{errorDetail}</p></details>}
+        </div>
       )}
 
       {review && <FigureReview exam={review.exam} onContinue={review.finish} />}

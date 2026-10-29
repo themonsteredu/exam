@@ -181,7 +181,7 @@ async function run(
         docId,
       }, signal);
     } catch (err) {
-      throw new ApiError(`${i + 1}쪽을 읽지 못했습니다: ${err instanceof Error ? err.message : err}`, err instanceof ApiError ? err.status : 0);
+      throw new ApiError(`${i + 1}쪽을 읽지 못했습니다: ${err instanceof Error ? err.message : err}`, err instanceof ApiError ? err.status : 0, err instanceof ApiError ? err.detail : undefined);
     }
     tell({ usd: progress.usd + sumUsd(res.usage) });
     const page = i + 1;
@@ -243,7 +243,8 @@ async function run(
             tell({ usd: progress.usd + sumUsd(r.usage) });
           } catch (err) {
             if (signal.aborted) throw err;
-            figures.set(job.key, { crop: cut.crop, scale: cut.scale, error: err instanceof Error ? err.message : String(err), ...original });
+            const detail = err instanceof ApiError && err.detail ? ` (${err.detail})` : "";
+            figures.set(job.key, { crop: cut.crop, scale: cut.scale, error: `${err instanceof Error ? err.message : String(err)}${detail}`, ...original });
           } finally {
             tell({ figuresDone: progress.figuresDone + 1 });
           }

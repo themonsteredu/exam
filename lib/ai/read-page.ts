@@ -1,8 +1,8 @@
 // 1차 읽기: 시험지 한 쪽 사진 → 머리 표, 안내 상자, 문항, 그림 위치.
 // 서버 전용 (Claude 를 부른다).
 
-import { callClaude, modelFor, ReadError, type Effort, type Usage } from "./claude";
-import { PageReadingS, pageReadingJsonSchema, type PageReading } from "./page-schema";
+import { callClaude, extractJson, modelFor, ReadError, type Effort, type Usage } from "./claude";
+import { PageOutputS, pageReadingJsonSchema, type PageReading } from "./page-schema";
 import { PAGE_SYSTEM, pageUserText } from "./prompts";
 
 export type ImageInput = {
@@ -40,13 +40,13 @@ export async function readPage(
   });
   let json: unknown;
   try {
-    json = JSON.parse(text);
+    json = extractJson(text);
   } catch {
     const err = new ReadError("bad_answer", "AI 의 답을 읽지 못했습니다. 다시 시도해 주세요.", text.slice(0, 500));
     err.usage = usage;
     throw err;
   }
-  const parsed = PageReadingS.safeParse(json);
+  const parsed = PageOutputS.safeParse(json);
   if (!parsed.success) {
     const err = new ReadError("bad_answer", "AI 의 답이 정해진 모양과 다릅니다. 다시 시도해 주세요.", parsed.error.message.slice(0, 500));
     err.usage = usage;
