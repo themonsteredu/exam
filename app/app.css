@@ -115,3 +115,12 @@ table.list td.num { text-align: right; white-space: nowrap; }
   .card { padding: 16px; }
   table.list .hide-sm { display: none; }
 }
+/* 자료의 단서를 나란히 비교하고, 작은 화면에서는 위아래로 본다. */
+.graphic-review{border-top:1px solid #ddd;margin-top:24px;padding-top:16px}
+.graphic-pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}
+.graphic-pair figure{margin:0;min-width:0}
+.graphic-pair figcaption{font-weight:600;margin-bottom:8px}
+.graphic-pair img{display:block;width:100%;height:auto;max-height:420px;object-fit:contain;object-position:top;background:#fff;border:1px solid #ddd}
+.graphic-review button[aria-pressed=true]{border:2px solid #243a5e;background:#edf1f6}
+.photo-controls label{display:flex;align-items:center;gap:12px}
+@media(max-width:600px){.graphic-pair{grid-template-columns:1fr}}

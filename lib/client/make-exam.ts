@@ -15,7 +15,7 @@ import { assertFresh } from "./version";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-export type Step = "upload" | "page" | "figure" | "draw" | "hwpx" | "save";
+export type Step = "upload" | "page" | "figure" | "draw" | "review" | "hwpx" | "save";
 
 export type Progress = {
   step: Step;
@@ -94,6 +94,7 @@ export async function makeExam(o: {
   hwpxEndpoint: string;
   onProgress: (p: Progress) => void;
   signal: AbortSignal;
+  reviewFigures?: (exam: any, signal: AbortSignal) => Promise<any>;
 }): Promise<MakeResult> {
   // 도중에 실패하면 남은 그림 읽기도 멈추도록 안에서 쓰는 멈춤 신호 (화면의 멈춤 버튼도 따른다)
   const inner = new AbortController();
@@ -117,6 +118,7 @@ async function run(
     hwpxEndpoint: string;
     onProgress: (p: Progress) => void;
     signal: AbortSignal;
+    reviewFigures?: (exam: any, signal: AbortSignal) => Promise<any>;
   },
   signal: AbortSignal,
 ): Promise<MakeResult> {
@@ -202,17 +204,26 @@ async function run(
     const jobs = figureJobs(page, res.reading);
     tell({ figuresTotal: progress.figuresTotal + jobs.length });
     for (const job of jobs) {
-      if (job.region.kind !== "diagram") {
+      const nonGeometry = job.region.kind !== "diagram";
+      let original: { sourcePng?: string; sourcePngSize?: [number, number] } = {};
+      let rawCut: ReturnType<typeof sourceFigureImage> | undefined;
+      if (nonGeometry) {
         try {
           const cut = sourceFigureImage(canvas, job.region, scale);
-          figures.set(job.key, { crop: cut.crop, scale: 1, sourcePng: cut.image.data, sourcePngSize: [cut.image.width, cut.image.height] });
+          rawCut = cut;
+          original = { sourcePng: cut.image.data, sourcePngSize: [cut.image.width, cut.image.height] };
+          if (job.region.kind === "photo") {
+            figures.set(job.key, { crop: cut.crop, scale: cut.image.width / cut.crop.w, ...original });
+            tell({ figuresDone: progress.figuresDone + 1 });
+            continue;
+          }
         } catch (err) {
           figures.set(job.key, { crop: { x: 0, y: 0, w: 0, h: 0 }, scale: 1, error: err instanceof Error ? err.message : String(err) });
+          tell({ figuresDone: progress.figuresDone + 1 });
+          continue;
         }
-        tell({ figuresDone: progress.figuresDone + 1 });
-        continue;
       }
-      const cut = figureImage(canvas, job.region, scale);
+      const cut = rawCut ? { ...rawCut, scale: rawCut.image.width / rawCut.crop.w } : figureImage(canvas, job.region, scale);
       const item = {
         no: job.item.no,
         stem: toExamPieces(job.item.stem),
@@ -225,13 +236,14 @@ async function run(
             const r = await postJson<{ figure: FigureReading; usage: Usage }>("/api/read/figure", {
               image: `data:${cut.image.mediaType};base64,${cut.image.data}`,
               item,
+              kind: job.region.kind,
               docId,
             }, signal);
-            figures.set(job.key, { crop: cut.crop, scale: cut.scale, reading: r.figure });
+            figures.set(job.key, { crop: cut.crop, scale: cut.scale, reading: r.figure, ...original });
             tell({ usd: progress.usd + sumUsd(r.usage) });
           } catch (err) {
             if (signal.aborted) throw err;
-            figures.set(job.key, { crop: cut.crop, scale: cut.scale, error: err instanceof Error ? err.message : String(err) });
+            figures.set(job.key, { crop: cut.crop, scale: cut.scale, error: err instanceof Error ? err.message : String(err), ...original });
           } finally {
             tell({ figuresDone: progress.figuresDone + 1 });
           }
@@ -251,12 +263,18 @@ async function run(
   check();
 
   // 3) 합치기 → 그림 PNG
-  const exam = assembleExam(pages, figures);
+  let exam = assembleExam(pages, figures);
   if (o.title) exam.title = o.title;
   // 읽은 결과를 먼저 보관한다 (뒤에서 한글 파일 만들기가 실패해도 요금을 낸 읽기 결과는 남게)
   await patchJson(`/api/documents/${docId}`, { exam_json: stripPngs(exam), cost_usd: progress.usd }).catch(() => undefined);
   tell({ step: "draw", message: "그림을 그리는 중입니다." });
   let rendered = await renderExamFigures(o.JXG, exam);
+  if (o.reviewFigures && exam.sections.some((s: any) => s.items.some((it: any) => it.figure?.original_png))) {
+    tell({ step: "review", message: "원본과 재작성한 자료를 확인해 주세요." });
+    exam = await o.reviewFigures(attachFigurePngs(exam, rendered, true), signal);
+    check();
+    rendered = await renderExamFigures(o.JXG, exam);
+  }
   let body = JSON.stringify(attachFigurePngs(exam, rendered));
   const bytes = (text: string) => new Blob([text]).size; // 한글은 글자 하나가 3바이트
   if (bytes(body) > MAX_HWPX_BODY) {
@@ -298,7 +316,7 @@ async function run(
     /* 알림 없음 */
   }
   // PDF 에서 그리지 못한 쪽도 결과 알림에 남긴다
-  warnings = [...pageProblems, ...warnings];
+  warnings = [...pageProblems, ...warnings, ...rendered.flatMap(r => (r.warnings ?? []).map(w => `${r.no}번: ${w}`))];
 
   // 5) 보관
   tell({ step: "save", message: "보관함에 저장하는 중입니다." });

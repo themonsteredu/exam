@@ -10,6 +10,7 @@ import { addUsage, assistantTurn, callClaude, extractJson, modelFor, ReadError, 
 import type { Piece, Region } from "./page-schema";
 import { FIGURE_SYSTEM, figureRepairText, figureUserText, piecesToText } from "./prompts";
 import type { ImageInput } from "./read-page";
+import type { GraphicSpec } from "@/lib/graphic/schema";
 
 export const FIGURE_EFFORT: Effort = "high";
 
@@ -31,6 +32,7 @@ const BoxS = z.object({ x: z.number(), y: z.number(), w: z.number().positive(), 
 export type Anchor = { at: PointRef; px: [number, number] };
 
 export type FigureReading = {
+  graphic?: GraphicSpec;
   /** 검사를 통과한 그림 명령 (끝내 통과하지 못하면 없음) */
   commands?: FigureSpec;
   /** 검사를 통과하지 못한 마지막 그림 명령 (확인 화면에서 고치도록) */

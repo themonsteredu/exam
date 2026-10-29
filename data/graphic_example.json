@@ -1,0 +1,16 @@
+{
+  "kind": "map", "width": 1000, "height": 600,
+  "paths": [
+    {"points": [[30,280],[970,280]],"closed":false,"stroke":"#000000","fill":"none","width":3,"dash":false},
+    {"points": [[30,330],[970,330]],"closed":false,"stroke":"#000000","fill":"none","width":3,"dash":false},
+    {"points": [[100,80],[300,80],[300,220],[100,220]],"closed":true,"stroke":"#000000","fill":"#F1F1F1","width":2,"dash":false},
+    {"points": [[670,390],[900,390],[900,540],[670,540]],"closed":true,"stroke":"#000000","fill":"none","width":2,"dash":false}
+  ],
+  "ellipses": [{"cx":460,"cy":230,"rx":12,"ry":12,"stroke":"#000000","fill":"#000000","width":2}],
+  "texts": [
+    {"x":110,"y":120,"w":180,"h":60,"text":"A","size":40,"align":"center","direction":"horizontal"},
+    {"x":700,"y":430,"w":160,"h":60,"text":"B","size":40,"align":"center","direction":"horizontal"},
+    {"x":400,"y":130,"w":120,"h":60,"text":"C","size":40,"align":"center","direction":"horizontal"}
+  ],
+  "tables": [], "critical_labels": ["A","B","C"]
+}

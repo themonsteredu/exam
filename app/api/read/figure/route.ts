@@ -3,6 +3,7 @@
 // 돌려주는 것: { figure, usage } 또는 { error }. figure.errors 가 비어 있지 않으면 그림 명령에 고칠 곳이 남은 것
 // API 키와 모델은 이 기기(브라우저)의 설정에 저장한 것을 쓰고, 쓴 요금을 그 열쇠의 월별 기록에 남긴다.
 import { readFigure } from "@/lib/ai/read-figure";
+import { readGraphic } from "@/lib/ai/read-graphic";
 import { isModel, ReadError } from "@/lib/ai/claude";
 import { fail, failFrom, parseImage } from "@/lib/ai/http";
 import { aiConfig, logUsage, requireSession } from "@/lib/server/auth";
@@ -20,7 +21,7 @@ export async function POST(req: Request) {
   const deadline = Date.now() + BUDGET_MS;
   const denied = await requireSession(req);
   if (denied) return denied;
-  let body: { image?: unknown; item?: Record<string, unknown>; model?: unknown; docId?: unknown };
+  let body: { image?: unknown; item?: Record<string, unknown>; model?: unknown; docId?: unknown; kind?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -46,7 +47,8 @@ export async function POST(req: Request) {
     return Response.json(fake);
   }
   try {
-    const { figure, usage } = await readFigure(
+    const reader = ["table", "map", "chart", "illustration", "photo", "other"].includes(String(body.kind)) ? readGraphic : readFigure;
+    const { figure, usage } = await reader(
       image,
       {
         no: typeof item.no === "number" || typeof item.no === "string" ? item.no : "?",
