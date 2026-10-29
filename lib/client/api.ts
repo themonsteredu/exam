@@ -1,7 +1,7 @@
 // 화면에서 서버 주소를 부르는 도우미. 로그인이 풀렸으면 로그인 화면으로 보낸다.
 
 export class ApiError extends Error {
-  constructor(message: string, public status: number) {
+  constructor(message: string, public status: number, public detail?: string) {
     super(message);
   }
 }
@@ -25,7 +25,7 @@ export async function api<T>(url: string, init: RequestInit = {}): Promise<T> {
     const next = encodeURIComponent(window.location.pathname);
     window.location.href = `/login?next=${next}`;
   }
-  if (!res.ok) throw new ApiError(body.error || `서버 오류가 났습니다 (${res.status}).`, res.status);
+  if (!res.ok) throw new ApiError(body.error || `서버 오류가 났습니다 (${res.status}).`, res.status, typeof body.detail === "string" ? body.detail : undefined);
   return body as T;
 }
 

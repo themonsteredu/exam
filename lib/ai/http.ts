@@ -37,6 +37,9 @@ const STATUS: Record<ReadError["code"], number> = {
 };
 
 export function failFrom(err: unknown): Response {
-  if (err instanceof ReadError) return fail(STATUS[err.code], err.message, err.detail);
+  if (err instanceof ReadError) {
+    if (err.code === "api") console.error("AI 요청 실패", { code: err.code, message: err.message, detail: err.detail });
+    return fail(STATUS[err.code], err.message, err.detail);
+  }
   return fail(500, "AI 읽기 중 알 수 없는 오류가 났습니다", err instanceof Error ? err.message : String(err));
 }

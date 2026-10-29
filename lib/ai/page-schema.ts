@@ -86,6 +86,17 @@ export type FigureRegion = z.infer<typeof FigureRegionS>;
 export type ItemReading = z.infer<typeof ItemReadingS>;
 export type PageReading = z.infer<typeof PageReadingS>;
 
+// 보관함의 옛 결과는 배치 정보가 없어도 열지만, 새 AI 답에서는 반드시 받는다.
+// 중첩된 선택 칸은 구조화 출력 문법의 크기를 크게 늘리므로 API에는 선택 칸을 보내지 않는다.
+export const PageOutputS = PageReadingS.extend({
+  sections: z.array(z.strictObject({
+    title: z.string(),
+    items: z.array(ItemReadingS.required({ layout_blocks: true })),
+  })),
+  page_artifacts: PageReadingS.shape.page_artifacts.unwrap(),
+  page_rules: PageReadingS.shape.page_rules.unwrap(),
+});
+
 /** 구조화 출력이 받지 않는 제한 (정수 칸에 zod 가 붙이는 범위 등). 받은 답은 zod 로 다시 검사한다 */
 const UNSUPPORTED = new Set(["$schema", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minLength", "maxLength"]);
 
@@ -97,5 +108,5 @@ function strip(node: unknown): unknown {
 
 /** 구조화 출력에 보낼 JSON 스키마 (zod 스키마에서 만든다) */
 export function pageReadingJsonSchema(): Record<string, unknown> {
-  return strip(z.toJSONSchema(PageReadingS, { target: "draft-2020-12", unrepresentable: "throw" })) as Record<string, unknown>;
+  return strip(z.toJSONSchema(PageOutputS, { target: "draft-2020-12", unrepresentable: "throw", reused: "ref" })) as Record<string, unknown>;
 }
