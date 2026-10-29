@@ -1,0 +1,167 @@
+{
+  "template": "school-A-2026",
+  "header": {
+    "title": "그림 배치 확인 (글 오른쪽 그림)",
+    "target_label": "응시대상",
+    "target": "그림 배치 확인",
+    "date": "쌓기나무 문제 (cubes_problem4.png)"
+  },
+  "footer": {
+    "right_top": "확인용",
+    "right_bottom": "",
+    "notice": "그림을 문제 글 오른쪽에 두는 배치를 확인하는 파일입니다."
+  },
+  "boxes": [],
+  "sections": [
+    {
+      "title": "",
+      "items": [
+        {
+          "no": 4,
+          "stem": [
+            {
+              "t": "오른쪽과 같이 쌓기나무 11개로 쌓은 모양을 보고 위, 앞, 옆에서 본 모양을 각각 그려 보시오."
+            }
+          ],
+          "figure": {
+            "place": "right",
+            "width_mm": 40,
+            "size_mm": [
+              40,
+              32
+            ],
+            "box": {
+              "page": 1,
+              "x": 320,
+              "y": 80,
+              "w": 230,
+              "h": 210
+            },
+            "commands": {
+              "base": 7,
+              "elements": [
+                {
+                  "type": "cubes",
+                  "mode": "iso",
+                  "heights": [
+                    [
+                      0,
+                      1,
+                      1,
+                      0
+                    ],
+                    [
+                      1,
+                      1,
+                      1,
+                      0
+                    ],
+                    [
+                      0,
+                      0,
+                      2,
+                      0
+                    ],
+                    [
+                      0,
+                      0,
+                      3,
+                      1
+                    ]
+                  ],
+                  "origin": [
+                    0,
+                    0
+                  ],
+                  "size": 1,
+                  "colors": {
+                    "top": "#EAD6AE",
+                    "front": "#DFC69A",
+                    "side": "#C9AC82",
+                    "edge": "#4B3E31"
+                  }
+                },
+                {
+                  "type": "badge",
+                  "at": [
+                    3.21,
+                    5.34
+                  ],
+                  "text": "위",
+                  "fill": "#CFE6A3",
+                  "stroke": "#8DB55A",
+                  "radius": 0.86
+                },
+                {
+                  "type": "arrow",
+                  "from": [
+                    3.21,
+                    4.42
+                  ],
+                  "to": [
+                    3.21,
+                    3.63
+                  ],
+                  "width": 0.6
+                },
+                {
+                  "type": "badge",
+                  "at": [
+                    -0.46,
+                    -1.74
+                  ],
+                  "text": "앞",
+                  "fill": "#F7E58F",
+                  "stroke": "#C9B34D",
+                  "radius": 0.86
+                },
+                {
+                  "type": "arrow",
+                  "from": [
+                    0.39,
+                    -1.23
+                  ],
+                  "to": [
+                    1.15,
+                    -0.97
+                  ],
+                  "width": 0.6
+                },
+                {
+                  "type": "badge",
+                  "at": [
+                    6.75,
+                    -1.88
+                  ],
+                  "text": "옆",
+                  "fill": "#F5C6D0",
+                  "stroke": "#C98798",
+                  "radius": 0.86
+                },
+                {
+                  "type": "arrow",
+                  "from": [
+                    5.86,
+                    -1.5
+                  ],
+                  "to": [
+                    5.15,
+                    -1.19
+                  ],
+                  "width": 0.6
+                }
+              ]
+            }
+          },
+          "source": {
+            "page": 1,
+            "x": 90,
+            "y": 80,
+            "w": 470,
+            "h": 210
+          }
+        }
+      ]
+    }
+  ]
+}

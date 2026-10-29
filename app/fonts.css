@@ -1,0 +1,35 @@
+/* 웹에서 쓰는 글꼴. 화면 글꼴은 에스코어드림, 그림 속 점 이름은 Liberation Serif, 그림 속 기울인 글자(변수)는 Exam Math Italic */
+@font-face {
+  font-family: "S-Core Dream";
+  src: url("https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_six@1.2/S-CoreDream-4Regular.woff") format("woff");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "S-Core Dream";
+  src: url("https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_six@1.2/S-CoreDream-5Medium.woff") format("woff");
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: "S-Core Dream";
+  src: url("https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_six@1.2/S-CoreDream-6Bold.woff") format("woff");
+  font-weight: 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Liberation Serif";
+  src: url("/fonts/LiberationSerif-Regular.ttf") format("truetype");
+  font-style: normal;
+}
+@font-face {
+  font-family: "Liberation Serif";
+  src: url("/fonts/LiberationSerif-Italic.ttf") format("truetype");
+  font-style: italic;
+}
+@font-face {
+  /* Latin Modern Math 의 수학 기울임 글자만 뽑아 보통 글자 자리에 담은 글꼴 (public/fonts/README-ExamMathItalic.txt) */
+  font-family: "Exam Math Italic";
+  src: url("/fonts/ExamMathItalic.woff2") format("woff2");
+  font-style: normal;
+}
