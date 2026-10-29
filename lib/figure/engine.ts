@@ -9,6 +9,15 @@ import { functionExprProblems } from "./validate";
 
 export const FONT_SERIF = "'Liberation Serif', 'Times New Roman', serif";
 export const FONT_SANS = "'S-Core Dream', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif";
+/** 기울인 글자(변수 x 등): 한글 수식 글꼴과 닮은 수학 기울임 글자(Exam Math Italic, 라틴·그리스 글자만 들어 있다)를 먼저 쓰고,
+ *  그 글꼴에 없는 숫자·기호는 바로 선 Liberation Serif 로 그린다 (한글 수식처럼 "2x" 의 2 는 세운다).
+ *  글꼴 자체가 기울어 있으므로 italic 을 따로 걸지 않는다 (scripts/make-math-italic-font.py) */
+export const FONT_MATH_ITALIC = `'Exam Math Italic', ${FONT_SERIF}`;
+
+/** 글자에 쓸 글꼴: 명조의 기울인 글자는 수학 기울임 글꼴로 바꾼다 */
+function textFont(family: string, italic: boolean): { family: string; italic: boolean } {
+  return italic && family === FONT_SERIF ? { family: FONT_MATH_ITALIC, italic: false } : { family, italic };
+}
 
 type JXGType = any;
 
@@ -44,7 +53,7 @@ const FONT_TIMEOUT_MS = 15000;
 let fontsLoading: Promise<void> | null = null;
 
 /**
- * 그림 글꼴(점 이름 Liberation Serif, 한글 에스코어드림)을 불러 둔다.
+ * 그림 글꼴(점 이름 Liberation Serif, 기울인 글자 Exam Math Italic, 한글 에스코어드림)을 불러 둔다.
  * 내려받기가 실패하거나 멈춰도 FONT_TIMEOUT_MS 뒤에는 넘어간다. 한 페이지에서 한 번만 기다린다.
  * 빠진 글꼴은 그림마다 FigureRenderer.fontWarnings() 로 알린다.
  */
@@ -52,8 +61,8 @@ export function loadFigureFonts(): Promise<void> {
   if (typeof document === "undefined" || !document.fonts) return Promise.resolve();
   if (!fontsLoading) {
     const loads = Promise.all(
-      [`20px 'Liberation Serif'`, `italic 20px 'Liberation Serif'`, `400 20px 'S-Core Dream'`, `500 20px 'S-Core Dream'`]
-        .map((font) => document.fonts.load(font).catch(() => undefined)),
+      [`20px 'Liberation Serif'`, `italic 20px 'Liberation Serif'`, `20px 'Exam Math Italic'`, `400 20px 'S-Core Dream'`, `500 20px 'S-Core Dream'`]
+        .map((font) => document.fonts.load(font, "x").catch(() => undefined)),
     );
     fontsLoading = new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, FONT_TIMEOUT_MS);
@@ -468,8 +477,9 @@ export class FigureRenderer {
       fixed: true,
       layer: LAYER.text,
     });
-    t.figFont = { family: opts.family, italic: !!opts.italic, weight: opts.weight || 400 };
-    const font = `${opts.italic ? "italic " : ""}${opts.weight || 400} 20px ${opts.family}`;
+    const f = textFont(opts.family, !!opts.italic);
+    t.figFont = { family: f.family, italic: f.italic, weight: opts.weight || 400 };
+    const font = `${f.italic ? "italic " : ""}${opts.weight || 400} 20px ${f.family}`;
     this.fontsUsed.set(font, (this.fontsUsed.get(font) ?? "") + text);
     return t;
   }
@@ -479,7 +489,8 @@ export class FigureRenderer {
     if (typeof document === "undefined" || !document.fonts) return [];
     const missing = new Set<string>();
     for (const [font, sample] of this.fontsUsed) {
-      if (!document.fonts.check(font, sample)) missing.add(font.includes("S-Core Dream") ? "에스코어드림" : "Liberation Serif");
+      if (document.fonts.check(font, sample)) continue;
+      missing.add(font.includes("S-Core Dream") ? "에스코어드림" : font.includes("Exam Math Italic") ? "수학 기울임 글꼴" : "Liberation Serif");
     }
     return [...missing].map((name) => `글꼴(${name})을 불러오지 못해 다른 글꼴로 그렸습니다`);
   }
@@ -714,7 +725,8 @@ export class FigureRenderer {
   private drawDimension(el: Extract<ElementSpec, { type: "dimension" }>) {
     const L = this.labelUnits;
     const labelSize = L * (el.labelSize ?? 0.85);
-    const labelFont = `${el.italic ? "italic " : ""}400 ${labelSize * this.pxPerUnit}px ${FONT_SERIF}`;
+    const lf = textFont(FONT_SERIF, !!el.italic);
+    const labelFont = `${lf.italic ? "italic " : ""}400 ${labelSize * this.pxPerUnit}px ${lf.family}`;
     const labelW = el.label ? measureTextPx(el.label, labelFont) / this.pxPerUnit : 0;
     const outside = el.labelPlace === "outside";
     const labelHalf = el.label && !outside ? labelW / 2 + labelSize * 0.35 : 0;

@@ -2,7 +2,7 @@
 // 화면 없는 브라우저(Playwright Chromium)에서 그림 엔진을 그대로 돌린다.
 //
 // 사용법: node scripts/render-figures.mjs <입력.json> <출력.json> [dpi]
-//   글꼴: 점 이름용 Liberation Serif 는 public/fonts 에서, 한글(에스코어드림)은
+//   글꼴: 점 이름용 Liberation Serif 와 기울인 글자용 Exam Math Italic 은 public/fonts 에서, 한글(에스코어드림)은
 //   FIGURE_FONT_DIR 폴더에 S-CoreDream-4Regular.woff / 5Medium.woff 가 있으면 그것을, 없으면 CDN 에서 받는다.
 //   Playwright 와 Chromium 이 있어야 한다 (package.json 에는 없다. 없으면 무엇을 설치할지 알려 준다).
 // 끝 코드: 0 모두 그림, 2 출력은 만들었지만 그리지 못한 그림이 있음(그 그림에 render_error), 1 출력을 못 만듦
@@ -39,6 +39,7 @@ const dataUri = async (file, type) => `url(data:${type};base64,${(await readFile
 const faces = [
   `@font-face{font-family:"Liberation Serif";src:${await dataUri(path.join(root, "public/fonts/LiberationSerif-Regular.ttf"), "font/ttf")};font-style:normal}`,
   `@font-face{font-family:"Liberation Serif";src:${await dataUri(path.join(root, "public/fonts/LiberationSerif-Italic.ttf"), "font/ttf")};font-style:italic}`,
+  `@font-face{font-family:"Exam Math Italic";src:${await dataUri(path.join(root, "public/fonts/ExamMathItalic.woff2"), "font/woff2")};font-style:normal}`,
 ];
 const fontDir = process.env.FIGURE_FONT_DIR;
 for (const [weight, name] of [[400, "S-CoreDream-4Regular"], [500, "S-CoreDream-5Medium"]]) {

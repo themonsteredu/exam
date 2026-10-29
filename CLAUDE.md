@@ -117,5 +117,8 @@
       크레딧으로 충분하면 만들 필요 없음
   - 남은 일: 세 모델 비교 → 가장 싼 쓸 만한 조합을 기본값으로. 열쇠가 기기마다 따로라서 read-samples --via 로는 원장님 열쇠를 쓸 수 없다
     → 프로그램 화면 안에 '모델 비교' 기능을 만들어 원장님 기기에서 돌리고, 결과는 보관함(DB)에서 읽어 판단할 것.
-    그림 속 기울인 글자를 Latin Modern Math(수학 기울임 글자)로 (조사: 한글 수식 글꼴 x 와 0.987 로 가장 닮음, 지금 Liberation Serif Italic 은 0.089),
+    그림 속 기울인 글자: 코드 완료(아직 배포 안 함, 사용자에게 전후 비교 그림 보냄). public/fonts/ExamMathItalic.woff2 = Latin Modern Math 1.959 의 수학 기울임 글자만
+      보통 글자 자리(A-Z, a-z, α-ω)에 옮긴 글꼴 (scripts/make-math-italic-font.py, GUST 사용 허락에 따라 이름 바꿈, README·license 같이 둠).
+      엔진(lib/figure/engine.ts textFont): 명조 기울인 글자는 'Exam Math Italic' 다음 Liberation Serif (숫자는 세움, italic 은 걸지 않음).
+      기울인 글자가 없는 그림은 PNG 가 바이트까지 같음을 확인. 예전 조사: 한글 수식 글꼴 x 와 0.987, Liberation Serif Italic 은 0.089,
     보관함에서 '한글 파일 다시 만들기'(exam_json 은 이미 보관됨), 보관함을 사람마다 나눌지 사용자에게 물을 것

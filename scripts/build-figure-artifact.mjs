@@ -58,7 +58,7 @@ const result = await build({
 const js = result.outputFiles[0].text.replace(/<\/script/gi, "<\\/script");
 
 const font = async (file, family, weight, style = "normal") => {
-  const data = await readFile(path.join(fontDir, file));
+  const data = await readFile(path.isAbsolute(file) ? file : path.join(fontDir, file));
   return `@font-face{font-family:"${family}";src:url(data:font/woff2;base64,${data.toString("base64")}) format("woff2");font-weight:${weight};font-style:${style};font-display:block}`;
 };
 const fonts = [
@@ -67,6 +67,8 @@ const fonts = [
   await font("S-CoreDream-6Bold.woff2", "S-Core Dream", 700),
   await font("LiberationSerif-Regular.woff2", "Liberation Serif", 400),
   await font("LiberationSerif-Italic.woff2", "Liberation Serif", 400, "italic"),
+  // 기울인 글자(변수)용: 이미 작은 글꼴이라 public/fonts 의 것을 그대로 넣는다
+  await font(path.join(root, "public/fonts/ExamMathItalic.woff2"), "Exam Math Italic", 400),
 ].join("\n");
 
 const theme = await readFile(path.join(root, "app/theme.css"), "utf8");
