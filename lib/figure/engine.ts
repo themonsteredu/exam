@@ -6,6 +6,7 @@ import { Vec, v, add, sub, mul, dist, unit, perp, fromAngle, angleOf, mid, bisec
 import { PointBook } from "./points";
 import type { ElementSpec, FigureSpec, PointRef, Dir } from "./types";
 import { functionExprProblems } from "./validate";
+import { arrangeLabels, type StrokeSegment } from "./label-layout";
 
 export const FONT_SERIF = "'Liberation Serif', 'Times New Roman', serif";
 export const FONT_SANS = "'S-Core Dream', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif";
@@ -97,6 +98,7 @@ const DIRS: Record<string, number> = { E: 0, NE: 45, N: 90, NW: 135, W: 180, SW:
 const dirVec = (d: Dir): Vec => fromAngle(typeof d === "number" ? d : DIRS[d] ?? 90);
 
 export type RenderOptions = {
+  minLabelPx?: number;
   /** 보드 가로 크기(px, 화면 기준) */
   widthPx: number;
   /** 자유점을 끌 수 있게 할지 */
@@ -129,6 +131,7 @@ export class FigureRenderer {
   private fontsUsed = new Map<string, string>();
   /** 그림 전체에서 가장 작은 글자 크기 (출력 기준 px). */
   smallestFontPx = Infinity;
+  private printLabels: { at: () => Vec; shift: Vec; w: number; h: number; direction?: () => Vec; strictDirection?: boolean }[] = [];
 
   constructor(JXG: JXGType, container: HTMLElement, spec: FigureSpec, opts: RenderOptions) {
     this.JXG = JXG;
@@ -466,11 +469,17 @@ export class FigureRenderer {
     return c;
   }
 
-  private text(at: () => Vec, text: string, opts: { sizePx: number; family: string; italic?: boolean; weight?: number; color?: string }) {
+  private text(at: () => Vec, text: string, opts: { sizePx: number; family: string; italic?: boolean; weight?: number; color?: string; direction?: () => Vec; strictDirection?: boolean }) {
+    const minPx = this.opts.minLabelPx;
+    opts = { ...opts, sizePx: minPx ? Math.max(minPx, Math.min(opts.sizePx, minPx * 1.25)) : opts.sizePx };
     if (text && Number.isFinite(opts.sizePx) && opts.sizePx > 0) {
       this.smallestFontPx = Math.min(this.smallestFontPx, opts.sizePx);
     }
-    const t = this.board.create("text", [() => at().x, () => at().y, text], {
+    const f = textFont(opts.family, !!opts.italic);
+    const metricsFont = `${f.italic ? "italic " : ""}${opts.weight || 400} ${opts.sizePx}px ${f.family}`;
+    const record = { at, shift: v(0, 0), w: (measureTextPx(text, metricsFont) + opts.sizePx * .18) / this.pxPerUnit, h: opts.sizePx * .92 / this.pxPerUnit, direction: opts.direction, strictDirection: opts.strictDirection };
+    this.printLabels.push(record);
+    const t = this.board.create("text", [() => at().x + record.shift.x, () => at().y + record.shift.y, text], {
       display: "internal",
       // 적힌 글자 그대로 그린다 (A_1, x^2 를 <sub>/<sup> 태그로 바꾸지 않고, <value> 같은 것도 계산하지 않는다)
       parse: false,
@@ -482,11 +491,39 @@ export class FigureRenderer {
       fixed: true,
       layer: LAYER.text,
     });
-    const f = textFont(opts.family, !!opts.italic);
     t.figFont = { family: f.family, italic: f.italic, weight: opts.weight || 400 };
     const font = `${f.italic ? "italic " : ""}${opts.weight || 400} 20px ${f.family}`;
     this.fontsUsed.set(font, (this.fontsUsed.get(font) ?? "") + text);
     return t;
+  }
+
+  /** 인쇄용: 선/문자와 닿는 글자를 가까운 빈 곳으로 옮긴다. 각 이름은 같은 이등분선 위에서만 움직인다. */
+  arrangePrintLabels(): { remaining: number; bounds: [number, number, number, number] } {
+    this.board.fullUpdate();
+    const strokes: StrokeSegment[] = [];
+    for (const obj of this.board.objectsList ?? []) {
+      if (Array.isArray(obj.dataX) && Array.isArray(obj.dataY)) {
+        for (let i = 1; i < obj.dataX.length; i++) {
+          const a = v(obj.dataX[i - 1], obj.dataY[i - 1]), b = v(obj.dataX[i], obj.dataY[i]);
+          if ([a.x, a.y, b.x, b.y].every(Number.isFinite)) strokes.push({ a, b });
+        }
+      } else if (obj.point1 && obj.point2 && obj.elType === "line") {
+        const a = v(obj.point1.X(), obj.point1.Y()), b = v(obj.point2.X(), obj.point2.Y());
+        const d = mul(unit(sub(b, a)), Math.max(this.bbox[2] - this.bbox[0], this.bbox[1] - this.bbox[3]) * 3);
+        strokes.push({ a: sub(a, d), b: add(b, d) });
+      }
+    }
+    const result = arrangeLabels(this.printLabels.map(p => ({ ...p.at(), w: p.w, h: p.h, direction: p.direction?.(), strictDirection: p.strictDirection })), strokes);
+    result.shifts.forEach((s, i) => { this.printLabels[i].shift = s; });
+    const bounds: [number, number, number, number] = [...this.bbox];
+    for (const p of result.placed) {
+      bounds[0] = Math.min(bounds[0], p.x - p.w * .6);
+      bounds[1] = Math.max(bounds[1], p.y + p.h * .7);
+      bounds[2] = Math.max(bounds[2], p.x + p.w * .6);
+      bounds[3] = Math.min(bounds[3], p.y - p.h * .7);
+    }
+    this.board.fullUpdate();
+    return { remaining: result.remaining, bounds };
   }
 
   /** 이 그림에 쓴 글꼴 가운데 불러오지 못한 것이 있으면 알림 문장으로 돌려준다 */
@@ -615,7 +652,9 @@ export class FigureRenderer {
           this.text(() => {
             const [a, o, b] = el.points.map((p) => this.pt(p));
             return add(o, mul(bisectorDir(a, o, b), dl));
-          }, el.label, { sizePx: this.labelPx * (el.labelSize ?? 0.8), family: FONT_SERIF });
+          }, el.label, { sizePx: this.labelPx * (el.labelSize ?? 0.8), family: FONT_SERIF, strictDirection: true, direction: () => {
+            const [a, o, b] = el.points.map(p => this.pt(p)); return bisectorDir(a, o, b);
+          } });
         }
         return;
       }
@@ -658,6 +697,7 @@ export class FigureRenderer {
           italic: el.italic,
           color: el.color,
           weight: serif ? 400 : 500,
+          direction: el.dir !== undefined ? () => dirVec(el.dir!) : undefined,
         });
         return;
       }
@@ -903,7 +943,7 @@ export class FigureRenderer {
 export async function renderFigurePng(
   JXG: JXGType,
   spec: FigureSpec,
-  opts: { widthPx: number; gliders?: Record<string, number>; minFontPx?: number },
+  opts: { widthPx: number; gliders?: Record<string, number>; minFontPx?: number; aspectRatio?: number },
 ): Promise<{ dataUrl: string; width: number; height: number; warnings: string[] }> {
   if (!(opts.widthPx > 0)) throw new Error("그림의 가로 크기(width_mm)가 올바르지 않습니다");
   await loadFigureFonts();
@@ -915,19 +955,27 @@ export async function renderFigurePng(
   document.body.appendChild(holder);
   let r: FigureRenderer | null = null;
   try {
-    r = new FigureRenderer(JXG, box, spec, { widthPx: opts.widthPx, gliders: opts.gliders });
+    const options = { widthPx: opts.widthPx, gliders: opts.gliders, minLabelPx: opts.minFontPx };
+    r = new FigureRenderer(JXG, box, spec, options);
     if (r.issues.length) throw new Error(`그림을 다 그리지 못했습니다: ${r.issues.join(" / ")}`);
-    // 인쇄할 때 아주 작은 수치와 점 이름은 글자만 키워 다시 배치한다.
-    // 그림 명령 자체를 바꾸지 않으며, 과도한 확대는 최대 2배로 제한한다.
-    let enlarged = false;
-    if (opts.minFontPx && r.smallestFontPx < opts.minFontPx) {
-      const factor = Math.min(2, opts.minFontPx / r.smallestFontPx * 1.08);
-      const scaled = { ...spec, style: { ...spec.style, labelScale: (spec.style?.labelScale ?? 1) * factor } };
+    let collisions = 0;
+    // 글자를 키우면 글자 간격과 캔버스 여백도 다시 계산한다. 원본 그림 영역의 종횡비를 유지한다.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const placed: { remaining: number; bounds: [number, number, number, number] } = r.arrangePrintLabels();
+      collisions = placed.remaining;
+      const b: [number, number, number, number] = placed.bounds;
+      const aspect = opts.aspectRatio;
+      if (aspect && aspect > 0) {
+        const w = b[2] - b[0], h = b[1] - b[3];
+        if (w / h < aspect) { const pad = (h * aspect - w) / 2; b[0] -= pad; b[2] += pad; }
+        else { const pad = (w / aspect - h) / 2; b[1] += pad; b[3] -= pad; }
+      }
+      if (b.every((n, i) => Math.abs(n - r!.bbox[i]) < .001)) break;
       r.destroy();
-      r = new FigureRenderer(JXG, box, scaled, { widthPx: opts.widthPx, gliders: opts.gliders });
-      if (r.issues.length) throw new Error(`그림을 다 그리지 못했습니다: ${r.issues.join(" / ")}`);
-      enlarged = true;
+      r = new FigureRenderer(JXG, box, { ...spec, bbox: b }, options);
     }
+    // 마지막 재생성 후에도 위치 조정을 적용한다.
+    collisions = r.arrangePrintLabels().remaining;
     r.board.fullUpdate();
     const src: HTMLCanvasElement = r.board.renderer.canvasRoot;
     // 캔버스는 화면 배율만큼 크게 그려지므로, 원하는 픽셀 수로 맞춰 흰 바탕에 합친다
@@ -941,8 +989,7 @@ export async function renderFigurePng(
     ctx.drawImage(src, 0, 0, out.width, out.height);
     const dataUrl = out.toDataURL("image/png");
     const warnings = r.fontWarnings();
-    if (enlarged) warnings.push("작은 그림 글자를 키웠습니다. 글자와 선이 겹치지 않는지 확인해 주세요.");
-    if (opts.minFontPx && r.smallestFontPx < opts.minFontPx * 0.95) warnings.push("출력 시 일부 그림 글자가 작습니다. 그림을 키우거나 글자 위치를 조정해 주세요.");
+    if (collisions) warnings.push(`그림 글자 ${collisions}곳은 선이나 다른 글자와 가까워 확인이 필요합니다.`);
     return { dataUrl, width: out.width, height: out.height, warnings };
   } finally {
     r?.destroy();

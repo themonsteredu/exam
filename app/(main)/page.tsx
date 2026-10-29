@@ -118,7 +118,7 @@ export default function MakePage() {
     <main className="page" style={{ maxWidth: 900 }}>
       <div className="page-head">
         <h1>시험지 만들기</h1>
-        <p className="lead">시험지 PDF 나 사진을 올리면 AI 가 읽어서 학교 양식의 한글 파일로 만들어 줍니다. 원본과 만든 파일은 보관함에 저장됩니다.</p>
+        <p className="lead">시험지 PDF 나 사진을 올리면 원본의 용지와 문항 위치를 살려 편집 가능한 한글 파일로 만들어 줍니다. 원본과 만든 파일은 보관함에 저장됩니다.</p>
       </div>
 
       {(stale || error === STALE_MESSAGE) && (

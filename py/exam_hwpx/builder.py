@@ -159,7 +159,8 @@ class ExamBuilder:
                 script,
                 paragraph=p,
                 base_unit=base_unit,
-                size=(box.width, box.height),
+                # 기울임 글자의 끝 획과 뒤의 한글이 붙지 않게 여유 폭을 둔다.
+                size=(box.width + int(base_unit * .22), box.height),
                 char_pr_id_ref=self.run_style(size=size),
             )
             equation.element.set("baseLine", str(box.base_line))
@@ -528,6 +529,13 @@ class ExamBuilder:
 
     # ------------------------------------------------------------------ 전체
     def build(self) -> bytes:
+        if self.exam.get("layout_mode") == "source" and self.exam.get("source_pages"):
+            from .source_layout import SourceLayout
+            SourceLayout(self).build()
+            report = self.doc.validate()
+            if not getattr(report, "ok", True):
+                self.warnings.append(f"검사 결과: {str(report)[:300]}")
+            return postprocess(self.doc.to_bytes())
         self.setup_page()
         self.build_header_table()
         first_col_para = self.start_columns()

@@ -28,6 +28,15 @@ export const FigureRegionS = z.strictObject({
   kind: z.enum(["diagram", "table", "other"]),
 });
 
+/** 원본에서 따로 배치할 글 상자. lines는 인쇄된 줄 단위이며 편집 가능한 글/수식이다. */
+export const LayoutBlockS = z.strictObject({
+  role: z.enum(["stem", "text", "box", "choice"]),
+  region: RegionS,
+  title: z.string(),
+  choice_no: z.int(),
+  lines: z.array(z.array(PieceS)),
+});
+
 export const ItemReadingS = z.strictObject({
   no: z.int(),
   no_text: z.string(),
@@ -39,6 +48,7 @@ export const ItemReadingS = z.strictObject({
   figures: z.array(FigureRegionS),
   source: RegionS,
   unsure: z.array(z.string()),
+  layout_blocks: z.array(LayoutBlockS).optional(),
 });
 
 export const PageReadingS = z.strictObject({
@@ -65,6 +75,9 @@ export const PageReadingS = z.strictObject({
   page_end_note: z.string(),
   print_area: RegionS,
   unsure: z.array(z.string()),
+  // 옛 읽기 결과도 열 수 있게 선택 칸. 새 변환은 원본의 머리말/안내/꼬리말 영역을 보존한다.
+  page_artifacts: z.array(z.strictObject({ kind: z.enum(["header", "notice", "footer"]), region: RegionS })).optional(),
+  page_rules: z.array(RegionS).optional(),
 });
 
 export type Piece = z.infer<typeof PieceS>;

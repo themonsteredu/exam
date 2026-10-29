@@ -66,7 +66,8 @@ export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGUR
       try {
         const out = await renderFigurePng(JXG, fig.commands, {
           widthPx: pxForPrint(figureWidthMm(fig), dpi),
-          minFontPx: pxForPrint(2.3, dpi),
+          minFontPx: pxForPrint(3.5, dpi),
+          aspectRatio: fig.size_mm?.[1] ? figureWidthMm(fig) / fig.size_mm[1] : undefined,
           gliders: fig.gliders,
         });
         results.push({

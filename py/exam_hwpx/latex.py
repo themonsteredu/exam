@@ -58,7 +58,6 @@ _SYMBOLS = {
 
 # 관계 기호 중 라이브러리가 모르는 것 → 정자로, 양옆을 띄워 넣을 글자
 _RELATIONS = {
-    "parallel": "∥",
     "nparallel": "∦",
     "perp": "⊥",
     "bot": "⊥",
@@ -425,6 +424,9 @@ class _Converter:
                         raise EquationError(f"\\not 다음 기호를 바꾸지 못했습니다: {s[k:k + 12]}")
                     out.append(self.prepare(_NOT[target]) + " ")
                     j = k + len(nm.group(0))
+                elif name == "parallel":
+                    # 한글 수식의 전용 평행 기호. 유니코드 ∥는 글꼴에 따라 세로 막대처럼 보인다.
+                    out.append(self._slot("~parallel~"))
                 elif name in _SYMBOLS:
                     out.append(self._symbol(_SYMBOLS[name]))
                 elif name in _RELATIONS:
