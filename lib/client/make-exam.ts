@@ -10,6 +10,7 @@ import type { FigureReading } from "@/lib/ai/read-figure";
 import { continuationHint } from "@/lib/ai/read-page";
 import { attachFigurePngs, renderExamFigures } from "@/lib/figure/render-exam";
 import { ApiError, patchJson, postJson, uploadFile, type FileRef } from "./api";
+import { saveExamCheckpoint } from "./exam-storage";
 import { figureImage, openSources, pageImage, precheckFiles, sourceFigureImage } from "./pages";
 import { assertFresh } from "./version";
 
@@ -29,7 +30,7 @@ export type Progress = {
 
 export type MakeResult = {
   exam: any;
-  hwpx: Blob;
+  hwpxPath: string;
   fileName: string;
   warnings: string[];
   usd: number;
@@ -41,8 +42,15 @@ export type MakeResult = {
   saveProblem?: string;
 };
 
-/** 한글 파일 만들기에 보낼 시험지 데이터(그림 PNG 포함)의 상한: Vercel 요청 한도 4.5MB 와 Python 함수의 4.4MB 보다 조금 작게 */
-const MAX_HWPX_BODY = 4_300_000;
+export type Recovery = { docId: string; title: string; exam: any; usd: number; pageProblems: string[] };
+type FinishOptions = {
+  JXG: any;
+  hwpxEndpoint: string;
+  onProgress: (p: Progress) => void;
+  signal: AbortSignal;
+  reviewFigures?: (exam: any, signal: AbortSignal) => Promise<any>;
+  onRecoverable?: (work: Recovery) => void;
+};
 
 function sumUsd(u?: Usage) {
   return u?.usd ?? 0;
@@ -95,6 +103,7 @@ export async function makeExam(o: {
   onProgress: (p: Progress) => void;
   signal: AbortSignal;
   reviewFigures?: (exam: any, signal: AbortSignal) => Promise<any>;
+  onRecoverable?: (work: Recovery) => void;
 }): Promise<MakeResult> {
   // 도중에 실패하면 남은 그림 읽기도 멈추도록 안에서 쓰는 멈춤 신호 (화면의 멈춤 버튼도 따른다)
   const inner = new AbortController();
@@ -119,6 +128,7 @@ async function run(
     onProgress: (p: Progress) => void;
     signal: AbortSignal;
     reviewFigures?: (exam: any, signal: AbortSignal) => Promise<any>;
+    onRecoverable?: (work: Recovery) => void;
   },
   signal: AbortSignal,
 ): Promise<MakeResult> {
@@ -266,82 +276,76 @@ async function run(
   // 3) 합치기 → 그림 PNG
   let exam = assembleExam(pages, figures);
   if (o.title) exam.title = o.title;
-  // 읽은 결과를 먼저 보관한다 (뒤에서 한글 파일 만들기가 실패해도 요금을 낸 읽기 결과는 남게)
-  await patchJson(`/api/documents/${docId}`, { exam_json: stripPngs(exam), cost_usd: progress.usd }).catch(() => undefined);
+  const work: Recovery = { docId, title: o.title || "시험지", exam: stripPngs(exam), usd: progress.usd, pageProblems };
+  o.onRecoverable?.(work);
+  return finishExam(o, work, signal, progress, uploads);
+}
+
+/** 보관함 또는 현재 화면의 읽기 결과에서 AI 호출 없이 한글 파일 만들기를 다시 시작한다. */
+export async function resumeExam(o: FinishOptions, work: Recovery): Promise<MakeResult> {
+  await assertFresh();
+  const figures = (work.exam.sections ?? []).reduce((n: number, s: any) => n + (s.items ?? []).filter((it: any) => it.figure).length, 0);
+  const pages = Array.isArray(work.exam.source_pages) ? work.exam.source_pages.length : 0;
+  const progress: Progress = { step: "draw", message: "저장된 읽기 결과를 준비하는 중입니다.", pagesDone: pages, pagesTotal: pages, figuresDone: figures, figuresTotal: figures, usd: work.usd };
+  o.onProgress({ ...progress });
+  return finishExam(o, work, o.signal, progress);
+}
+
+async function finishExam(o: FinishOptions, work: Recovery, signal: AbortSignal, progress: Progress, uploads?: Promise<FileRef[]>): Promise<MakeResult> {
+  const { docId, pageProblems } = work;
+  const tell = (patch: Partial<Progress>) => { Object.assign(progress, patch); o.onProgress({ ...progress }); };
+  const check = () => { if (signal.aborted) throw new ApiError("멈췄습니다.", 0); };
+  let exam = work.exam;
+  // 데이터가 커도 조각을 모두 저장하고 나서만 보관함의 참조를 바꾼다.
+  tell({ step: "draw", message: "AI가 읽은 결과를 보관하는 중입니다." });
+  await saveExamCheckpoint(docId, stripPngs(exam), progress.usd, signal, pageProblems);
+  check();
   tell({ step: "draw", message: "그림을 그리는 중입니다." });
   let rendered = await renderExamFigures(o.JXG, exam);
   if (o.reviewFigures && exam.sections.some((s: any) => s.items.some((it: any) => it.figure?.original_png))) {
     tell({ step: "review", message: "원본과 재작성한 자료를 확인해 주세요." });
     exam = await o.reviewFigures(attachFigurePngs(exam, rendered, true), signal);
     check();
+    o.onRecoverable?.({ ...work, exam: stripPngs(exam), usd: progress.usd });
     rendered = await renderExamFigures(o.JXG, exam);
   }
-  let body = JSON.stringify(attachFigurePngs(exam, rendered));
-  const bytes = (text: string) => new Blob([text]).size; // 한글은 글자 하나가 3바이트
-  if (bytes(body) > MAX_HWPX_BODY) {
-    // 그림이 아주 많으면 서버 한 번 요청 한도(4.5MB)를 넘는다 → 그림을 한도 안의 가장 낮은 해상도(300dpi)로 다시 그린다
-    rendered = await renderExamFigures(o.JXG, exam, 300);
-    body = JSON.stringify(attachFigurePngs(exam, rendered));
-  }
-  if (bytes(body) > MAX_HWPX_BODY) {
-    throw new ApiError("그림이 너무 많아 한글 파일을 한 번에 만들 수 없습니다. PDF 를 몇 쪽씩 나눠서 다시 올려 주세요.", 413);
-  }
-  const withPng = JSON.parse(body);
+  const withPng = attachFigurePngs(exam, rendered, true);
   const failedFigures = rendered.filter((r) => !r.png).length;
 
   // 4) 한글 파일
   check();
-  tell({ step: "hwpx", message: "한글 파일을 만드는 중입니다." });
-  const res = await fetch(o.hwpxEndpoint, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body,
-    credentials: "same-origin",
-    signal,
-  });
-  if (!res.ok) {
-    let msg = `한글 파일을 만들지 못했습니다 (${res.status}).`;
-    try {
-      const body = await res.json();
-      if (body.error) msg = `${body.error}${body.detail ? ` (${body.detail})` : ""}`;
-    } catch {
-      /* 그대로 */
-    }
-    throw new ApiError(msg, res.status);
+  tell({ step: "hwpx", message: "그림을 보관하고 한글 파일을 만드는 중입니다." });
+  const checkpoint = await saveExamCheckpoint(docId, withPng, progress.usd, signal, pageProblems);
+  check();
+  const res = await postJson<{ path: string; warnings?: string[] }>(o.hwpxEndpoint, { input_paths: checkpoint.parts }, signal);
+  if (typeof res.path !== "string" || !res.path.startsWith(`generated/${docId}/`) || !res.path.endsWith(".hwpx")) {
+    throw new ApiError("완성된 한글 파일의 보관 위치를 확인하지 못했습니다.", 502);
   }
-  const hwpx = await res.blob();
-  let warnings: string[] = [];
-  try {
-    warnings = JSON.parse(decodeURIComponent(res.headers.get("x-hwpx-warnings") || "[]"));
-  } catch {
-    /* 알림 없음 */
-  }
+  let warnings: string[] = Array.isArray(res.warnings) ? res.warnings.filter((w): w is string => typeof w === "string") : [];
   // PDF 에서 그리지 못한 쪽도 결과 알림에 남긴다
   warnings = [...pageProblems, ...warnings, ...rendered.flatMap(r => (r.warnings ?? []).map(w => `${r.no}번: ${w}`))];
 
   // 5) 보관
   tell({ step: "save", message: "보관함에 저장하는 중입니다." });
-  const fileName = `${(o.title || "시험지").replace(/[\\/:*?"<>|]/g, "_")}.hwpx`;
+  const fileName = `${work.title.replace(/[\\/:*?"<>|]/g, "_")}.hwpx`;
   const items = (exam.sections ?? []).reduce((n: number, s: any) => n + (s.items?.length ?? 0), 0);
   const problems: string[] = [];
   // 원본 보관이 실패해도 한글 파일과 시험지 데이터는 따로 보관한다
   let originalsError = "";
   try {
-    await uploads;
+    if (uploads) await uploads;
   } catch (err) {
     originalsError = err instanceof Error ? err.message : String(err);
     problems.push(`원본 파일을 보관하지 못했습니다 (${originalsError})`);
   }
   let saved = false;
   try {
-    const ref = await uploadFile(docId, "generated", new Blob([hwpx], { type: "application/hwp+zip" }), fileName, 0, o.signal);
     await patchJson(`/api/documents/${docId}`, {
-      hwpx_path: ref.path,
-      exam_json: stripPngs(exam),
+      hwpx_path: res.path,
       status: "done",
       cost_usd: progress.usd,
       item_count: items,
-      ...(originalsError ? { note: `원본을 보관하지 못했습니다: ${originalsError}`.slice(0, 500) } : {}),
+      note: originalsError ? `원본을 보관하지 못했습니다: ${originalsError}`.slice(0, 500) : null,
     });
     saved = true;
   } catch (err) {
@@ -349,7 +353,7 @@ async function run(
   }
   return {
     exam: withPng,
-    hwpx,
+    hwpxPath: res.path,
     fileName,
     warnings,
     usd: progress.usd,

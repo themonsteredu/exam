@@ -19,6 +19,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "py"))
 
 from exam_hwpx.service import build_from_exam, session_version_of  # noqa: E402
+from exam_hwpx.staging import PART_BYTES, output_path, read_exam_parts, validate_parts  # noqa: E402
 
 MAX_BODY = 4_400_000  # Vercel 요청 본문 한도(4.5MB)보다 조금 작게
 MAX_WARNINGS_HEADER = 6000  # 알림 머리말 크기 상한 (머리말 크기 한도를 넘지 않게)
@@ -38,6 +39,42 @@ GATEWAY_URL = os.environ.get("EXAM_GATEWAY_URL") or "https://vypnobpmyadtcvxhtag
 # 이 작업 환경 시험(EXAM_STORE=local)에서만 APP_SECRET 을 서명 열쇠로 쓴다 (Next 의 LocalStore 와 같은 조건)
 LOCAL_TEST = os.environ.get("EXAM_STORE") == "local" and bool(os.environ.get("APP_SECRET"))
 _cache: dict = {}
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_storage = urllib.request.build_opener(_NoRedirect())
+
+
+def _storage_url(url: str, file_path: str, upload: bool = False) -> str:
+    """창구가 서명한 이 프로젝트 보관함 주소만 허용한다 (외부 주소·리디렉션 차단)."""
+    parsed = urllib.parse.urlsplit(url)
+    host = urllib.parse.urlsplit(GATEWAY_URL).hostname
+    prefix = "/storage/v1/object/upload/sign/exam-files/" if upload else "/storage/v1/object/sign/exam-files/"
+    if (parsed.scheme != "https" or parsed.hostname != host or parsed.port not in (None, 443)
+            or parsed.username or parsed.password or parsed.fragment or parsed.path != prefix + file_path
+            or not urllib.parse.parse_qs(parsed.query).get("token")):
+        raise ValueError("보관함 주소가 올바르지 않습니다")
+    return url
+
+
+def _read_part(file_path: str, oidc_token: str | None) -> bytes:
+    signed = _gateway("files.downloadUrl", {"path": file_path}, oidc_token)
+    url = _storage_url(signed, file_path)
+    with _storage.open(urllib.request.Request(url, method="GET"), timeout=30) as response:
+        return response.read(PART_BYTES + 1)
+
+
+def _save_output(file_path: str, data: bytes, oidc_token: str | None) -> None:
+    signed = _gateway("files.uploadUrl", {"path": file_path, "contentType": "application/hwp+zip"}, oidc_token)
+    url = _storage_url(signed["url"], file_path, upload=True)
+    req = urllib.request.Request(url, data=data, headers={"content-type": "application/hwp+zip", "x-upsert": "true"}, method="PUT")
+    with _storage.open(req, timeout=60) as response:
+        if response.status not in (200, 201):
+            raise ValueError("완성된 한글 파일을 보관하지 못했습니다")
 
 
 def _gateway(action: str, payload: dict, oidc_token: str | None):
@@ -119,11 +156,21 @@ class handler(BaseHTTPRequestHandler):
             return self._json(413, {"error": "시험지 데이터가 너무 크거나 비었습니다"})
         try:
             exam = json.loads(self.rfile.read(length).decode("utf-8"))
+            if isinstance(exam, dict) and "input_paths" in exam:
+                doc_id, parts = validate_parts(exam["input_paths"])
+                exam = read_exam_parts(parts, lambda part: _read_part(part, oidc))
+                data, warnings = build_from_exam(exam)
+                path = output_path(doc_id, data)
+                _save_output(path, data, oidc)
+                shown = warnings[:50]
+                if len(warnings) > len(shown):
+                    shown.append(f"외 {len(warnings) - len(shown)}개")
+                return self._json(200, {"path": path, "warnings": shown})
             data, warnings = build_from_exam(exam)
         except ValueError as exc:
             return self._json(400, {"error": str(exc)})
-        except Exception as exc:  # noqa: BLE001 (까닭을 화면에 보여 준다)
-            return self._json(500, {"error": "한글 파일을 만들지 못했습니다", "detail": str(exc)[:500]})
+        except Exception:  # 서명 주소가 오류에 섞일 수 있으므로 내부 상세는 노출하지 않는다.
+            return self._json(500, {"error": "한글 파일을 만들거나 보관하지 못했습니다. 읽은 결과로 다시 시도해 주세요."})
         self.send_response(200)
         self.send_header("content-type", "application/hwp+zip")
         self.send_header("content-length", str(len(data)))

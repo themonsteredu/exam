@@ -4,7 +4,7 @@
     "api/hwpx.py": {
       "includeFiles": "py/**",
       "excludeFiles": "{samples,output,docs,artifact,public,scripts,data,supabase}/**",
-      "maxDuration": 60
+      "maxDuration": 300
     }
   }
 }
