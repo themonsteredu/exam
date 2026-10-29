@@ -187,12 +187,13 @@ export function apiErrorDetail(err: APIError): string {
 function schemaRejected(err: unknown): err is APIError {
   if (!(err instanceof Anthropic.BadRequestError)) return false;
   const message = apiErrorDetail(err);
-  return /schema.{0,100}(?:too complex|compil|not supported|unsupported|invalid)|(?:invalid|unsupported|not supported).{0,100}(?:schema|structured.?outputs?|output_config\.format)|(?:output_config\.format|structured.?outputs?).{0,100}(?:not supported|unsupported|invalid)/i.test(message);
+  return /grammar.{0,100}(?:too (?:large|complex)|compil|timed out)|schema.{0,100}(?:too complex|compil|not supported|unsupported|invalid)|(?:invalid|unsupported|not supported).{0,100}(?:schema|structured.?outputs?|output_config\.format)|(?:output_config\.format|structured.?outputs?).{0,100}(?:not supported|unsupported|invalid)/i.test(message);
 }
 
 /**
  * Claude 에게 한 번 묻는다. 길게 생각하고 길게 답할 수 있으므로 늘 스트리밍으로 받아 끝난 메시지를 쓴다.
- * jsonSchema 를 주면 답이 꼭 그 모양이 되게 한다(구조화 출력).
+ * jsonSchema의 기본은 구조화 출력. 복잡한 쪽 읽기는 jsonMode="validated"로
+ * 스키마를 지시문에만 넣고, 호출자가 응답을 검사·복구한다. API 문법 컴파일은 사용하지 않는다.
  */
 export async function callClaude(req: {
   system: string;
@@ -201,6 +202,7 @@ export async function callClaude(req: {
   effort: Effort;
   maxTokens: number;
   jsonSchema?: Record<string, unknown>;
+  jsonMode?: "strict" | "validated";
   apiKey?: string;
   signal?: AbortSignal;
   /** 이때(ms)까지 끝내야 한다 (서버 함수 시간 한도). 남은 시간에 맞춰 기다림과 다시 시도를 줄인다 */
@@ -222,7 +224,7 @@ export async function callClaude(req: {
       const remaining = req.deadline ? req.deadline - Date.now() : undefined;
       if (remaining !== undefined && remaining < 15_000) throw new ReadError("timeout", "AI 읽기를 마칠 시간이 모자랍니다. 다시 해 주세요.");
       const system = !structured && req.jsonSchema
-        ? `${req.system}\n\n다음 JSON 스키마를 따르는 JSON 객체 하나만 답한다. 설명이나 코드 블록은 넣지 않는다. 모든 필드를 채우고, 해당 내용이 없으면 빈 배열 또는 빈 문자열을 쓴다.\n${JSON.stringify(req.jsonSchema)}`
+        ? `${req.system}\n\n다음 JSON 스키마를 따르는 JSON 객체 하나만 답한다. 설명이나 코드 블록은 넣지 않는다. 모든 필드를 채운다. 해당 내용이 없을 때만 필드 형식에 맞춰 빈 배열·빈 문자열·0·false를 쓴다. 인쇄된 문항·조건 상자·선택지·배치 정보를 임의로 생략하지 않는다.\n${JSON.stringify(req.jsonSchema)}`
         : req.system;
       // 복구 호출도 전체 마감 시각을 공유한다. 남은 시간이 짧으면 SDK의 재시도도 끈다.
       const limits = remaining !== undefined ? { timeout: remaining - 3_000, maxRetries: remaining > 150_000 ? 1 : 0 } : {};
@@ -245,10 +247,10 @@ export async function callClaude(req: {
       return stream.finalMessage();
     };
     try {
-      message = await ask(true);
+      message = await ask(req.jsonMode !== "validated");
     } catch (err) {
       // 스키마 문법을 컴파일하지 못한 400만 한 번 복구한다. 결제·인증·이미지 오류는 재호출하지 않는다.
-      if (!req.jsonSchema || !schemaRejected(err) || signal?.aborted) throw err;
+      if (req.jsonMode === "validated" || !req.jsonSchema || !schemaRejected(err) || signal?.aborted) throw err;
       console.warn("AI 구조화 출력 요청 거절: 검증하는 JSON 읽기로 한 번 재시도", apiErrorDetail(err));
       message = await ask(false);
     }
