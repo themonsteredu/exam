@@ -30,4 +30,18 @@ jobs:
       - run: python scripts/check_editable_header.py
       - run: python scripts/check_safe_layout.py
       - run: python scripts/check_hwpx_text.py
+      - run: python scripts/check_staged_hwpx.py
       - run: npm run build
+      - name: Six pages and thirty figures without AI calls
+        env:
+          EXAM_STORE: local
+          APP_INITIAL_PASSWORD: exam-local-test
+        run: |
+          npm run dev -- -p 3198 > /tmp/exam-server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3198/login >/dev/null; then break; fi
+            sleep 2
+          done
+          python scripts/check_large_conversion.py
