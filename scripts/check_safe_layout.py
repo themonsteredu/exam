@@ -18,7 +18,8 @@ blocks += [{"role": "choice", "choice_no": i + 1, "box": box, "lines": [[]]} for
 blocks.append({"role": "text", "box": {"x": 30, "y": 105, "w": 300, "h": 30}, "lines": [[{"t": "겹치는 원본 좌표"}]]})
 blocks.append({"role": "box", "title": "조건", "box": {"x": 30, "y": 145, "w": 300, "h": 50}, "lines": [[{"t": "조건 안의 글자"}]]})
 exam = {"layout_mode": "source", "header": {"title": "읽기 쉬운 시험지", "date": "10월 8일"},
- "source_pages": [{"page": 1, "width": 1000, "height": 1400, "paper_mm": [210, 297]}],
+ "source_pages": [{"page": 1, "width": 1000, "height": 1400, "paper_mm": [210, 297],
+   "decorations": [{"kind": "header", "box": {"x": 30, "y": 15, "w": 940, "h": 70}, "lines": ["읽기 쉬운 시험지", "10월 8일"]}]}],
  "sections": [{"items": [{"no": 14, "stem": [{"t": "문제 내용"}], "choices": [[], [], [], [], []],
    "source": {"page": 1, "x": 20, "y": 100, "w": 480, "h": 900}, "layout_blocks": blocks,
    "figure": figures[0], "extra_figures": figures[1:]}]}]}
@@ -29,7 +30,7 @@ ambiguous = copy.deepcopy(shuffled)
 ambiguous[0]["box"] = dict(ambiguous[1]["box"])
 assert ExamBuilder.match_choice_figures(exam["sections"][0]["items"][0], ambiguous) == {}
 data, warnings = build_exam(exam)
-assert any("겹치지 않도록" in w for w in warnings), warnings
+assert any("겹칩니다" in w and "겹치지 않도록" in w for w in warnings), warnings
 ns = {"hp": "http://www.hancom.co.kr/hwpml/2011/paragraph"}
 with zipfile.ZipFile(io.BytesIO(data)) as z:
     root = ET.fromstring(z.read("Contents/section0.xml"))
@@ -54,6 +55,7 @@ _, invalid_warnings = build_exam(invalid)
 assert any("원본 위치를 확인하지 못했습니다" in warning for warning in invalid_warnings), invalid_warnings
 no_header_region = copy.deepcopy(exam)
 no_header_region["sections"][0]["items"][0]["layout_blocks"] = [blocks[0]]
+no_header_region["source_pages"][0]["decorations"] = []
 _, header_warnings = build_exam(no_header_region)
 assert any("머리말의 원본 위치" in warning for warning in header_warnings), header_warnings
 print("겹침과 잘못된 위치를 감지하고 글·번호·그림을 문단 흐름으로 모두 보존함")
