@@ -226,6 +226,8 @@ class SourceLayout:
             occupied = []
             on_page = [it for it in items if (it.get("source") or {}).get("page") == page.get("page")]
             for item in on_page:
+                if not valid_box(item.get("source")):
+                    return f"{page['page']}쪽 {item.get('no', '?')}번의 원본 위치를 확인하지 못했습니다"
                 for block in item.get("layout_blocks") or self.fallback(item):
                     box = block.get("box")
                     if not valid_box(box):

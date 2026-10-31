@@ -1,8 +1,10 @@
 name: Exam quality checks
 
 on:
+  pull_request:
   push:
     branches:
+      - claude/new-session-65lm7i
       - codex/fix-exam-layout-and-figures
 
 permissions:

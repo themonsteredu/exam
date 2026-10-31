@@ -1,5 +1,6 @@
 """겹치는 원본 좌표는 문단 흐름으로 재배치하고 글·그림을 보존한다."""
 import base64
+import copy
 import io
 import sys
 import zipfile
@@ -44,4 +45,8 @@ with zipfile.ZipFile(io.BytesIO(data)) as z:
             events.append("그림")
     assert events == ["①", "그림", "②", "그림", "③", "그림", "④", "그림", "⑤", "그림"], events
     assert any("조건 안의 글자" in "".join(table.itertext()) for table in root.findall(".//hp:tbl", ns))
-print("겹침 감지 시 글·번호·그림을 문단 흐름으로 모두 보존함")
+invalid = copy.deepcopy(exam)
+invalid["sections"][0]["items"][0]["source"] = {"page": 1}
+_, invalid_warnings = build_exam(invalid)
+assert any("원본 위치를 확인하지 못했습니다" in warning for warning in invalid_warnings), invalid_warnings
+print("겹침과 잘못된 위치를 감지하고 글·번호·그림을 문단 흐름으로 모두 보존함")
