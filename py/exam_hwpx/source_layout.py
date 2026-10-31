@@ -213,8 +213,7 @@ class SourceLayout:
                     continue
                 for block in item.get("layout_blocks") or self.fallback(item):
                     self.text(anchor, {**block, "label": item.get("label")}, sx, sy, item["no"])
-                fig = item.get("figure")
-                if fig:
+                for fig in ([item["figure"]] if item.get("figure") else []) + (item.get("extra_figures") or []):
                     native_failed = False
                     placement = fig.get("layout_box") or fig.get("box")
                     if fig.get("graphic") and fig.get("render_mode") != "original" and fig["graphic"].get("kind") != "photo":

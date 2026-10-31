@@ -451,7 +451,8 @@ class ExamBuilder:
                 # 둘째 문단부터는 번호 다음 글자와 같은 세로줄에서 시작한다
                 self.para_format(p, alignment="JUSTIFY", line_spacing_percent=t["line_spacing"]["body"],
                                  indent_left_mm=5.5, first_line_indent_mm=0, spacing_before_pt=2)
-        self.build_figure(item, first)
+        for figure in ([item["figure"]] if item.get("figure") else []) + (item.get("extra_figures") or []):
+            self.build_figure({**item, "figure": figure}, first)
         if item.get("bogi"):
             self.build_bogi(item["bogi"], no)
         for i, choice in enumerate(item.get("choices", [])):

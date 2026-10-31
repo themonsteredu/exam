@@ -334,8 +334,12 @@ function ResultView({ result, rate, resumed }: { result: MakeResult; rate?: numb
               <strong>{it.label ?? `${it.no}.`}</strong> <span dangerouslySetInnerHTML={{ __html: piecesToHtml(it.stem) }} />
               {it.points ? <span className="muted"> [{it.points}점]</span> : null}
             </div>
-            {it.figure?.png && <img className="figure" src={`data:image/png;base64,${it.figure.png}`} alt={`${it.no}번 그림`} />}
-            {it.figure?.render_error && <p className="notice error small">그림을 그리지 못했습니다: {it.figure.render_error}</p>}
+            {[it.figure, ...(it.extra_figures ?? [])].filter(Boolean).map((figure: any, figureIndex: number) => (
+              <div key={figureIndex}>
+                {figure.png && <img className="figure" src={`data:image/png;base64,${figure.png}`} alt={`${it.no}번 그림 ${figureIndex + 1}`} />}
+                {figure.render_error && <p className="notice error small">그림 {figureIndex + 1}을 그리지 못했습니다: {figure.render_error}</p>}
+              </div>
+            ))}
             {it.bogi?.length > 0 && (
               <div className="small">
                 &lt;보기&gt;{" "}

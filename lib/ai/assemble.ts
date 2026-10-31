@@ -163,9 +163,11 @@ export function assembleExam(
 
         const diagrams = it.figures.map((f, idx) => ({ f, idx })).filter(({ f }) => f.w > 2 && f.h > 2);
         if (diagrams.length) {
-          const { f, idx } = diagrams.find(({ f }) => f.kind === "diagram") ?? diagrams[0];
-          if (diagrams.length > 1) itemUnsure.push(`그림이 ${diagrams.length}개 있어 첫 그림만 넣었습니다`);
-          item.figure = makeFigure(f, figures.get(figureKey(meta.page, s, i, idx)), meta, mmPerPx, itemUnsure);
+          const primary = diagrams.find(({ f }) => f.kind === "diagram") ?? diagrams[0];
+          const ordered = [primary, ...diagrams.filter(({ idx }) => idx !== primary.idx)];
+          const all = ordered.map(({ f, idx }) => makeFigure(f, figures.get(figureKey(meta.page, s, i, idx)), meta, mmPerPx, itemUnsure));
+          item.figure = all[0];
+          if (all.length > 1) item.extra_figures = all.slice(1);
         }
         item.choices = it.choices.map(toExamPieces);
         item.source = { page: meta.page, ...toOriginal(it.source, meta.scale) };
@@ -174,12 +176,16 @@ export function assembleExam(
           role: b.role, title: b.title, choice_no: b.choice_no,
           box: toOriginal(b.region, meta.scale), lines: b.lines.map(toExamPieces),
         }));
-        const redraw = item.figure?.commands || (item.figure?.graphic && item.figure.graphic.kind !== "photo");
-        if (redraw && item.layout_blocks?.length) {
-          const box = enlargeIntoWhitespace(item.figure.box, item.source, item.layout_blocks.map((b: any) => b.box));
-          item.figure.layout_box = box;
-          item.figure.width_mm = round1(box.w * mmPerPx);
-          item.figure.size_mm = [round1(box.w * mmPerPx), round1(box.h * mmPerPx)];
+        const allFigures = [item.figure, ...(item.extra_figures ?? [])].filter(Boolean);
+        for (const figure of allFigures) {
+          const redraw = figure.commands || (figure.graphic && figure.graphic.kind !== "photo");
+          if (redraw && item.layout_blocks?.length) {
+            const obstacles = [...item.layout_blocks.map((b: any) => b.box), ...allFigures.filter((other: any) => other !== figure).map((other: any) => other.box)];
+            const box = enlargeIntoWhitespace(figure.box, item.source, obstacles);
+            figure.layout_box = box;
+            figure.width_mm = round1(box.w * mmPerPx);
+            figure.size_mm = [round1(box.w * mmPerPx), round1(box.h * mmPerPx)];
+          }
         }
         if (itemUnsure.length) item.unsure = itemUnsure;
 

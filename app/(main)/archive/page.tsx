@@ -93,7 +93,7 @@ export default function ArchivePage() {
                             한글 파일
                           </button>
                         )}
-                        {d.status !== "done" && d.item_count > 0 && (
+                        {d.item_count > 0 && (
                           <a href={`/?resume=${encodeURIComponent(d.id)}`}>읽은 결과로 다시 만들기</a>
                         )}
                         {d.original_files.map((f, i) => (

@@ -76,9 +76,9 @@ export function stripPngs(exam: any): any {
   const copy = JSON.parse(JSON.stringify(exam));
   for (const s of copy.sections ?? []) {
     for (const it of s.items ?? []) {
-      if (it.figure) {
-        delete it.figure.png;
-        delete it.figure.png_size;
+      for (const figure of [it.figure, ...(it.extra_figures ?? [])].filter(Boolean)) {
+        delete figure.png;
+        delete figure.png_size;
       }
     }
   }
@@ -284,7 +284,7 @@ async function run(
 /** 보관함 또는 현재 화면의 읽기 결과에서 AI 호출 없이 한글 파일 만들기를 다시 시작한다. */
 export async function resumeExam(o: FinishOptions, work: Recovery): Promise<MakeResult> {
   await assertFresh();
-  const figures = (work.exam.sections ?? []).reduce((n: number, s: any) => n + (s.items ?? []).filter((it: any) => it.figure).length, 0);
+  const figures = (work.exam.sections ?? []).reduce((n: number, s: any) => n + (s.items ?? []).reduce((count: number, it: any) => count + (it.figure ? 1 : 0) + (it.extra_figures?.length ?? 0), 0), 0);
   const pages = Array.isArray(work.exam.source_pages) ? work.exam.source_pages.length : 0;
   const progress: Progress = { step: "draw", message: "저장된 읽기 결과를 준비하는 중입니다.", pagesDone: pages, pagesTotal: pages, figuresDone: figures, figuresTotal: figures, usd: work.usd };
   o.onProgress({ ...progress });
@@ -302,7 +302,7 @@ async function finishExam(o: FinishOptions, work: Recovery, signal: AbortSignal,
   check();
   tell({ step: "draw", message: "그림을 그리는 중입니다." });
   let rendered = await renderExamFigures(o.JXG, exam);
-  if (o.reviewFigures && exam.sections.some((s: any) => s.items.some((it: any) => it.figure?.original_png))) {
+  if (o.reviewFigures && exam.sections.some((s: any) => s.items.some((it: any) => [it.figure, ...(it.extra_figures ?? [])].some((figure: any) => figure?.original_png)))) {
     tell({ step: "review", message: "원본과 재작성한 자료를 확인해 주세요." });
     exam = await o.reviewFigures(attachFigurePngs(exam, rendered, true), signal);
     check();
