@@ -197,12 +197,14 @@ async function run(
     const page = i + 1;
     const decorations: NonNullable<PageMeta["decorations"]> = [];
     for (const a of res.reading.page_artifacts ?? []) {
-      try {
-        const cut = sourceFigureImage(canvas, { ...a.region, kind: "other", place: "below" }, scale);
-        decorations.push({ box: cut.crop, png: cut.image.data });
-      } catch {
-        res.reading.unsure.push(`${a.kind}: 원본 안내 영역을 보존하지 못했습니다`);
+      const r = a.region;
+      if (![r.x, r.y, r.w, r.h].every(Number.isFinite) || r.w <= 0 || r.h <= 0 || scale <= 0) {
+        res.reading.unsure.push(`${a.kind}: 안내 영역의 위치를 읽지 못했습니다`);
+        continue;
       }
+      const box = { x: Math.round(r.x / scale), y: Math.round(r.y / scale), w: Math.round(r.w / scale), h: Math.round(r.h / scale) };
+      decorations.push({ kind: a.kind, box, lines: a.lines ?? [] });
+      if (!a.lines?.length) res.reading.unsure.push(`${a.kind}: 안내 글을 읽지 못했습니다. 한글 파일에서 확인해 주세요`);
     }
     pages.push({ meta: { page, original: { width: canvas.width, height: canvas.height }, scale, paperMm: sources[i].paperMm, decorations }, reading: res.reading });
     for (const s of res.reading.sections) {

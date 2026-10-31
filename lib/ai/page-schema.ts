@@ -76,7 +76,12 @@ export const PageReadingS = z.strictObject({
   print_area: RegionS,
   unsure: z.array(z.string()),
   // 옛 읽기 결과도 열 수 있게 선택 칸. 새 변환은 원본의 머리말/안내/꼬리말 영역을 보존한다.
-  page_artifacts: z.array(z.strictObject({ kind: z.enum(["header", "notice", "footer"]), region: RegionS })).optional(),
+  page_artifacts: z.array(z.strictObject({
+    kind: z.enum(["header", "notice", "footer"]),
+    region: RegionS,
+    // 옛 보관 결과에는 없을 수 있다. 새 결과는 인쇄 글을 읽어 편집 가능한 글로 저장한다.
+    lines: z.array(z.string()).optional(),
+  })).optional(),
   page_rules: z.array(RegionS).optional(),
 });
 

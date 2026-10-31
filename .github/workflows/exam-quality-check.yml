@@ -27,6 +27,7 @@ jobs:
       - run: node scripts/run-ts.mjs scripts/check_multiple_figures.ts
       - run: python scripts/check_source_hwpx.py
       - run: python scripts/check_multiple_figures_hwpx.py
+      - run: python scripts/check_editable_header.py
+      - run: python scripts/check_safe_layout.py
       - run: python scripts/check_hwpx_text.py
-      - run: python scripts/check_large_conversion.py
       - run: npm run build

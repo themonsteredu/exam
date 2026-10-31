@@ -16,7 +16,7 @@ export type PageMeta = {
   /** AI 에게 보낸 사진 픽셀 = 원본 픽셀 × scale */
   scale: number;
   paperMm?: { width: number; height: number };
-  decorations?: { box: Region; png: string }[];
+  decorations?: { kind?: "header" | "notice" | "footer"; box: Region; lines?: string[]; png?: string }[];
 };
 
 /** 그림 하나를 읽은 결과 */

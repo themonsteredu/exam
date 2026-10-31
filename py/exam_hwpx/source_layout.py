@@ -164,6 +164,105 @@ class SourceLayout:
                 blocks.append({"role": "choice", "choice_no": i + 1, "box": {"x": source["x"], "y": start + row_h * i, "w": source["w"], "h": row_h}, "lines": [line]})
         return blocks
 
+    def decoration(self, anchor, page, deco, kind, lines, sx, sy):
+        """사진 대신 인쇄된 머리말·안내를 한글에서 고칠 수 있는 글로 넣는다."""
+        if not lines:
+            self.b.warnings.append(f"{page['page']}쪽: {kind} 내용을 읽지 못했습니다. 원본을 보고 확인해 주세요")
+            return
+        block = {"role": "box" if kind in ("header", "notice") else "text",
+                 "box": deco.get("box"), "lines": [[{"t": str(line)}] for line in lines],
+                 "align": "CENTER" if kind == "header" else "LEFT",
+                 "font_pt": 11 if kind == "header" else 9, "minimum_font_pt": 8}
+        self.text(anchor, block, sx, sy, f"{page['page']}쪽 {kind}")
+
+    def decoration_blocks(self, page):
+        """새 결과의 글을 우선하고, 이전에 저장된 결과는 읽어 둔 제목·안내를 재사용한다."""
+        decorations = sorted(page.get("decorations") or [], key=lambda d: (d.get("box") or {}).get("y", 0))
+        header = self.b.exam.get("header") or {}
+        boxes = self.b.exam.get("boxes") or []
+        footer = self.b.exam.get("footer") or {}
+        notice_indices = [i for i, d in enumerate(decorations)
+                          if d.get("kind") == "notice" or (
+                              not d.get("kind") and page.get("page") == 1 and i > 0
+                              and (d.get("box") or {}).get("y", 0) < page.get("height", 0) * .82)]
+        notice_pos = 0
+        result = []
+        for i, deco in enumerate(decorations):
+            y = (deco.get("box") or {}).get("y", 0)
+            kind = deco.get("kind")
+            if not kind:
+                kind = "footer" if y >= page.get("height", 0) * .82 else ("header" if page.get("page") == 1 and i == 0 else "notice")
+            lines = [str(line) for line in (deco.get("lines") or []) if str(line).strip()]
+            if not lines and page.get("page") == 1 and kind == "header":
+                lines = [str(header.get("title") or "").strip()]
+                target = str(header.get("target") or "").strip()
+                if target:
+                    label = str(header.get("target_label") or "").strip()
+                    lines.append((label + " " + target).strip() if label and label not in target else target)
+                if header.get("date"): lines.append(str(header["date"]).strip())
+                lines = [line for line in lines if line]
+            elif not lines and page.get("page") == 1 and kind == "notice" and boxes:
+                selected = boxes[notice_pos:] if notice_pos == len(notice_indices) - 1 else boxes[notice_pos:notice_pos + 1]
+                notice_pos += 1
+                lines = [str(line.get("text", "") if isinstance(line, dict) else line)
+                         for box in selected for line in box.get("lines", [])]
+            elif not lines and kind == "footer":
+                lines = [str(footer[key]) for key in ("right_top", "right_bottom", "notice") if footer.get(key)]
+            result.append((deco, kind, lines))
+        return result
+
+    def collision_reason(self):
+        """고정 좌표의 글이 실제 줄바꿈 뒤 다른 글·그림과 겹칠 가능성을 미리 찾는다."""
+        items = [it for section in self.b.exam.get("sections", []) for it in section.get("items", [])]
+        for page in self.b.exam.get("source_pages", []):
+            self.paper_width, paper_height = page.get("paper_mm", [210, 297])
+            if not page.get("width") or not page.get("height"):
+                return f"{page.get('page', '?')}쪽의 크기를 확인하지 못했습니다"
+            sx, sy = self.paper_width / page["width"], paper_height / page["height"]
+            occupied = []
+            on_page = [it for it in items if (it.get("source") or {}).get("page") == page.get("page")]
+            for item in on_page:
+                for block in item.get("layout_blocks") or self.fallback(item):
+                    box = block.get("box")
+                    if not valid_box(box):
+                        continue
+                    lines = [list(line) for line in block.get("lines", [])] or [[{"t": ""}]]
+                    role, title = block.get("role", "text"), block.get("title", "")
+                    if role == "stem":
+                        lines[0].insert(0, {"t": f"{item.get('label') or str(item.get('no', '')) + '.'} "})
+                    elif role == "choice":
+                        lines[0].insert(0, {"t": "⑤  "})
+                    if role == "box" and title:
+                        lines.insert(0, [{"t": title}])
+                    pad = 1.2 if role == "box" else 0
+                    x, y, w, h = box["x"] * sx, box["y"] * sy, box["w"] * sx, box["h"] * sy
+                    aw, ah = max(1, w - pad * 2), max(1, h - pad * 2)
+                    font = max(9.5, min(14, max(11, 11 * self.paper_width / 210), ah * 72 / 25.4 / len(lines) * .80))
+                    minimum = 9.5
+                    if isinstance(block.get("font_pt"), (int, float)):
+                        minimum = max(3, min(8.5, block.get("minimum_font_pt", 8.5)))
+                        font = min(20, max(minimum, block["font_pt"]))
+                    max_width = max(self.line_width(line, font) for line in lines)
+                    if max_width > mm(aw):
+                        font = max(minimum, font * mm(aw) / max_width * .98)
+                    font = max(minimum, min(font, ah * 72 / 25.4 / len(lines) / 1.12))
+                    rows = sum(max(1, math.ceil(self.line_width(line, font) / max(1, mm(aw) * .90))) for line in lines)
+                    needed_h = rows * font * 25.4 / 72 * 1.35 + pad * 2 + .5
+                    occupied.append((x, y, w, max(h, needed_h), f"{item.get('no', '?')}번 글"))
+                for fig in ([item["figure"]] if item.get("figure") else []) + (item.get("extra_figures") or []):
+                    box = fig.get("layout_box") or fig.get("box")
+                    if valid_box(box):
+                        occupied.append((box["x"] * sx, box["y"] * sy, box["w"] * sx, box["h"] * sy,
+                                         f"{item.get('no', '?')}번 그림"))
+            for x, y, w, h, label in occupied:
+                if x < -1 or y < -1 or x + w > self.paper_width + 1 or y + h > paper_height - 1:
+                    return f"{page['page']}쪽 {label}이 용지 밖으로 넘어갑니다"
+            for i, (x, y, w, h, label) in enumerate(occupied):
+                for xx, yy, ww, hh, other in occupied[i + 1:]:
+                    if min(x + w, xx + ww) - max(x, xx) > .6 and min(y + h, yy + hh) - max(y, yy) > .6:
+                        return f"{page['page']}쪽 {label}과 {other}이 겹칩니다"
+        return ""
+
     def build(self):
         items = [it for s in self.b.exam.get("sections", []) for it in s.get("items", [])]
         for i, page in enumerate(self.b.exam["source_pages"]):
@@ -201,13 +300,8 @@ class SourceLayout:
                     bottom = (area["y"] + area["h"]) * sy
                     rule = self.doc.shapes.add_line(end_x=0, end_y=mm(max(1, bottom - y)), line_width="28", treat_as_char=False, paragraph=anchor)
                     self.place(rule.element, x, y)
-            for deco in page.get("decorations", []):
-                try:
-                    png = self.b.figure_png(deco)
-                    if png:
-                        self.image(anchor, png, deco["box"], sx, sy)
-                except Exception:
-                    self.b.warnings.append(f"{page['page']}쪽: 머리말/꼬리말 원본 영역을 넣지 못했습니다")
+            for deco, kind, lines in self.decoration_blocks(page):
+                self.decoration(anchor, page, deco, kind, lines, sx, sy)
             for item in items:
                 if (item.get("source") or {}).get("page") != page["page"]:
                     continue

@@ -434,7 +434,7 @@ class ExamBuilder:
             p = self.doc.add_paragraph("")
             if k == 0:
                 first = p
-                self.set_break(p, item.get("break_before"))
+                self.set_break(p, None if getattr(self, "safe_flow", False) else item.get("break_before"))
                 p.add_run(f"{label} ", char_pr_id_ref=self.run_style(size=size))
             self.add_pieces(p, pieces, size=size, where=f"{no}번 문제 글")
             if k == 0 and points and not score_present:
@@ -451,8 +451,15 @@ class ExamBuilder:
                 # 둘째 문단부터는 번호 다음 글자와 같은 세로줄에서 시작한다
                 self.para_format(p, alignment="JUSTIFY", line_spacing_percent=t["line_spacing"]["body"],
                                  indent_left_mm=5.5, first_line_indent_mm=0, spacing_before_pt=2)
-        for figure in ([item["figure"]] if item.get("figure") else []) + (item.get("extra_figures") or []):
-            self.build_figure({**item, "figure": figure}, first)
+        figures = ([item["figure"]] if item.get("figure") else []) + (item.get("extra_figures") or [])
+        choice_figures = self.match_choice_figures(item, figures) if getattr(self, "safe_flow", False) else {}
+        if getattr(self, "safe_flow", False) and len(figures) > 1 and item.get("choices") and not choice_figures:
+            self.warnings.append(f"{no}번: 그림과 선택지의 연결을 원본과 비교해 주세요")
+        assigned = set(choice_figures.values())
+        for index, figure in enumerate(figures):
+            if index not in assigned:
+                clean = {**figure, "place": "below"} if getattr(self, "safe_flow", False) else figure
+                self.build_figure({**item, "figure": clean}, first)
         if item.get("bogi"):
             self.build_bogi(item["bogi"], no)
         for i, choice in enumerate(item.get("choices", [])):
@@ -462,6 +469,35 @@ class ExamBuilder:
             self.add_pieces(cp, choice, size=t["sizes"]["choice"], where=f"{no}번 선택지 {i + 1}")
             self.para_format(cp, alignment="LEFT", line_spacing_percent=t["line_spacing"]["choice"],
                              indent_left_mm=0, spacing_before_pt=4 if i == 0 else 0)
+            if i in choice_figures:
+                self.build_figure({**item, "figure": {**figures[choice_figures[i]], "place": "below"}}, cp)
+
+    @staticmethod
+    def match_choice_figures(item, figures):
+        """선택지 그림 수가 선택지 수와 같고 위치가 있을 때만 가장 가까운 번호에 연결한다."""
+        choices = item.get("choices") or []
+        if len(figures) < 2 or len(figures) != len(choices):
+            return {}
+        blocks = {b.get("choice_no") - 1: b.get("box") for b in item.get("layout_blocks", [])
+                  if b.get("role") == "choice" and isinstance(b.get("choice_no"), int) and 1 <= b["choice_no"] <= len(choices)}
+        if len(blocks) != len(choices):
+            return {}
+        pairs = []
+        for i, fig in enumerate(figures):
+            f = fig.get("box") or {}
+            if not all(isinstance(f.get(k), (int, float)) for k in ("x", "y", "w", "h")):
+                return {}
+            for choice, c in blocks.items():
+                if not isinstance(c, dict) or not all(isinstance(c.get(k), (int, float)) for k in ("x", "y", "w", "h")):
+                    return {}
+                distance = abs((f["x"] + f["w"] / 2) - (c["x"] + c["w"] / 2)) + 2 * abs(f["y"] - c["y"])
+                pairs.append((distance, choice, i))
+        assigned, used = {}, set()
+        for _, choice, index in sorted(pairs):
+            if choice not in assigned and index not in used:
+                assigned[choice] = index
+                used.add(index)
+        return assigned if len(assigned) == len(figures) else {}
 
     def build_bogi(self, lines: list, no):
         """<보기> 상자: 문제 글과 같은 들여쓰기로, 가는 테두리 안에 항목(ㄱ, ㄴ, ㄷ …)을 한 줄씩."""
@@ -530,13 +566,24 @@ class ExamBuilder:
 
     # ------------------------------------------------------------------ 전체
     def build(self) -> bytes:
+        self.safe_flow = False
+        for section in self.exam.get("sections", []):
+            for item in section.get("items", []):
+                if any("첫 그림만 넣었습니다" in str(msg) for msg in (item.get("unsure") or [])):
+                    self.warnings.append(f"{item.get('no', '?')}번: 기존에 저장한 결과에는 여러 그림 중 첫 그림만 남아 있어 빠진 그림을 원본과 비교해 복구해야 합니다")
         if self.exam.get("layout_mode") == "source" and self.exam.get("source_pages"):
             from .source_layout import SourceLayout
-            SourceLayout(self).build()
-            report = self.doc.validate()
-            if not getattr(report, "ok", True):
-                self.warnings.append(f"검사 결과: {str(report)[:300]}")
-            return postprocess(self.doc.to_bytes())
+            layout = SourceLayout(self)
+            reason = layout.collision_reason()
+            if not reason:
+                layout.build()
+                report = self.doc.validate()
+                if not getattr(report, "ok", True):
+                    self.warnings.append(f"검사 결과: {str(report)[:300]}")
+                return postprocess(self.doc.to_bytes())
+            # 고정된 원본 좌표에서 겹치거나 페이지 밖으로 나가는 경우 글과 그림을 문단 흐름으로 재배치한다.
+            self.safe_flow = True
+            self.warnings.append(f"{reason}. 글과 그림이 겹치지 않도록 읽기 쉬운 양식으로 배치했습니다. 원본과 쪽 구성이 다를 수 있습니다")
         self.setup_page()
         self.build_header_table()
         first_col_para = self.start_columns()
@@ -545,7 +592,7 @@ class ExamBuilder:
             self.build_box(box, anchor=first_col_para if i == 0 else None)
         for section in self.exam.get("sections", []):
             if section.get("title"):
-                self.build_section_title(section["title"], section.get("break_before"))
+                self.build_section_title(section["title"], None if self.safe_flow else section.get("break_before"))
             for j, item in enumerate(section.get("items", [])):
                 self.build_item(item, is_first=(j == 0))
         note = self.exam.get("page_end_note")
