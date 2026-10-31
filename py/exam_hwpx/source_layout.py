@@ -13,6 +13,7 @@ from hwpx.form_fit.measure import estimate_text_width
 
 from .latex import script_for_measure, to_eqedit
 from .template import mm
+from .layout_safety import reserve, wrap_lines, numbered_lines
 
 HP = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
 
@@ -25,6 +26,8 @@ class SourceLayout:
     def __init__(self, builder):
         self.b = builder
         self.doc = builder.doc
+        self.occupied = []
+        self.suppress_reserve = False
 
     def place(self, element, x, y):
         element.set("textWrap", "IN_FRONT_OF_TEXT")
@@ -46,18 +49,21 @@ class SourceLayout:
             line_width="28", treat_as_char=False, paragraph=anchor)
         self.place(shape.element, box["x"] * sx, box["y"] * sy)
 
-    def image(self, anchor, png, box, sx, sy):
+    def image(self, anchor, png, box, sx, sy, reserve_space=True):
         if not valid_box(box):
             return
         from .builder import hancom_picture_sizes, png_size
         iw, ih = png_size(png)
         # 원본 영역 안에서 종횡비 유지. 그림을 늘려 찌그러뜨리지 않는다.
         w, h = box["w"] * sx, box["h"] * sy
+        placed = {"x": box["x"] * sx, "y": box["y"] * sy, "w": w, "h": h}
+        if reserve_space and not self.suppress_reserve:
+            placed = reserve(placed, self.occupied, self.paper_height)
         ratio = min(w / iw, h / ih)
         fw, fh = iw * ratio, ih * ratio
         pic = anchor.add_picture(self.b.add_image(png), width=mm(fw), height=mm(fh), treat_as_char=False)
         hancom_picture_sizes(pic.element, png)
-        self.place(pic.element, box["x"] * sx + (w - fw) / 2, box["y"] * sy + (h - fh) / 2)
+        self.place(pic.element, placed["x"] + (w - fw) / 2, placed["y"] + (h - fh) / 2)
 
     def line_width(self, pieces, font):
         width = 0
@@ -77,15 +83,8 @@ class SourceLayout:
         if not valid_box(box):
             self.b.warnings.append(f"{no}번: 글 영역의 위치를 읽지 못했습니다")
             return
-        lines = [list(line) for line in block.get("lines", [])] or [[{"t": ""}]]
         role, title = block.get("role", "text"), block.get("title", "")
-        if role == "stem":
-            lines[0].insert(0, {"t": f"{block.get('label') or str(no) + '.'} "})
-        if role == "choice":
-            n = block.get("choice_no", 1)
-            marks = "①②③④⑤⑥⑦⑧"
-            mark = marks[n - 1] if isinstance(n, int) and 1 <= n <= len(marks) else str(n)
-            lines[0].insert(0, {"t": mark + "  "})
+        lines = numbered_lines(block.get("lines", []), role, no, block.get("label", ""), block.get("choice_no", 1))
         boxed = role == "box"
         if boxed and title:
             lines.insert(0, [{"t": title}])
@@ -106,13 +105,28 @@ class SourceLayout:
         if required_w > mm(available_w):
             font = max(minimum_font, font * mm(available_w) / required_w * .98)
         font = max(minimum_font, min(font, available_h * 72 / 25.4 / len(lines) / 1.12))
-        too_wide = any(self.line_width(line, font) > mm(available_w) * 1.03 for line in lines)
-        if too_wide or len(lines) * font * 25.4 / 72 > available_h:
-            self.b.warnings.append(f"{no}번: 원본 글 영역에 내용이 빽빽합니다. 한글에서 줄바꿈과 겹침을 확인해 주세요")
+        # Include the number and equation widths before wrapping, then reserve the
+        # real height. A fixed source rectangle must not silently grow over its neighbour.
+        lines = wrap_lines(lines, font, mm(available_w) * .97, self.line_width)
+        heights = []
+        for line in lines:
+            units = font * 100
+            for piece in line:
+                if "m" in piece:
+                    try:
+                        measured = measure_equation(script_for_measure(to_eqedit(piece["m"])), base_unit=round(font * 100))
+                        units = max(units, measured.height)
+                    except Exception:
+                        pass
+            heights.append(units / mm(1) * 1.2)
+        h = max(h, sum(heights) + pad * 2 + .8)
+        placed = {"x": box["x"] * sx, "y": box["y"] * sy, "w": w, "h": h}
+        if not self.suppress_reserve:
+            placed = reserve(placed, self.occupied, self.paper_height)
         bf = self.b.border(*(["0.12 mm"] * 4 if boxed else [None] * 4))
         table = anchor.add_table(1, 1, width=mm(w), height=mm(h), border_fill_id_ref=bf)
         table.element.set("pageBreak", "NONE")
-        self.place(table.element, box["x"] * sx, box["y"] * sy)
+        self.place(table.element, placed["x"], placed["y"])
         cell = table.cell(0, 0)
         cell.element.set("hasMargin", "1")
         cell.element.set("editable", "1")
@@ -126,8 +140,7 @@ class SourceLayout:
             margin.set(k, str(mm(pad)))
         cell.element.find(HP + "subList").set("vertAlign", "TOP")
         # 좌표는 상자 위치, 줄은 원본 인쇄 줄. 가로 선택지를 세로로 늘어놓지 않는다.
-        line_pt = available_h * 72 / 25.4 / max(1, len(lines))
-        spacing = min(150, max(100, round(line_pt / font * 100)))
+        spacing = 120
         for i, line in enumerate(lines):
             p = cell.paragraphs[0] if i == 0 else cell.add_paragraph("")
             if block.get("literal"):
@@ -169,6 +182,8 @@ class SourceLayout:
         for i, page in enumerate(self.b.exam["source_pages"]):
             section = self.doc.sections[0] if i == 0 else self.doc.add_section()
             self.paper_width, ph = page.get("paper_mm", [210, 297])
+            self.paper_height = ph
+            self.occupied = []
             sx, sy = self.paper_width / page["width"], ph / page["height"]
             self.doc.page.set_size(width=mm(self.paper_width), height=mm(ph), section=section)
             self.doc.page.set_margins(left=mm(5), right=mm(5), top=mm(5), bottom=mm(5), header=0, footer=0, section=section)
@@ -201,36 +216,106 @@ class SourceLayout:
                     bottom = (area["y"] + area["h"]) * sy
                     rule = self.doc.shapes.add_line(end_x=0, end_y=mm(max(1, bottom - y)), line_width="28", treat_as_char=False, paragraph=anchor)
                     self.place(rule.element, x, y)
-            for deco in page.get("decorations", []):
-                try:
-                    png = self.b.figure_png(deco)
-                    if png:
-                        self.image(anchor, png, deco["box"], sx, sy)
-                except Exception:
-                    self.b.warnings.append(f"{page['page']}쪽: 머리말/꼬리말 원본 영역을 넣지 못했습니다")
-            for item in items:
-                if (item.get("source") or {}).get("page") != page["page"]:
-                    continue
-                for block in item.get("layout_blocks") or self.fallback(item):
-                    self.text(anchor, {**block, "label": item.get("label")}, sx, sy, item["no"])
-                fig = item.get("figure")
-                if fig:
-                    native_failed = False
-                    placement = fig.get("layout_box") or fig.get("box")
-                    if fig.get("graphic") and fig.get("render_mode") != "original" and fig["graphic"].get("kind") != "photo":
-                        before = list(anchor.element)
-                        try:
-                            from .graphic import draw_graphic
-                            draw_graphic(self, anchor, fig["graphic"], placement, sx, sy, item["no"])
-                            continue
-                        except Exception as exc:
-                            native_failed = True
-                            for child in list(anchor.element):
-                                if not any(child is old for old in before):
-                                    anchor.element.remove(child)
-                            self.b.warnings.append(f"{item['no']}번: 편집 가능한 자료를 만들지 못해 원본 이미지로 넣었습니다 ({str(exc)[:100]})")
-                    png = self.b.figure_png({"png": fig["original_png"]}) if native_failed and fig.get("original_png") else self.b.figure_png(fig)
-                    if png and valid_box(placement):
-                        self.image(anchor, png, placement, sx, sy)
-                    else:
-                        self.b.warnings.append(f"{item['no']}번: 그림을 배치하지 못했습니다")
+            entries = []
+            for block in self.page_text(page, on_page, i):
+                entries.append((block["box"]["y"], block["box"]["x"], "text", block, f"{page['page']}쪽"))
+            for item in on_page:
+                numbered = False
+                seen = set()
+                for original in item.get("layout_blocks") or self.fallback(item):
+                    if not valid_box(original.get("box")):
+                        continue
+                    block = {**original, "label": item.get("label") or ""}
+                    signature = (repr(block.get("lines")), tuple(block["box"].get(k) for k in ("x", "y", "w", "h")))
+                    if signature in seen:
+                        continue
+                    seen.add(signature)
+                    if block.get("role") == "stem":
+                        if numbered:
+                            block["role"] = "text"
+                        numbered = True
+                    entries.append((block["box"]["y"], block["box"]["x"], "text", block, item["no"]))
+                for fig in [item.get("figure"), *item.get("extra_figures", [])]:
+                    if fig:
+                        box = fig.get("layout_box") or fig.get("box")
+                        if valid_box(box):
+                            entries.append((box["y"], box["x"], "figure", fig, item["no"]))
+                        else:
+                            raise ValueError(f"{item['no']}번: 그림의 위치가 없습니다. 읽은 결과를 확인해 주세요.")
+            for _, _, kind, value, no in sorted(entries, key=lambda e: (e[0], e[1])):
+                if kind == "text":
+                    self.text(anchor, value, sx, sy, no)
+                else:
+                    self.figure(anchor, value, sx, sy, no)
+
+    def figure(self, anchor, fig, sx, sy, no):
+        placement = fig.get("layout_box") or fig.get("box")
+        positioned = reserve({"x": placement["x"] * sx, "y": placement["y"] * sy,
+                              "w": placement["w"] * sx, "h": placement["h"] * sy},
+                             self.occupied, self.paper_height)
+        placement = {k: positioned[k] / (sx if k in ("x", "w") else sy) for k in ("x", "y", "w", "h")}
+        native_failed = False
+        if fig.get("graphic") and fig.get("render_mode") != "original" and fig["graphic"].get("kind") != "photo":
+            before = list(anchor.element)
+            try:
+                from .graphic import draw_graphic
+                self.suppress_reserve = True
+                draw_graphic(self, anchor, fig["graphic"], placement, sx, sy, no)
+                return
+            except Exception as exc:
+                native_failed = True
+                for child in list(anchor.element):
+                    if not any(child is old for old in before):
+                        anchor.element.remove(child)
+                self.b.warnings.append(f"{no}번: 편집 가능한 자료 대신 원본 이미지를 사용했습니다 ({str(exc)[:100]})")
+            finally:
+                self.suppress_reserve = False
+        png = self.b.figure_png({"png": fig["original_png"]}) if native_failed and fig.get("original_png") else self.b.figure_png(fig)
+        if png:
+            self.image(anchor, png, placement, sx, sy, reserve_space=False)
+        else:
+            raise ValueError(f"{no}번: 출력할 그림이 없습니다. 그림을 생략하지 않도록 한글 파일 생성을 멈췄습니다. 읽은 결과는 보관되어 있습니다.")
+
+    def page_text(self, page, items, index):
+        blocks = page.get("text_blocks") or []
+        if blocks:
+            return [b for b in blocks if valid_box(b.get("box"))]
+        # Old checkpoints already contain typed header strings; do not ask AI again.
+        header = page.get("header") or (self.b.exam.get("header", {}) if index == 0 else {})
+        boxes = page.get("boxes") if "boxes" in page else (self.b.exam.get("boxes", []) if index == 0 else [])
+        footer = page.get("footer") or self.b.exam.get("footer", {})
+        first_y = min((it["source"]["y"] for it in items), default=page["height"] * .4)
+        area = page.get("print_area")
+        if not valid_box(area):
+            area = {"x": page["width"] * .04, "y": page["height"] * .03, "w": page["width"] * .92, "h": page["height"] * .94}
+        top = sorted([d["box"] for d in page.get("decorations", []) if valid_box(d.get("box")) and d["box"]["y"] < first_y], key=lambda b: (b["y"], b["x"]))
+        blocks = []
+        used = 0
+        y = area["y"]
+        def block(lines, boxed, font=10):
+            nonlocal used, y
+            lines = [line for line in lines if line]
+            if not lines:
+                return
+            if used < len(top):
+                region = top[used]
+            else:
+                height = max(12, (first_y - y - 4) / max(1, len(boxes) + 1 - used))
+                region = {"x": area["x"], "y": y, "w": area["w"], "h": height}
+            used += 1
+            y = region["y"] + region["h"] + 3
+            blocks.append({"role": "box" if boxed else "text", "title": "", "box": region,
+                           "font_pt": font, "minimum_font_pt": 9.5,
+                           "lines": [[{"t": text}] for text in lines]})
+        if header.get("title") or header.get("target") or header.get("date"):
+            block([header.get("title", ""), " ".join(str(header.get(k) or "") for k in ("target_label", "target", "date")).strip()], True, 12)
+        for box in boxes or []:
+            block([str(line.get("text", "")) if isinstance(line, dict) else str(line) for line in box.get("lines", [])], True)
+        bottom = sorted([d["box"] for d in page.get("decorations", []) if valid_box(d.get("box")) and d["box"]["y"] > first_y], key=lambda b: b["y"])
+        footer_lines = [footer.get(k, "") for k in ("right_top", "right_bottom", "notice")]
+        if any(footer_lines):
+            region = bottom[-1] if bottom else {"x": area["x"], "y": page["height"] * .93, "w": area["w"], "h": page["height"] * .05}
+            blocks.append({"role": "text", "title": "", "box": region, "font_pt": 9.5,
+                           "lines": [[{"t": str(t)}] for t in footer_lines if t]})
+        return blocks
+

@@ -8,6 +8,7 @@ import { isStale, STALE_MESSAGE } from "@/lib/client/version";
 import { loadFigureFonts } from "@/lib/figure/engine";
 import { piecesToHtml } from "@/lib/ai/latex-view";
 import { FigureReview } from "@/components/app/FigureReview";
+import { itemFigures } from "@/lib/figure/item-figures";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -21,7 +22,7 @@ const STEPS: { key: Step; label: string }[] = [
   { key: "save", label: "보관함 저장" },
 ];
 
-type Ready = { keySaved: boolean; hwpxEndpoint: string; krwPerUsd: number };
+type Ready = { keySaved: boolean; hwpxEndpoint: string; krwPerUsd: number; models: { page: string; figure: string }; cacheScope: string };
 
 export default function MakePage() {
   const [ready, setReady] = useState<Ready | null>(null);
@@ -34,6 +35,7 @@ export default function MakePage() {
   const [error, setError] = useState("");
   const [errorDetail, setErrorDetail] = useState("");
   const [busy, setBusy] = useState(false);
+  const [economy, setEconomy] = useState(true);
   /** 이 화면을 연 뒤 프로그램이 새 판으로 바뀌었는지 (바뀌었으면 새로 고치라고 알린다) */
   const [stale, setStale] = useState(false);
   const [review, setReview] = useState<{ exam: any; finish: (exam: any) => void } | null>(null);
@@ -46,7 +48,7 @@ export default function MakePage() {
     (async () => {
       try {
         const s = await api<any>("/api/settings");
-        setReady({ keySaved: !!s.apiKey?.saved && !s.apiKey?.broken, hwpxEndpoint: s.hwpxEndpoint, krwPerUsd: s.krwPerUsd });
+        setReady({ keySaved: !!s.apiKey?.saved && !s.apiKey?.broken, hwpxEndpoint: s.hwpxEndpoint, krwPerUsd: s.krwPerUsd, models: s.models, cacheScope: s.apiKey?.savedAt ? s.apiKey.savedAt + ":" + s.apiKey.last4 : "" });
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
@@ -102,7 +104,7 @@ export default function MakePage() {
   }
 
   async function start(savedWork?: Recovery) {
-    if (!JXG || !ready || (!savedWork && (!files.length || !ready.keySaved))) return;
+    if (abort.current || !JXG || !ready || (!savedWork && (!files.length || !ready.keySaved))) return;
     setBusy(true);
     setResuming(!!savedWork);
     setProgress(null);
@@ -112,11 +114,12 @@ export default function MakePage() {
     const controller = new AbortController();
     abort.current = controller;
     let docId: string | null = savedWork?.docId ?? null;
+    let currentCost = savedWork?.usd ?? 0;
     try {
       const common = {
         JXG,
         hwpxEndpoint: ready.hwpxEndpoint,
-        onProgress: setProgress,
+        onProgress: (value: Progress) => { currentCost = value.usd; setProgress(value); },
         signal: controller.signal,
         onRecoverable: setRecovery,
         reviewFigures: (exam: any, signal: AbortSignal): Promise<any> => new Promise((resolve, reject) => {
@@ -129,6 +132,8 @@ export default function MakePage() {
       const out = savedWork ? await resumeExam(common, savedWork) : await makeExam({
         ...common,
         files,
+        models: economy ? { page: "claude-sonnet-5-5", figure: "claude-sonnet-5-5" } : ready.models,
+        cacheScope: ready.cacheScope,
         title: title.trim() || "시험지",
         createDoc: async () => {
           docId = (await postJson<{ doc: { id: string } }>("/api/documents", { title })).doc.id;
@@ -145,7 +150,7 @@ export default function MakePage() {
       const detail = err instanceof ApiError ? err.detail ?? "" : "";
       setError(msg);
       setErrorDetail(detail);
-      if (docId) await patchJson(`/api/documents/${docId}`, { status: "failed", note: `${msg}${detail ? `\n${detail}` : ""}`.slice(0, 500) }).catch(() => undefined);
+      if (docId) await patchJson(`/api/documents/${docId}`, { status: "failed", cost_usd: currentCost, note: `${msg}${detail ? `\n${detail}` : ""}`.slice(0, 500) }).catch(() => undefined);
     } finally {
       setBusy(false);
       abort.current = null;
@@ -223,6 +228,14 @@ export default function MakePage() {
             ))}
           </ul>
         )}
+        <label className="field">
+          제작 모델
+          <select value={economy ? "economy" : "saved"} disabled={busy} onChange={e => setEconomy(e.target.value === "economy")}>
+            <option value="economy">절약 · Sonnet 5.5</option>
+            <option value="saved">설정에 저장한 모델 사용</option>
+          </select>
+        </label>
+        <p className="muted small">절약 모드는 Opus 5.5보다 토큰 단가가 절반입니다. 실제 비용과 인식 품질은 시험지에 따라 달라집니다. 같은 기기·모델로 이미 읽은 쪽과 그림은 재사용하며, 한글 파일만 다시 만들 때는 AI 요금이 들지 않습니다.</p>
         <div className="row">
           <button className="primary" type="button" onClick={() => start()} disabled={busy || !files.length || !JXG || !ready?.keySaved}>
             {busy ? "만드는 중" : "한글 파일 만들기"}
@@ -249,6 +262,7 @@ export default function MakePage() {
       {progress && (
         <section className="card" aria-live="polite">
           <h2>진행 상황</h2>
+          {!!progress.reused && <p>이미 읽은 결과 {progress.reused}건 재사용 · 해당 부분 추가 AI 요금 0원</p>}
           <div className="bar" aria-hidden>
             <span style={{ width: `${pct}%` }} />
           </div>
@@ -329,13 +343,15 @@ function ResultView({ result, rate, resumed }: { result: MakeResult; rate?: numb
       {result.exam.unsure?.length > 0 && <p className="muted small">쪽 전체: {result.exam.unsure.join(" / ")}</p>}
       <div className="items">
         {items.map((it: any, i: number) => (
-          <article key={i} className={`item-card${it.unsure?.length || it.figure?.render_error ? " flag" : ""}`}>
+          <article key={i} className={`item-card${it.unsure?.length || itemFigures(it).some(f => f.render_error) ? " flag" : ""}`}>
             <div className="stem">
               <strong>{it.label ?? `${it.no}.`}</strong> <span dangerouslySetInnerHTML={{ __html: piecesToHtml(it.stem) }} />
               {it.points ? <span className="muted"> [{it.points}점]</span> : null}
             </div>
-            {it.figure?.png && <img className="figure" src={`data:image/png;base64,${it.figure.png}`} alt={`${it.no}번 그림`} />}
-            {it.figure?.render_error && <p className="notice error small">그림을 그리지 못했습니다: {it.figure.render_error}</p>}
+            {itemFigures(it).map((f, index) => <div key={index}>
+              {f.png && <img className="figure" src={`data:image/png;base64,${f.png}`} alt={`${it.no}번 그림 ${index + 1}`} />}
+              {f.render_error && <p className="notice error small">그림 {index + 1}을 그리지 못했습니다: {f.render_error}</p>}
+            </div>)}
             {it.bogi?.length > 0 && (
               <div className="small">
                 &lt;보기&gt;{" "}
@@ -360,4 +376,5 @@ function ResultView({ result, rate, resumed }: { result: MakeResult; rate?: numb
     </section>
   );
 }
+
 

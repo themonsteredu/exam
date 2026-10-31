@@ -76,7 +76,7 @@ export const PageReadingS = z.strictObject({
   print_area: RegionS,
   unsure: z.array(z.string()),
   // 옛 읽기 결과도 열 수 있게 선택 칸. 새 변환은 원본의 머리말/안내/꼬리말 영역을 보존한다.
-  page_artifacts: z.array(z.strictObject({ kind: z.enum(["header", "notice", "footer"]), region: RegionS })).optional(),
+  page_artifacts: z.array(z.strictObject({ kind: z.enum(["header", "notice", "footer"]), region: RegionS, lines: z.array(z.array(PieceS)).optional(), boxed: z.boolean().optional() })).optional(),
   page_rules: z.array(RegionS).optional(),
 });
 
@@ -93,7 +93,7 @@ export const PageOutputS = PageReadingS.extend({
     title: z.string(),
     items: z.array(ItemReadingS.required({ layout_blocks: true })),
   })),
-  page_artifacts: PageReadingS.shape.page_artifacts.unwrap(),
+  page_artifacts: z.array(PageReadingS.shape.page_artifacts.unwrap().element.required({ lines: true, boxed: true })),
   page_rules: PageReadingS.shape.page_rules.unwrap(),
 });
 
@@ -110,3 +110,4 @@ function strip(node: unknown): unknown {
 export function pageReadingJsonSchema(): Record<string, unknown> {
   return strip(z.toJSONSchema(PageOutputS, { target: "draft-2020-12", unrepresentable: "throw", reused: "ref" })) as Record<string, unknown>;
 }
+

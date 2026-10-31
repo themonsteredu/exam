@@ -5,6 +5,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { loadFigureFonts, pxForPrint, renderFigurePng } from "./engine";
 import type { FigureSpec } from "./types";
+import { itemFigures } from "./item-figures";
 import { renderGraphicPng, renderOriginalPng } from "@/lib/graphic/render";
 import type { GraphicSpec } from "@/lib/graphic/schema";
 
@@ -30,6 +31,7 @@ export type ExamFigure = {
 
 export type FigureRenderResult = {
   usedOriginal?: boolean;
+  figureIndex?: number;
   section: number;
   index: number;
   no: number | string;
@@ -56,9 +58,10 @@ export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGUR
   for (let s = 0; s < sections.length; s++) {
     const items: any[] = Array.isArray(sections[s]?.items) ? sections[s].items : [];
     for (let i = 0; i < items.length; i++) {
-      const fig: ExamFigure | undefined = items[i]?.figure;
-      if (!fig) continue;
-      const base = { section: s, index: i, no: items[i].no };
+      const all = itemFigures(items[i]);
+      for (let f = 0; f < all.length; f++) {
+      const fig: ExamFigure = all[f];
+      const base = { section: s, index: i, figureIndex: f, no: items[i].no };
       if (fig.graphic || fig.original_png) {
         try {
           const useRedraw = fig.graphic && fig.graphic.kind !== "photo" && fig.render_mode !== "original";
@@ -105,6 +108,7 @@ export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGUR
       } catch (err) {
         results.push({ ...base, error: err instanceof Error ? err.message : String(err) });
       }
+      }
     }
   }
   return results;
@@ -114,7 +118,7 @@ export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGUR
 export function attachFigurePngs(exam: any, results: FigureRenderResult[], keepOriginals = false): any {
   const copy = JSON.parse(JSON.stringify(exam));
   for (const r of results) {
-    const fig = copy.sections?.[r.section]?.items?.[r.index]?.figure;
+    const fig = itemFigures(copy.sections?.[r.section]?.items?.[r.index])[r.figureIndex ?? 0];
     if (!fig) continue;
     if (r.usedOriginal) fig.render_mode = "original";
     if (r.png) {
@@ -138,3 +142,4 @@ export function attachFigurePngs(exam: any, results: FigureRenderResult[], keepO
   }
   return copy;
 }
+

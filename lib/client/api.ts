@@ -1,7 +1,7 @@
 // 화면에서 서버 주소를 부르는 도우미. 로그인이 풀렸으면 로그인 화면으로 보낸다.
 
 export class ApiError extends Error {
-  constructor(message: string, public status: number, public detail?: string) {
+  constructor(message: string, public status: number, public detail?: string, public usage?: { usd: number }) {
     super(message);
   }
 }
@@ -25,7 +25,11 @@ export async function api<T>(url: string, init: RequestInit = {}): Promise<T> {
     const next = encodeURIComponent(window.location.pathname);
     window.location.href = `/login?next=${next}`;
   }
-  if (!res.ok) throw new ApiError(body.error || `서버 오류가 났습니다 (${res.status}).`, res.status, typeof body.detail === "string" ? body.detail : undefined);
+  if (!res.ok) {
+    const usage = body.usage as { usd?: unknown } | undefined;
+    throw new ApiError(body.error || `서버 오류가 났습니다 (${res.status}).`, res.status, typeof body.detail === "string" ? body.detail : undefined,
+      typeof usage?.usd === "number" && Number.isFinite(usage.usd) ? { usd: usage.usd } : undefined);
+  }
   return body as T;
 }
 
@@ -82,3 +86,4 @@ export function saveBlob(blob: Blob, name: string): void {
 }
 
 export const won = (usd: number, rate = 1400) => `${Math.round(usd * rate).toLocaleString("ko-KR")}원`;
+

@@ -13,6 +13,8 @@ import { ApiError, patchJson, postJson, uploadFile, type FileRef } from "./api";
 import { saveExamCheckpoint } from "./exam-storage";
 import { figureImage, openSources, pageImage, precheckFiles, sourceFigureImage } from "./pages";
 import { assertFresh } from "./version";
+import { readCached } from "./read-cache";
+import { itemFigures } from "@/lib/figure/item-figures";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -26,6 +28,7 @@ export type Progress = {
   figuresDone: number;
   figuresTotal: number;
   usd: number;
+  reused?: number;
 };
 
 export type MakeResult = {
@@ -76,9 +79,9 @@ export function stripPngs(exam: any): any {
   const copy = JSON.parse(JSON.stringify(exam));
   for (const s of copy.sections ?? []) {
     for (const it of s.items ?? []) {
-      if (it.figure) {
-        delete it.figure.png;
-        delete it.figure.png_size;
+      for (const figure of itemFigures(it)) {
+        delete figure.png;
+        delete figure.png_size;
       }
     }
   }
@@ -94,6 +97,8 @@ export function countUnsure(exam: any): number {
 export async function makeExam(o: {
   files: File[];
   title: string;
+  models?: { page: string; figure: string };
+  cacheScope?: string;
   /** 보관함 문서를 만든다 (파일을 열어 본 뒤에 부른다). 만든 문서 id */
   createDoc: () => Promise<string>;
   /** PDF 에 그리지 못하는 쪽이 있을 때 계속할지 묻는다 (AI 요금이 들기 전에). 없으면 묻지 않고 계속한다 */
@@ -109,6 +114,7 @@ export async function makeExam(o: {
   const inner = new AbortController();
   const follow = () => inner.abort();
   o.signal.addEventListener("abort", follow);
+  if (o.signal.aborted) inner.abort();
   try {
     return await run(o, inner.signal);
   } finally {
@@ -121,6 +127,8 @@ async function run(
   o: {
     files: File[];
     title: string;
+    models?: { page: string; figure: string };
+    cacheScope?: string;
     createDoc: () => Promise<string>;
     confirmProblems?: (message: string) => boolean;
     JXG: any;
@@ -181,29 +189,24 @@ async function run(
     tell({ step: "page", message: `쪽 ${i + 1}/${sources.length} 을 읽는 중입니다 (${sources[i].label}).` });
     const canvas = await sources[i].render();
     const { image, scale } = pageImage(canvas);
-    let res: { reading: PageReading; usage: Usage };
+    let res: { reading: PageReading; usage: Usage; cached?: boolean };
     try {
-      res = await postJson("/api/read/page", {
+      res = await readCached("page", {
         image: `data:${image.mediaType};base64,${image.data}`,
         page: i + 1,
         total: sources.length,
         before: continuationHint(lastSection, lastNo),
+        model: o.models?.page,
         docId,
-      }, signal);
+      }, o.cacheScope ?? "", signal);
     } catch (err) {
+      if (err instanceof ApiError && err.usage) tell({ usd: progress.usd + err.usage.usd });
       throw new ApiError(`${i + 1}쪽을 읽지 못했습니다: ${err instanceof Error ? err.message : err}`, err instanceof ApiError ? err.status : 0, err instanceof ApiError ? err.detail : undefined);
     }
-    tell({ usd: progress.usd + sumUsd(res.usage) });
+    tell({ usd: progress.usd + sumUsd(res.usage), reused: (progress.reused ?? 0) + (res.cached ? 1 : 0) });
     const page = i + 1;
+    // Header/notice/footer are editable text. Never crop them into the output.
     const decorations: NonNullable<PageMeta["decorations"]> = [];
-    for (const a of res.reading.page_artifacts ?? []) {
-      try {
-        const cut = sourceFigureImage(canvas, { ...a.region, kind: "other", place: "below" }, scale);
-        decorations.push({ box: cut.crop, png: cut.image.data });
-      } catch {
-        res.reading.unsure.push(`${a.kind}: 원본 안내 영역을 보존하지 못했습니다`);
-      }
-    }
     pages.push({ meta: { page, original: { width: canvas.width, height: canvas.height }, scale, paperMm: sources[i].paperMm, decorations }, reading: res.reading });
     for (const s of res.reading.sections) {
       if (s.title) lastSection = s.title;
@@ -243,15 +246,17 @@ async function run(
       const task = runFigure(async () => {
           check();
           try {
-            const r = await postJson<{ figure: FigureReading; usage: Usage }>("/api/read/figure", {
+            const r = await readCached<{ figure: FigureReading; usage: Usage }>("figure", {
               image: `data:${cut.image.mediaType};base64,${cut.image.data}`,
               item,
               kind: job.region.kind,
+              model: o.models?.figure,
               docId,
-            }, signal);
+            }, o.cacheScope ?? "", signal);
             figures.set(job.key, { crop: cut.crop, scale: cut.scale, reading: r.figure, ...original });
-            tell({ usd: progress.usd + sumUsd(r.usage) });
+            tell({ usd: progress.usd + sumUsd(r.usage), reused: (progress.reused ?? 0) + (r.cached ? 1 : 0) });
           } catch (err) {
+            if (err instanceof ApiError && err.usage) tell({ usd: progress.usd + err.usage.usd });
             if (signal.aborted) throw err;
             const detail = err instanceof ApiError && err.detail ? ` (${err.detail})` : "";
             figures.set(job.key, { crop: cut.crop, scale: cut.scale, error: `${err instanceof Error ? err.message : String(err)}${detail}`, ...original });
@@ -284,7 +289,7 @@ async function run(
 /** 보관함 또는 현재 화면의 읽기 결과에서 AI 호출 없이 한글 파일 만들기를 다시 시작한다. */
 export async function resumeExam(o: FinishOptions, work: Recovery): Promise<MakeResult> {
   await assertFresh();
-  const figures = (work.exam.sections ?? []).reduce((n: number, s: any) => n + (s.items ?? []).filter((it: any) => it.figure).length, 0);
+  const figures = (work.exam.sections ?? []).reduce((n: number, s: any) => n + (s.items ?? []).reduce((count: number, it: any) => count + itemFigures(it).length, 0), 0);
   const pages = Array.isArray(work.exam.source_pages) ? work.exam.source_pages.length : 0;
   const progress: Progress = { step: "draw", message: "저장된 읽기 결과를 준비하는 중입니다.", pagesDone: pages, pagesTotal: pages, figuresDone: figures, figuresTotal: figures, usd: work.usd };
   o.onProgress({ ...progress });
@@ -302,7 +307,7 @@ async function finishExam(o: FinishOptions, work: Recovery, signal: AbortSignal,
   check();
   tell({ step: "draw", message: "그림을 그리는 중입니다." });
   let rendered = await renderExamFigures(o.JXG, exam);
-  if (o.reviewFigures && exam.sections.some((s: any) => s.items.some((it: any) => it.figure?.original_png))) {
+  if (o.reviewFigures && exam.sections.some((s: any) => s.items.some((it: any) => itemFigures(it).some(f => f.original_png)))) {
     tell({ step: "review", message: "원본과 재작성한 자료를 확인해 주세요." });
     exam = await o.reviewFigures(attachFigurePngs(exam, rendered, true), signal);
     check();
@@ -363,3 +368,4 @@ async function finishExam(o: FinishOptions, work: Recovery, signal: AbortSignal,
     saveProblem: problems.length ? problems.join(" / ") : undefined,
   };
 }
+
