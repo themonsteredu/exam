@@ -25,6 +25,9 @@ exam = {"layout_mode": "source", "header": {"title": "읽기 쉬운 시험지", 
 shuffled = [figures[3], figures[0], figures[4], figures[1], figures[2]]
 mapping = ExamBuilder.match_choice_figures(exam["sections"][0]["items"][0], shuffled)
 assert mapping == {0: 1, 1: 3, 2: 4, 3: 0, 4: 2}, mapping
+ambiguous = copy.deepcopy(shuffled)
+ambiguous[0]["box"] = dict(ambiguous[1]["box"])
+assert ExamBuilder.match_choice_figures(exam["sections"][0]["items"][0], ambiguous) == {}
 data, warnings = build_exam(exam)
 assert any("겹치지 않도록" in w for w in warnings), warnings
 ns = {"hp": "http://www.hancom.co.kr/hwpml/2011/paragraph"}

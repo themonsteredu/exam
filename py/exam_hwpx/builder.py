@@ -583,11 +583,16 @@ class ExamBuilder:
                     return {}
                 distance = abs((f["x"] + f["w"] / 2) - (c["x"] + c["w"] / 2)) + 2 * abs(f["y"] - c["y"])
                 pairs.append((distance, choice, i))
-        assigned, used = {}, set()
-        for _, choice, index in sorted(pairs):
-            if choice not in assigned and index not in used:
-                assigned[choice] = index
-                used.add(index)
+        # 가까운 번호가 분명하지 않거나 두 그림이 같은 번호를 가리키면 추측해서 연결하지 않는다.
+        assigned = {}
+        for index in range(len(figures)):
+            candidates = sorted((distance, choice) for distance, choice, figure_index in pairs if figure_index == index)
+            if len(candidates) < 2 or candidates[1][0] <= candidates[0][0] * 1.15 + 2:
+                return {}
+            choice = candidates[0][1]
+            if choice in assigned:
+                return {}
+            assigned[choice] = index
         return assigned if len(assigned) == len(figures) else {}
 
     def build_bogi(self, lines: list, no):
