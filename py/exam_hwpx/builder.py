@@ -416,7 +416,95 @@ class ExamBuilder:
                 paragraphs[-1].append(piece)
         return [p for p in paragraphs if p] or [[]]
 
+    @staticmethod
+    def compact_pieces(pieces):
+        return re.sub(r"\s+", "", "".join(str(p.get("t", p.get("m", ""))) for p in (pieces or []) if isinstance(p, dict))).replace("**", "").replace("__", "")
+
+    def build_safe_item(self, item: dict, is_first: bool) -> bool:
+        """겹치는 좌표는 원래 읽은 글·조건 상자·선택지를 문단 흐름으로 옮긴다."""
+        blocks = item.get("layout_blocks") or []
+        if not blocks:
+            return False
+        no, t = item["no"], self.tpl
+        text_blocks = [block for block in blocks if block.get("role") != "choice"]
+        text_blocks.sort(key=lambda block: ((block.get("box") or {}).get("y", 0), (block.get("box") or {}).get("x", 0)))
+        choice_blocks = {block.get("choice_no") - 1: block for block in blocks
+                         if block.get("role") == "choice" and isinstance(block.get("choice_no"), int)
+                         and block["choice_no"] >= 1}
+        figures = ([item["figure"]] if item.get("figure") else []) + (item.get("extra_figures") or [])
+        choice_figures = self.match_choice_figures(item, figures)
+        if len(figures) > 1 and item.get("choices") and not choice_figures:
+            self.warnings.append(f"{no}번: 그림과 선택지의 연결을 원본과 비교해 주세요")
+        assigned = set(choice_figures.values())
+        printed_number = False
+        first = None
+        printed_text = ""
+        for block in text_blocks:
+            role = block.get("role", "text")
+            lines = block.get("lines") or [[]]
+            printed_text += "".join(self.compact_pieces(line) for line in lines)
+            if role == "box":
+                if not printed_number:
+                    p = self.doc.add_paragraph("")
+                    p.add_run(f"{item.get('label') or str(no) + '.'} ", char_pr_id_ref=self.run_style(size=t["sizes"]["body"]))
+                    self.para_format(p, alignment="LEFT", line_spacing_percent=t["line_spacing"]["body"])
+                    first, printed_number = p, True
+                anchor = self.doc.add_paragraph("")
+                table = anchor.add_table(1, 1, width=self.column_width(), border_fill_id_ref=self.border("0.12 mm", "0.12 mm", "0.12 mm", "0.12 mm"))
+                cell = table.cell(0, 0)
+                title = str(block.get("title") or "").strip()
+                entries = ([([{"t": title}], True)] if title else []) + [(line, False) for line in lines]
+                for index, (line, is_title) in enumerate(entries):
+                    p = cell.paragraphs[0] if index == 0 else cell.add_paragraph("")
+                    self.add_pieces(p, line, size=t["sizes"]["body"], where=f"{no}번 조건")
+                    self.para_format(p, alignment="CENTER" if is_title else "LEFT", line_spacing_percent=t["line_spacing"]["body"])
+                continue
+            for line in lines:
+                p = self.doc.add_paragraph("")
+                if not printed_number:
+                    p.add_run(f"{item.get('label') or str(no) + '.'} ", char_pr_id_ref=self.run_style(size=t["sizes"]["body"]))
+                    first, printed_number = p, True
+                self.add_pieces(p, line, size=t["sizes"]["body"], where=f"{no}번 문제 글")
+                self.para_format(p, alignment="LEFT", line_spacing_percent=t["line_spacing"]["body"], spacing_after_pt=0)
+        if not printed_number:
+            first = self.doc.add_paragraph("")
+            first.add_run(f"{item.get('label') or str(no) + '.'} ", char_pr_id_ref=self.run_style(size=t["sizes"]["body"]))
+            self.para_format(first, alignment="LEFT", line_spacing_percent=t["line_spacing"]["body"])
+        canonical = self.compact_pieces(item.get("stem", []))
+        if canonical and canonical not in printed_text:
+            p = self.doc.add_paragraph("")
+            self.add_pieces(p, item.get("stem", []), size=t["sizes"]["body"], where=f"{no}번 문제 글 보완")
+            self.para_format(p, alignment="LEFT", line_spacing_percent=t["line_spacing"]["body"])
+            self.warnings.append(f"{no}번: 읽은 문제 글과 원본 배치의 글이 달라 빠짐없이 함께 넣었습니다. 중복을 확인해 주세요")
+        points = item.get("points")
+        if points and f"{points}점" not in printed_text and f"{points}점" not in canonical:
+            p = self.doc.add_paragraph("")
+            p.add_run(f"[{points}점]", char_pr_id_ref=self.run_style(size=t["sizes"]["body"]))
+            self.para_format(p, alignment="LEFT", line_spacing_percent=t["line_spacing"]["body"])
+        for index, figure in enumerate(figures):
+            if index not in assigned:
+                self.build_figure({**item, "figure": {**figure, "place": "below"}}, first)
+        missing_bogi = [line for line in item.get("bogi", []) if self.compact_pieces(line) and self.compact_pieces(line) not in printed_text]
+        if missing_bogi:
+            self.build_bogi(missing_bogi, no)
+        choices = item.get("choices") or []
+        for i in range(max(len(choices), max(choice_blocks, default=-1) + 1)):
+            block = choice_blocks.get(i) or {}
+            cp = self.doc.add_paragraph("")
+            mark = CHOICE_MARKS[i] if i < len(CHOICE_MARKS) else f"({i + 1})"
+            cp.add_run(f"{mark}  ", char_pr_id_ref=self.run_style(size=t["sizes"]["choice"]))
+            choice = choices[i] if i < len(choices) else []
+            lines = block.get("lines") or []
+            pieces = choice or [piece for line in lines for piece in line]
+            self.add_pieces(cp, pieces, size=t["sizes"]["choice"], where=f"{no}번 선택지 {i + 1}")
+            self.para_format(cp, alignment="LEFT", line_spacing_percent=t["line_spacing"]["choice"], spacing_before_pt=4 if i == 0 else 0)
+            if i in choice_figures:
+                self.build_figure({**item, "figure": {**figures[choice_figures[i]], "place": "below"}}, cp)
+        return True
+
     def build_item(self, item: dict, is_first: bool):
+        if getattr(self, "safe_flow", False) and self.build_safe_item(item, is_first):
+            return
         t = self.tpl
         size = t["sizes"]["body"]
         no = item["no"]
