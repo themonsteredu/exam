@@ -25,13 +25,24 @@ def reserve(box, occupied, page_height):
     return placed
 
 
+def text_tokens(text):
+    """Keep each wrapped word's bold/underline delimiters balanced."""
+    for part in re.split(r"(\*\*.+?\*\*|__.+?__)", text):
+        marker = part[:2]
+        if marker in ("**", "__") and part.endswith(marker) and len(part) > 4:
+            for token in text_tokens(part[2:-2]):
+                yield token if token.isspace() else marker + token + marker
+        else:
+            yield from re.findall(r"\s+|\S+", part)
+
+
 def wrap_lines(lines, font, width, measure):
     """Wrap at spaces, keeping math expressions and Korean words intact."""
     output = []
     for source in lines:
         line = []
         for piece in source:
-            tokens = [piece] if "m" in piece else [{"t": t} for t in re.findall(r"\s+|\S+", str(piece.get("t", "")))]
+            tokens = [piece] if "m" in piece else [{"t": t} for t in text_tokens(str(piece.get("t", "")))]
             for token in tokens:
                 if not line and token.get("t", "").isspace():
                     continue
