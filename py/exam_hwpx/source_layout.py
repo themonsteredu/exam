@@ -208,6 +208,10 @@ class SourceLayout:
                          for box in selected for line in box.get("lines", [])]
             elif not lines and kind == "footer":
                 lines = [str(footer[key]) for key in ("right_top", "right_bottom", "notice") if footer.get(key)]
+            if kind == "notice" and deco.get("lines"):
+                notice_pos += 1
+            if deco.get("png") and not deco.get("lines"):
+                self.b.warnings.append(f"{page['page']}쪽 {kind}: 이전에 읽어 둔 글을 사용했습니다. 빠진 안내가 없는지 원본과 비교해 주세요")
             result.append((deco, kind, lines))
         return result
 

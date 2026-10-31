@@ -442,6 +442,8 @@ class ExamBuilder:
         for block in text_blocks:
             role = block.get("role", "text")
             lines = block.get("lines") or [[]]
+            if role == "box":
+                printed_text += re.sub(r"\s+", "", str(block.get("title") or ""))
             printed_text += "".join(self.compact_pieces(line) for line in lines)
             if role == "box":
                 if not printed_number:
@@ -471,7 +473,8 @@ class ExamBuilder:
             first.add_run(f"{item.get('label') or str(no) + '.'} ", char_pr_id_ref=self.run_style(size=t["sizes"]["body"]))
             self.para_format(first, alignment="LEFT", line_spacing_percent=t["line_spacing"]["body"])
         canonical = self.compact_pieces(item.get("stem", []))
-        if canonical and canonical not in printed_text:
+        comparable = canonical.replace("<조건>", "조건").replace("[조건]", "조건").replace("<보기>", "보기").replace("[보기]", "보기")
+        if comparable and comparable not in printed_text:
             p = self.doc.add_paragraph("")
             self.add_pieces(p, item.get("stem", []), size=t["sizes"]["body"], where=f"{no}번 문제 글 보완")
             self.para_format(p, alignment="LEFT", line_spacing_percent=t["line_spacing"]["body"])
