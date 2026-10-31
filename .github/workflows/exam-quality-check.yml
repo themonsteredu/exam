@@ -1,0 +1,30 @@
+name: Exam quality checks
+
+on:
+  push:
+    branches:
+      - codex/fix-exam-layout-and-figures
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: python -m pip install -r requirements.txt
+      - run: npm run typecheck
+      - run: node scripts/run-ts.mjs scripts/check_layout_quality.ts
+      - run: python scripts/check_source_hwpx.py
+      - run: python scripts/check_hwpx_text.py
+      - run: python scripts/check_large_conversion.py
+      - run: npm run build
