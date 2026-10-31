@@ -55,6 +55,7 @@ try {
   respond = n => calls[n-1].output_config?.format ? rejected(compiledError) : streamReply(JSON.stringify(page));
   const normal = await read();
   assert.equal(calls.length,1,"쪽 읽기는 컴파일 오류를 유발하는 요청 자체를 보내지 않는다");
+  assert.equal(calls[0].fallbacks,undefined,"선택하지 않은 유료 모델로 자동 전환하지 않는다");
   assert.deepEqual(normal.reading.sections[0].items[0].layout_blocks,item.layout_blocks);
   assert.equal(calls[0].output_config.format,undefined);
   assert.equal(calls[0].tools,undefined);
@@ -133,3 +134,4 @@ try {
 } finally {
   globalThis.fetch=savedFetch;
 }
+

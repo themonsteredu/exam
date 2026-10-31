@@ -1,0 +1,33 @@
+name: Exam cost and layout regression
+on:
+  push:
+    branches: ["codex/exam-cost-layout-fix"]
+  pull_request:
+    paths: ["lib/**", "app/**", "components/**", "py/**", "scripts/**", "package*.json", ".github/workflows/exam-regression.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: npm ci
+      - run: pip install -r requirements.txt
+      - run: npm run typecheck
+      - run: node scripts/run-ts.mjs scripts/check_cost_layout.ts
+      - run: node scripts/run-ts.mjs scripts/check_ai_requests.ts
+      - run: node scripts/run-ts.mjs scripts/check_exam_storage.ts
+      - run: python scripts/check_layout_safety.py
+      - run: python scripts/check_source_hwpx.py
+      - run: python scripts/check_cost_layout_hwpx.py
+      - run: python scripts/check_graphic_hwpx.py
+      - run: python scripts/check_staged_hwpx.py

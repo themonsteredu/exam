@@ -163,9 +163,9 @@ export function assembleExam(
 
         const diagrams = it.figures.map((f, idx) => ({ f, idx })).filter(({ f }) => f.w > 2 && f.h > 2);
         if (diagrams.length) {
-          const { f, idx } = diagrams.find(({ f }) => f.kind === "diagram") ?? diagrams[0];
-          if (diagrams.length > 1) itemUnsure.push(`그림이 ${diagrams.length}개 있어 첫 그림만 넣었습니다`);
-          item.figure = makeFigure(f, figures.get(figureKey(meta.page, s, i, idx)), meta, mmPerPx, itemUnsure);
+          const all = diagrams.map(({ f, idx }) => makeFigure(f, figures.get(figureKey(meta.page, s, i, idx)), meta, mmPerPx, itemUnsure));
+          item.figure = all[0];
+          if (all.length > 1) item.extra_figures = all.slice(1);
         }
         item.choices = it.choices.map(toExamPieces);
         item.source = { page: meta.page, ...toOriginal(it.source, meta.scale) };
@@ -174,7 +174,7 @@ export function assembleExam(
           role: b.role, title: b.title, choice_no: b.choice_no,
           box: toOriginal(b.region, meta.scale), lines: b.lines.map(toExamPieces),
         }));
-        const redraw = item.figure?.commands || (item.figure?.graphic && item.figure.graphic.kind !== "photo");
+        const redraw = !item.extra_figures?.length && (item.figure?.commands || (item.figure?.graphic && item.figure.graphic.kind !== "photo"));
         if (redraw && item.layout_blocks?.length) {
           const box = enlargeIntoWhitespace(item.figure.box, item.source, item.layout_blocks.map((b: any) => b.box));
           item.figure.layout_box = box;
@@ -203,7 +203,14 @@ export function assembleExam(
   exam.source_pages = pages.map(({ meta, reading }) => ({
     page: meta.page, width: meta.original.width, height: meta.original.height,
     paper_mm: meta.paperMm ? [round1(meta.paperMm.width), round1(meta.paperMm.height)] : [210, round1(210 * meta.original.height / meta.original.width)],
-    print_area: toOriginal(reading.print_area, meta.scale), decorations: meta.decorations ?? [],
+    print_area: toOriginal(reading.print_area, meta.scale),
+    // Older saved readings can still reconstruct their header from these strings.
+    header: reading.header, boxes: reading.boxes, footer: reading.footer, page_end_note: reading.page_end_note,
+    text_blocks: (reading.page_artifacts ?? []).filter(a => a.lines?.length).map(a => ({
+      role: a.boxed ? "box" : "text", box: toOriginal(a.region, meta.scale),
+      lines: a.lines!.map(toExamPieces), title: "", artifact_kind: a.kind,
+    })),
+    decorations: meta.decorations ?? [],
     rules: (reading.page_rules ?? []).map(r => toOriginal(r, meta.scale)),
   }));
   if (unsure.length) exam.unsure = unsure;
@@ -269,3 +276,4 @@ function makeFigure(
   }
   return fig;
 }
+
