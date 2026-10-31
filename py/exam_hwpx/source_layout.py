@@ -254,6 +254,22 @@ class SourceLayout:
                     if valid_box(box):
                         occupied.append((box["x"] * sx, box["y"] * sy, box["w"] * sx, box["h"] * sy,
                                          f"{item.get('no', '?')}번 그림"))
+            for deco, kind, lines in self.decoration_blocks(page):
+                box = deco.get("box")
+                if not valid_box(box) or not lines:
+                    continue
+                pad = 1.2 if kind in ("header", "notice") else 0
+                x, y, w, h = box["x"] * sx, box["y"] * sy, box["w"] * sx, box["h"] * sy
+                aw, ah = max(1, w - pad * 2), max(1, h - pad * 2)
+                font = 11 if kind == "header" else 9
+                minimum = 8
+                widest = max(self.line_width([{"t": str(line)}], font) for line in lines)
+                if widest > mm(aw):
+                    font = max(minimum, font * mm(aw) / widest * .98)
+                font = max(minimum, min(font, ah * 72 / 25.4 / len(lines) / 1.12))
+                rows = sum(max(1, math.ceil(self.line_width([{"t": str(line)}], font) / max(1, mm(aw) * .90))) for line in lines)
+                needed_h = rows * font * 25.4 / 72 * 1.35 + pad * 2 + .5
+                occupied.append((x, y, w, max(h, needed_h), f"{kind} 안내 글"))
             for x, y, w, h, label in occupied:
                 if x < -1 or y < -1 or x + w > self.paper_width + 1 or y + h > paper_height - 1:
                     return f"{page['page']}쪽 {label}이 용지 밖으로 넘어갑니다"

@@ -586,6 +586,25 @@ class ExamBuilder:
             self.warnings.append(f"{reason}. 글과 그림이 겹치지 않도록 읽기 쉬운 양식으로 배치했습니다. 원본과 쪽 구성이 다를 수 있습니다")
         self.setup_page()
         self.build_header_table()
+        if self.safe_flow:
+            # 원본 머리말에서 읽은 추가 문구(예: 저작권 안내)도 편집 가능한 글로 보존한다.
+            known = " ".join(str(v) for v in (self.exam.get("header") or {}).values())
+            known += " " + " ".join(str(line.get("text", "") if isinstance(line, dict) else line)
+                                     for box in self.exam.get("boxes", []) for line in box.get("lines", []))
+            for page in self.exam.get("source_pages", []):
+                if page.get("page") != 1:
+                    continue
+                for deco in page.get("decorations", []):
+                    if deco.get("kind") not in ("header", "notice"):
+                        continue
+                    for line in deco.get("lines") or []:
+                        line = str(line).strip()
+                        if line and line not in known:
+                            p = self.doc.add_paragraph("")
+                            self.add_rich_text(p, line, size=9)
+                            self.para_format(p, alignment="CENTER" if deco.get("kind") == "header" else "LEFT",
+                                             line_spacing_percent=120)
+                            known += " " + line
         first_col_para = self.start_columns()
         boxes = self.exam.get("boxes", [])
         for i, box in enumerate(boxes):

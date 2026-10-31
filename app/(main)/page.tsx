@@ -292,6 +292,8 @@ export default function MakePage() {
 
 function ResultView({ result, rate, resumed }: { result: MakeResult; rate?: number; resumed: boolean }) {
   const items = (result.exam.sections ?? []).flatMap((s: any) => (s.items ?? []).map((it: any) => ({ ...it, _section: s.title })));
+  const layoutWarning = result.warnings.find((warning) => warning.includes("읽기 쉬운 양식으로 배치"));
+  const missingWarnings = result.warnings.filter((warning) => warning.includes("기존에 저장한 결과에는 여러 그림 중 첫 그림만"));
   return (
     <section className="card">
       <h2>다 만들었습니다</h2>
@@ -299,6 +301,8 @@ function ResultView({ result, rate, resumed }: { result: MakeResult; rate?: numb
         문항 {items.length}개를 옮겼습니다. 한글 파일을 만들었{result.saved ? "고 보관함에도 저장했" : ""}습니다.{" "}
         {resumed ? `이전 읽기의 AI 요금은 약 ${won(result.usd, rate)}이며, 다시 만들기에 추가 AI 요금은 없습니다.` : `이번 AI 요금은 약 ${won(result.usd, rate)}입니다.`}
       </p>
+      {layoutWarning && <p className="notice error" role="alert">{layoutWarning}</p>}
+      {missingWarnings.length > 0 && <div className="notice error" role="alert">{missingWarnings.map((warning, i) => <p key={i}>{warning}</p>)}</div>}
       {result.saveProblem && (
         <p className="notice error" role="alert">
           {result.saveProblem}. {result.saved ? "" : "내려받은 한글 파일을 잘 보관해 주세요."}
@@ -329,7 +333,7 @@ function ResultView({ result, rate, resumed }: { result: MakeResult; rate?: numb
       {result.exam.unsure?.length > 0 && <p className="muted small">쪽 전체: {result.exam.unsure.join(" / ")}</p>}
       <div className="items">
         {items.map((it: any, i: number) => (
-          <article key={i} className={`item-card${it.unsure?.length || it.figure?.render_error ? " flag" : ""}`}>
+          <article key={i} className={`item-card${it.unsure?.length || [it.figure, ...(it.extra_figures ?? [])].some((figure: any) => figure?.render_error) ? " flag" : ""}`}>
             <div className="stem">
               <strong>{it.label ?? `${it.no}.`}</strong> <span dangerouslySetInnerHTML={{ __html: piecesToHtml(it.stem) }} />
               {it.points ? <span className="muted"> [{it.points}점]</span> : null}
