@@ -32,6 +32,8 @@ export type FigureRenderResult = {
   usedOriginal?: boolean;
   section: number;
   index: number;
+  /** 0 = 첫 그림, 1부터 = 같은 문항의 추가 그림 */
+  figureIndex?: number;
   no: number | string;
   png?: string;
   size?: [number, number];
@@ -56,9 +58,10 @@ export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGUR
   for (let s = 0; s < sections.length; s++) {
     const items: any[] = Array.isArray(sections[s]?.items) ? sections[s].items : [];
     for (let i = 0; i < items.length; i++) {
-      const fig: ExamFigure | undefined = items[i]?.figure;
-      if (!fig) continue;
-      const base = { section: s, index: i, no: items[i].no };
+      const figures: ExamFigure[] = [items[i]?.figure, ...(items[i]?.extra_figures ?? [])].filter(Boolean);
+      for (let figureIndex = 0; figureIndex < figures.length; figureIndex++) {
+      const fig = figures[figureIndex];
+      const base = { section: s, index: i, figureIndex, no: items[i].no };
       if (fig.graphic || fig.original_png) {
         try {
           const useRedraw = fig.graphic && fig.graphic.kind !== "photo" && fig.render_mode !== "original";
@@ -105,6 +108,7 @@ export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGUR
       } catch (err) {
         results.push({ ...base, error: err instanceof Error ? err.message : String(err) });
       }
+      }
     }
   }
   return results;
@@ -114,7 +118,8 @@ export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGUR
 export function attachFigurePngs(exam: any, results: FigureRenderResult[], keepOriginals = false): any {
   const copy = JSON.parse(JSON.stringify(exam));
   for (const r of results) {
-    const fig = copy.sections?.[r.section]?.items?.[r.index]?.figure;
+    const item = copy.sections?.[r.section]?.items?.[r.index];
+    const fig = (r.figureIndex ?? 0) === 0 ? item?.figure : item?.extra_figures?.[(r.figureIndex ?? 0) - 1];
     if (!fig) continue;
     if (r.usedOriginal) fig.render_mode = "original";
     if (r.png) {

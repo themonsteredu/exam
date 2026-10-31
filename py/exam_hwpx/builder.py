@@ -416,7 +416,98 @@ class ExamBuilder:
                 paragraphs[-1].append(piece)
         return [p for p in paragraphs if p] or [[]]
 
+    @staticmethod
+    def compact_pieces(pieces):
+        return re.sub(r"\s+", "", "".join(str(p.get("t", p.get("m", ""))) for p in (pieces or []) if isinstance(p, dict))).replace("**", "").replace("__", "")
+
+    def build_safe_item(self, item: dict, is_first: bool) -> bool:
+        """겹치는 좌표는 원래 읽은 글·조건 상자·선택지를 문단 흐름으로 옮긴다."""
+        blocks = item.get("layout_blocks") or []
+        if not blocks:
+            return False
+        no, t = item["no"], self.tpl
+        text_blocks = [block for block in blocks if block.get("role") != "choice"]
+        text_blocks.sort(key=lambda block: ((block.get("box") or {}).get("y", 0), (block.get("box") or {}).get("x", 0)))
+        choice_blocks = {block.get("choice_no") - 1: block for block in blocks
+                         if block.get("role") == "choice" and isinstance(block.get("choice_no"), int)
+                         and block["choice_no"] >= 1}
+        figures = ([item["figure"]] if item.get("figure") else []) + (item.get("extra_figures") or [])
+        choice_figures = self.match_choice_figures(item, figures)
+        if len(figures) > 1 and item.get("choices") and not choice_figures:
+            self.warnings.append(f"{no}번: 그림과 선택지의 연결을 원본과 비교해 주세요")
+        assigned = set(choice_figures.values())
+        printed_number = False
+        first = None
+        printed_text = ""
+        for block in text_blocks:
+            role = block.get("role", "text")
+            lines = block.get("lines") or [[]]
+            if role == "box":
+                printed_text += re.sub(r"\s+", "", str(block.get("title") or ""))
+            printed_text += "".join(self.compact_pieces(line) for line in lines)
+            if role == "box":
+                if not printed_number:
+                    p = self.doc.add_paragraph("")
+                    p.add_run(f"{item.get('label') or str(no) + '.'} ", char_pr_id_ref=self.run_style(size=t["sizes"]["body"]))
+                    self.para_format(p, alignment="LEFT", line_spacing_percent=t["line_spacing"]["body"])
+                    first, printed_number = p, True
+                anchor = self.doc.add_paragraph("")
+                table = anchor.add_table(1, 1, width=self.column_width(), border_fill_id_ref=self.border("0.12 mm", "0.12 mm", "0.12 mm", "0.12 mm"))
+                cell = table.cell(0, 0)
+                title = str(block.get("title") or "").strip()
+                entries = ([([{"t": title}], True)] if title else []) + [(line, False) for line in lines]
+                for index, (line, is_title) in enumerate(entries):
+                    p = cell.paragraphs[0] if index == 0 else cell.add_paragraph("")
+                    self.add_pieces(p, line, size=t["sizes"]["body"], where=f"{no}번 조건")
+                    self.para_format(p, alignment="CENTER" if is_title else "LEFT", line_spacing_percent=t["line_spacing"]["body"])
+                continue
+            for line in lines:
+                p = self.doc.add_paragraph("")
+                if not printed_number:
+                    p.add_run(f"{item.get('label') or str(no) + '.'} ", char_pr_id_ref=self.run_style(size=t["sizes"]["body"]))
+                    first, printed_number = p, True
+                self.add_pieces(p, line, size=t["sizes"]["body"], where=f"{no}번 문제 글")
+                self.para_format(p, alignment="LEFT", line_spacing_percent=t["line_spacing"]["body"], spacing_after_pt=0)
+        if not printed_number:
+            first = self.doc.add_paragraph("")
+            first.add_run(f"{item.get('label') or str(no) + '.'} ", char_pr_id_ref=self.run_style(size=t["sizes"]["body"]))
+            self.para_format(first, alignment="LEFT", line_spacing_percent=t["line_spacing"]["body"])
+        canonical = self.compact_pieces(item.get("stem", []))
+        comparable = canonical.replace("<조건>", "조건").replace("[조건]", "조건").replace("<보기>", "보기").replace("[보기]", "보기")
+        if comparable and comparable not in printed_text:
+            p = self.doc.add_paragraph("")
+            self.add_pieces(p, item.get("stem", []), size=t["sizes"]["body"], where=f"{no}번 문제 글 보완")
+            self.para_format(p, alignment="LEFT", line_spacing_percent=t["line_spacing"]["body"])
+            self.warnings.append(f"{no}번: 읽은 문제 글과 원본 배치의 글이 달라 빠짐없이 함께 넣었습니다. 중복을 확인해 주세요")
+        points = item.get("points")
+        if points and f"{points}점" not in printed_text and f"{points}점" not in canonical:
+            p = self.doc.add_paragraph("")
+            p.add_run(f"[{points}점]", char_pr_id_ref=self.run_style(size=t["sizes"]["body"]))
+            self.para_format(p, alignment="LEFT", line_spacing_percent=t["line_spacing"]["body"])
+        for index, figure in enumerate(figures):
+            if index not in assigned:
+                self.build_figure({**item, "figure": {**figure, "place": "below"}}, first)
+        missing_bogi = [line for line in item.get("bogi", []) if self.compact_pieces(line) and self.compact_pieces(line) not in printed_text]
+        if missing_bogi:
+            self.build_bogi(missing_bogi, no)
+        choices = item.get("choices") or []
+        for i in range(max(len(choices), max(choice_blocks, default=-1) + 1)):
+            block = choice_blocks.get(i) or {}
+            cp = self.doc.add_paragraph("")
+            mark = CHOICE_MARKS[i] if i < len(CHOICE_MARKS) else f"({i + 1})"
+            cp.add_run(f"{mark}  ", char_pr_id_ref=self.run_style(size=t["sizes"]["choice"]))
+            choice = choices[i] if i < len(choices) else []
+            lines = block.get("lines") or []
+            pieces = choice or [piece for line in lines for piece in line]
+            self.add_pieces(cp, pieces, size=t["sizes"]["choice"], where=f"{no}번 선택지 {i + 1}")
+            self.para_format(cp, alignment="LEFT", line_spacing_percent=t["line_spacing"]["choice"], spacing_before_pt=4 if i == 0 else 0)
+            if i in choice_figures:
+                self.build_figure({**item, "figure": {**figures[choice_figures[i]], "place": "below"}}, cp)
+        return True
+
     def build_item(self, item: dict, is_first: bool):
+        if getattr(self, "safe_flow", False) and self.build_safe_item(item, is_first):
+            return
         t = self.tpl
         size = t["sizes"]["body"]
         no = item["no"]
@@ -434,7 +525,7 @@ class ExamBuilder:
             p = self.doc.add_paragraph("")
             if k == 0:
                 first = p
-                self.set_break(p, item.get("break_before"))
+                self.set_break(p, None if getattr(self, "safe_flow", False) else item.get("break_before"))
                 p.add_run(f"{label} ", char_pr_id_ref=self.run_style(size=size))
             self.add_pieces(p, pieces, size=size, where=f"{no}번 문제 글")
             if k == 0 and points and not score_present:
@@ -451,7 +542,15 @@ class ExamBuilder:
                 # 둘째 문단부터는 번호 다음 글자와 같은 세로줄에서 시작한다
                 self.para_format(p, alignment="JUSTIFY", line_spacing_percent=t["line_spacing"]["body"],
                                  indent_left_mm=5.5, first_line_indent_mm=0, spacing_before_pt=2)
-        self.build_figure(item, first)
+        figures = ([item["figure"]] if item.get("figure") else []) + (item.get("extra_figures") or [])
+        choice_figures = self.match_choice_figures(item, figures) if getattr(self, "safe_flow", False) else {}
+        if getattr(self, "safe_flow", False) and len(figures) > 1 and item.get("choices") and not choice_figures:
+            self.warnings.append(f"{no}번: 그림과 선택지의 연결을 원본과 비교해 주세요")
+        assigned = set(choice_figures.values())
+        for index, figure in enumerate(figures):
+            if index not in assigned:
+                clean = {**figure, "place": "below"} if getattr(self, "safe_flow", False) else figure
+                self.build_figure({**item, "figure": clean}, first)
         if item.get("bogi"):
             self.build_bogi(item["bogi"], no)
         for i, choice in enumerate(item.get("choices", [])):
@@ -461,6 +560,40 @@ class ExamBuilder:
             self.add_pieces(cp, choice, size=t["sizes"]["choice"], where=f"{no}번 선택지 {i + 1}")
             self.para_format(cp, alignment="LEFT", line_spacing_percent=t["line_spacing"]["choice"],
                              indent_left_mm=0, spacing_before_pt=4 if i == 0 else 0)
+            if i in choice_figures:
+                self.build_figure({**item, "figure": {**figures[choice_figures[i]], "place": "below"}}, cp)
+
+    @staticmethod
+    def match_choice_figures(item, figures):
+        """선택지 그림 수가 선택지 수와 같고 위치가 있을 때만 가장 가까운 번호에 연결한다."""
+        choices = item.get("choices") or []
+        if len(figures) < 2 or len(figures) != len(choices):
+            return {}
+        blocks = {b.get("choice_no") - 1: b.get("box") for b in item.get("layout_blocks", [])
+                  if b.get("role") == "choice" and isinstance(b.get("choice_no"), int) and 1 <= b["choice_no"] <= len(choices)}
+        if len(blocks) != len(choices):
+            return {}
+        pairs = []
+        for i, fig in enumerate(figures):
+            f = fig.get("box") or {}
+            if not all(isinstance(f.get(k), (int, float)) for k in ("x", "y", "w", "h")):
+                return {}
+            for choice, c in blocks.items():
+                if not isinstance(c, dict) or not all(isinstance(c.get(k), (int, float)) for k in ("x", "y", "w", "h")):
+                    return {}
+                distance = abs((f["x"] + f["w"] / 2) - (c["x"] + c["w"] / 2)) + 2 * abs(f["y"] - c["y"])
+                pairs.append((distance, choice, i))
+        # 가까운 번호가 분명하지 않거나 두 그림이 같은 번호를 가리키면 추측해서 연결하지 않는다.
+        assigned = {}
+        for index in range(len(figures)):
+            candidates = sorted((distance, choice) for distance, choice, figure_index in pairs if figure_index == index)
+            if len(candidates) < 2 or candidates[1][0] <= candidates[0][0] * 1.15 + 2:
+                return {}
+            choice = candidates[0][1]
+            if choice in assigned:
+                return {}
+            assigned[choice] = index
+        return assigned if len(assigned) == len(figures) else {}
 
     def build_bogi(self, lines: list, no):
         """<보기> 상자: 문제 글과 같은 들여쓰기로, 가는 테두리 안에 항목(ㄱ, ㄴ, ㄷ …)을 한 줄씩."""
@@ -529,22 +662,52 @@ class ExamBuilder:
 
     # ------------------------------------------------------------------ 전체
     def build(self) -> bytes:
+        self.safe_flow = False
+        for section in self.exam.get("sections", []):
+            for item in section.get("items", []):
+                if any("첫 그림만 넣었습니다" in str(msg) for msg in (item.get("unsure") or [])):
+                    self.warnings.append(f"{item.get('no', '?')}번: 기존에 저장한 결과에는 여러 그림 중 첫 그림만 남아 있어 빠진 그림을 원본과 비교해 복구해야 합니다")
         if self.exam.get("layout_mode") == "source" and self.exam.get("source_pages"):
             from .source_layout import SourceLayout
-            SourceLayout(self).build()
-            report = self.doc.validate()
-            if not getattr(report, "ok", True):
-                self.warnings.append(f"검사 결과: {str(report)[:300]}")
-            return postprocess(self.doc.to_bytes())
+            layout = SourceLayout(self)
+            reason = layout.collision_reason()
+            if not reason:
+                layout.build()
+                report = self.doc.validate()
+                if not getattr(report, "ok", True):
+                    self.warnings.append(f"검사 결과: {str(report)[:300]}")
+                return postprocess(self.doc.to_bytes())
+            # 고정된 원본 좌표에서 겹치거나 페이지 밖으로 나가는 경우 글과 그림을 문단 흐름으로 재배치한다.
+            self.safe_flow = True
+            self.warnings.append(f"{reason}. 글과 그림이 겹치지 않도록 읽기 쉬운 양식으로 배치했습니다. 원본과 쪽 구성이 다를 수 있습니다")
         self.setup_page()
         self.build_header_table()
+        if self.safe_flow:
+            # 원본 머리말에서 읽은 추가 문구(예: 저작권 안내)도 편집 가능한 글로 보존한다.
+            known = " ".join(str(v) for v in (self.exam.get("header") or {}).values())
+            known += " " + " ".join(str(line.get("text", "") if isinstance(line, dict) else line)
+                                     for box in self.exam.get("boxes", []) for line in box.get("lines", []))
+            for page in self.exam.get("source_pages", []):
+                if page.get("page") != 1:
+                    continue
+                for deco in page.get("decorations", []):
+                    if deco.get("kind") not in ("header", "notice"):
+                        continue
+                    for line in deco.get("lines") or []:
+                        line = str(line).strip()
+                        if line and line not in known:
+                            p = self.doc.add_paragraph("")
+                            self.add_rich_text(p, line, size=9)
+                            self.para_format(p, alignment="CENTER" if deco.get("kind") == "header" else "LEFT",
+                                             line_spacing_percent=120)
+                            known += " " + line
         first_col_para = self.start_columns()
         boxes = self.exam.get("boxes", [])
         for i, box in enumerate(boxes):
             self.build_box(box, anchor=first_col_para if i == 0 else None)
         for section in self.exam.get("sections", []):
             if section.get("title"):
-                self.build_section_title(section["title"], section.get("break_before"))
+                self.build_section_title(section["title"], None if self.safe_flow else section.get("break_before"))
             for j, item in enumerate(section.get("items", [])):
                 self.build_item(item, is_first=(j == 0))
         note = self.exam.get("page_end_note")
