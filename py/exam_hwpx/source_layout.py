@@ -260,7 +260,14 @@ class SourceLayout:
                     if valid_box(box):
                         occupied.append((box["x"] * sx, box["y"] * sy, box["w"] * sx, box["h"] * sy,
                                          f"{item.get('no', '?')}번 그림"))
-            for deco, kind, lines in self.decoration_blocks(page):
+            decorations = self.decoration_blocks(page)
+            if page.get("page") == 1:
+                header = self.b.exam.get("header") or {}
+                if any(header.get(key) for key in ("title", "target", "date")) and not any(kind == "header" for _, kind, _ in decorations):
+                    return "1쪽 머리말의 원본 위치를 확인하지 못했습니다"
+                if self.b.exam.get("boxes") and not any(kind == "notice" for _, kind, _ in decorations):
+                    return "1쪽 안내 글의 원본 위치를 확인하지 못했습니다"
+            for deco, kind, lines in decorations:
                 box = deco.get("box")
                 if not valid_box(box) or not lines:
                     continue

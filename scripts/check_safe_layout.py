@@ -52,4 +52,8 @@ invalid = copy.deepcopy(exam)
 invalid["sections"][0]["items"][0]["source"] = {"page": 1}
 _, invalid_warnings = build_exam(invalid)
 assert any("원본 위치를 확인하지 못했습니다" in warning for warning in invalid_warnings), invalid_warnings
+no_header_region = copy.deepcopy(exam)
+no_header_region["sections"][0]["items"][0]["layout_blocks"] = [blocks[0]]
+_, header_warnings = build_exam(no_header_region)
+assert any("머리말의 원본 위치" in warning for warning in header_warnings), header_warnings
 print("겹침과 잘못된 위치를 감지하고 글·번호·그림을 문단 흐름으로 모두 보존함")
