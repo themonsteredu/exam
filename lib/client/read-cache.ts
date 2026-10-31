@@ -77,7 +77,7 @@ function reused<T>(value: T): T & { cached: boolean } {
  * Keys include the API-key tag, selected model, exact image, context and prompt revision.
  * Failed or invalid figure results are never cached; output generation never calls AI.
  */
-export async function readCached<T>(kind: "page" | "figure", body: Record<string, unknown>, scope: string, signal: AbortSignal): Promise<T & { cached?: boolean }> {
+export async function readCached<T extends object>(kind: "page" | "figure", body: Record<string, unknown>, scope: string, signal: AbortSignal): Promise<T & { cached?: boolean }> {
   signal.throwIfAborted();
   if (!scope) return postJson("/api/read/" + kind, body, signal);
   const key = await readingCacheKey(kind, body, scope);
@@ -96,6 +96,6 @@ export async function readCached<T>(kind: "page" | "figure", body: Record<string
     return value;
   })();
   running.set(key, task);
-  try { return await task; }
+  try { return { ...(await task), cached: false }; }
   finally { running.delete(key); }
 }

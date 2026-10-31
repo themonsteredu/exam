@@ -1,6 +1,6 @@
 // Claude 부르기 (서버 전용: 열쇠는 서버에만 있다. 화면 코드로 보내지 않는다).
 // 모델은 쪽 읽기·그림 읽기마다 고를 수 있다: ANTHROPIC_MODEL_PAGE / ANTHROPIC_MODEL_FIGURE, 없으면 ANTHROPIC_MODEL (기본 claude-opus-5-5).
-// 안전 검사로 거절되면 서버 쪽에서 다른 모델로 한 번 더 시도하게 한다 (fallbacks "default". Haiku 는 이 기능이 없어 보내지 않는다).
+// 자동 유료 모델 전환과 SDK 전송 재시도는 기본으로 끈다. 검증 후 필요한 JSON 수정만 최대 한 번 허용한다.
 
 import Anthropic, { type APIError } from "@anthropic-ai/sdk";
 import type {
@@ -203,6 +203,8 @@ export async function callClaude(req: {
   maxTokens: number;
   jsonSchema?: Record<string, unknown>;
   jsonMode?: "strict" | "validated";
+  /** Never switch to another paid model unless explicitly requested. */
+  allowFallback?: boolean;
   apiKey?: string;
   signal?: AbortSignal;
   /** 이때(ms)까지 끝내야 한다 (서버 함수 시간 한도). 남은 시간에 맞춰 기다림과 다시 시도를 줄인다 */
@@ -217,7 +219,7 @@ export async function callClaude(req: {
   const overall = left !== undefined ? AbortSignal.timeout(left - 3_000) : undefined;
   const signal = overall ? (req.signal ? AbortSignal.any([req.signal, overall]) : overall) : req.signal;
   let stream: ReturnType<typeof anthropic.beta.messages.stream> | undefined;
-  const fallback = supportsFallback(req.model);
+  const fallback = req.allowFallback === true && supportsFallback(req.model);
   let message: BetaMessage;
   try {
     const ask = async (structured: boolean) => {
