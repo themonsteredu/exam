@@ -156,7 +156,7 @@ console.log("4) 합치기 - 직접 넣은 데이터로 되돌아오는지");
   ok(cmp.summary.textScore === 1, `글·수식·선택지 모두 같음 (${(cmp.summary.textScore * 100).toFixed(1)}%)`);
   for (const d of cmp.items.filter((x) => x.textScore < 1)) console.log("     다름:", d.no, JSON.stringify(d.diffs).slice(0, 300));
   const items = exam.sections[0].items;
-  ok(items.every((it: any) => !it.break_before), "원본의 단 나눔을 따르지 않고 이어서 흐름 (빈 공간 줄이기)");
+  ok(items[1].break_before === "column" && !items[0].break_before && !items[2].break_before, "2번 앞에서만 단 나눔 (원본과 같은 자리)");
   for (const it of items) {
     const want = manual.sections[0].items.find((m: any) => m.no === it.no).figure.width_mm;
     ok(Math.abs(it.figure.width_mm - want) / want < 0.12, `${it.no}번 그림 너비 ${it.figure.width_mm}mm (직접 넣은 값 ${want}mm)`);

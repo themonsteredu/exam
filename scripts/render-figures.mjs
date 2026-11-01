@@ -84,7 +84,8 @@ try {
   await writeFile(outPath, JSON.stringify(withPng, null, 2));
   for (const r of results) {
     const note = r.warnings?.length ? ` (알림: ${r.warnings.join(" / ")})` : "";
-    console.log(r.ok ? `그림 ${r.no}번: ${r.size[0]}×${r.size[1]} 픽셀${note}` : r.error ? `그림 ${r.no}번: 실패 - ${r.error}` : `그림 ${r.no}번: 빈 자리 (그릴 명령 없음)`);
+    const fitNote = r.labelMm ? ` 글자 ${r.labelMm.toFixed(2)}mm${r.labelFit && r.labelFit !== 1 ? ` → x${r.labelFit.toFixed(2)}` : ""}` : "";
+    console.log(r.ok ? `그림 ${r.no}번: ${r.size[0]}×${r.size[1]} 픽셀${fitNote}${note}` : r.error ? `그림 ${r.no}번: 실패 - ${r.error}` : `그림 ${r.no}번: 빈 자리 (그릴 명령 없음)`);
   }
   if (results.some((r) => !r.ok)) process.exitCode = 2;
 } finally {

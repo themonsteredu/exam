@@ -143,9 +143,17 @@ export function mathTokens(text: string): MathToken[] {
 }
 const dirVec = (d: Dir): Vec => fromAngle(typeof d === "number" ? d : DIRS[d] ?? 90);
 
+/**
+ * 시험지에 인쇄될 그림 글자(점 이름·각도·길이)의 크기 범위 (글자 크기, mm). AI 가 정한 base 가 그림 크기에 비해 크거나 작으면
+ * 글자가 너무 크게(서술형4) 또는 작게(9번 그래프) 찍힌다 → 인쇄 크기를 알 때는 이 범위 안으로 맞춘다 (글자 자리는 옮기지 않는다)
+ */
+export const LABEL_MM: [number, number] = [2.4, 4.3];
+
 export type RenderOptions = {
   /** 보드 가로 크기(px, 화면 기준) */
   widthPx: number;
+  /** 시험지에 인쇄될 그림 가로(mm). 주면 그림 글자 크기를 LABEL_MM 범위로 맞춘다 */
+  printWidthMm?: number;
   /** 자유점을 끌 수 있게 할지 */
   interactive?: boolean;
   /** 자유점 위치 (id → from 에서의 거리) */
@@ -162,6 +170,10 @@ export class FigureRenderer {
   bbox: [number, number, number, number];
   pxPerUnit: number;
   heightPx: number;
+  /** 그림 글자 크기 배율 (인쇄 크기 맞춤. 보통 1) */
+  labelFit = 1;
+  /** 맞추기 전 그림 글자의 인쇄 크기(mm). 인쇄 가로를 모르면 0 */
+  naturalLabelMm = 0;
   /** 다 그리지 못한 까닭 (없는 점, 계산되지 않는 점, 모르는 요소 등). 비어 있지 않으면 PNG 를 만들지 않는다 */
   issues: string[] = [];
   /** 점 위치 계산 (자유점은 보드를 만든 뒤 JSXGraph glider 위치를 따른다) */
@@ -198,7 +210,17 @@ export class FigureRenderer {
       this.addIssue("그림의 보이는 범위(bbox)를 정할 수 없습니다");
       this.bbox = [-1, 1, 1, -1];
     }
-    const [l, t, r, b] = this.bbox;
+    let [l, t, r, b] = this.bbox;
+    if (opts.printWidthMm && opts.printWidthMm > 0 && r > l) {
+      this.naturalLabelMm = (this.labelUnits * opts.printWidthMm) / (r - l);
+      const [lo, hi] = LABEL_MM;
+      const fit = this.naturalLabelMm < lo ? lo / this.naturalLabelMm : this.naturalLabelMm > hi ? hi / this.naturalLabelMm : 1;
+      if (fit !== 1 && isFinite(fit)) {
+        this.labelFit = fit;
+        // 글자가 커지면 가장자리 여백도 다시 잡는다 (글자가 잘리지 않게)
+        if (!spec.bbox) [l, t, r, b] = this.bbox = this.autoBBox();
+      }
+    }
     this.pxPerUnit = opts.widthPx / (r - l);
     this.heightPx = Math.round((t - b) * this.pxPerUnit);
     container.style.width = `${opts.widthPx}px`;
@@ -243,7 +265,7 @@ export class FigureRenderer {
   }
   /** 점 이름 글자 크기 (그림 단위) */
   get labelUnits() {
-    return 0.15 * this.base * (this.spec.style?.labelScale ?? 1);
+    return 0.15 * this.base * (this.spec.style?.labelScale ?? 1) * this.labelFit;
   }
   get labelPx() {
     return this.labelUnits * this.pxPerUnit;
@@ -1023,8 +1045,8 @@ export class FigureRenderer {
 export async function renderFigurePng(
   JXG: JXGType,
   spec: FigureSpec,
-  opts: { widthPx: number; gliders?: Record<string, number> },
-): Promise<{ dataUrl: string; width: number; height: number; warnings: string[] }> {
+  opts: { widthPx: number; gliders?: Record<string, number>; printWidthMm?: number },
+): Promise<{ dataUrl: string; width: number; height: number; warnings: string[]; labelMm?: number; labelFit?: number }> {
   if (!(opts.widthPx > 0)) throw new Error("그림의 가로 크기(width_mm)가 올바르지 않습니다");
   await loadFigureFonts();
   const holder = document.createElement("div");
@@ -1035,7 +1057,7 @@ export async function renderFigurePng(
   document.body.appendChild(holder);
   let r: FigureRenderer | null = null;
   try {
-    r = new FigureRenderer(JXG, box, spec, { widthPx: opts.widthPx, gliders: opts.gliders });
+    r = new FigureRenderer(JXG, box, spec, { widthPx: opts.widthPx, gliders: opts.gliders, printWidthMm: opts.printWidthMm });
     if (r.issues.length) throw new Error(`그림을 다 그리지 못했습니다: ${r.issues.join(" / ")}`);
     r.board.fullUpdate();
     const src: HTMLCanvasElement = r.board.renderer.canvasRoot;
@@ -1049,7 +1071,7 @@ export async function renderFigurePng(
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(src, 0, 0, out.width, out.height);
     const dataUrl = out.toDataURL("image/png");
-    return { dataUrl, width: out.width, height: out.height, warnings: r.fontWarnings() };
+    return { dataUrl, width: out.width, height: out.height, warnings: r.fontWarnings(), labelMm: r.naturalLabelMm, labelFit: r.labelFit };
   } finally {
     r?.destroy();
     holder.remove();

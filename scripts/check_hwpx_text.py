@@ -22,7 +22,7 @@ with zipfile.ZipFile(io.BytesIO(data)) as z:
 assert '__않은__' not in section
 assert section.count('[3점]') == 2
 assert '[6점-부분점수]' in section and '[6점]' not in section
-assert '[5점]' in section and '{rm "△" it}' in section
+assert '[5점]' in section and 'TRIANGLE' in section
 hp = '{http://www.hancom.co.kr/hwpml/2011/paragraph}'
 hh = '{http://www.hancom.co.kr/hwpml/2011/head}'
 root = ET.fromstring(section)

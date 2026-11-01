@@ -39,6 +39,9 @@ export type FigureRenderResult = {
   error?: string;
   /** PNG 는 만들었지만 알려야 할 것 (글꼴을 못 불러옴 등) */
   warnings?: string[];
+  /** 맞추기 전 그림 글자 인쇄 크기(mm)와 맞춘 배율 (점검용) */
+  labelMm?: number;
+  labelFit?: number;
 };
 
 function figureWidthMm(fig: ExamFigure): number {
@@ -85,11 +88,15 @@ export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGUR
           const out = await renderFigurePng(JXG, fig.commands, {
             widthPx: pxForPrint(figureWidthMm(fig), dpi),
             gliders: fig.gliders,
+            // 인쇄될 크기에 맞춰 그림 글자 크기를 고른다 (너무 크거나 작은 글자)
+            printWidthMm: figureWidthMm(fig),
           });
           results.push({
             ...base,
             png: base64Of(out.dataUrl),
             size: [out.width, out.height],
+            labelMm: out.labelMm,
+            labelFit: out.labelFit,
             ...(out.warnings.length ? { warnings: out.warnings } : {}),
           });
         } catch (err) {

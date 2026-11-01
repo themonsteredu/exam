@@ -29,6 +29,22 @@ _eq_measure._OPERATOR_SPACE = 0.27
 _eq_measure._LETTER_WIDTHS = {**_eq_measure._LETTER_WIDTHS, "x": 0.58}
 _eq_measure._RELATIONS = _eq_measure._RELATIONS | frozenset({":"})
 _eq_measure._OPERATOR_GLYPHS = {**_eq_measure._OPERATOR_GLYPHS, ":": 0.35}
+# 따옴표 안의 기호(△ ⊥ ∥ ≡ ① …)는 측정기가 영문 소문자 너비(0.4)로 재지만 한글은 거의 한 글자 너비로 그린다
+_eq_char_width = _eq_measure._char_width
+
+
+def _symbol_aware_char_width(ch: str, upright: bool = False) -> float:
+    if ord(ch) >= 0x2000 and not ("가" <= ch <= "힣"):
+        return 0.95
+    return _eq_char_width(ch, upright)
+
+
+_eq_measure._char_width = _symbol_aware_char_width
+# 목록에 없는 관계 기호(≡ ⊥ ∥ ∽ …)의 글자 너비
+_eq_measure._OPERATOR_GLYPH = 0.72
+# 수식 상자 오른쪽 여유: 글자 크기의 0.35배 + 너비의 3% (기울인 글자 끝 획, 측정 오차)
+EQ_PAD_EM = 0.35
+EQ_PAD_RATIO = 0.03
 
 from .latex import latex_to_plain, script_for_measure, to_eqedit
 from .template import MM, get_template, mm
@@ -168,7 +184,7 @@ class ExamBuilder:
                 paragraph=p,
                 base_unit=base_unit,
                 # 기울임 글자의 끝 획과 뒤의 한글이 붙지 않게 여유 폭을 둔다.
-                size=(box.width + int(base_unit * .22), box.height),
+                size=(int(box.width * (1 + EQ_PAD_RATIO) + base_unit * EQ_PAD_EM), box.height),
                 char_pr_id_ref=self.run_style(size=size),
             )
             equation.element.set("baseLine", str(box.base_line))
@@ -325,7 +341,8 @@ class ExamBuilder:
         p = table.cell(0, 0).paragraphs[0]
         p.add_run(title, char_pr_id_ref=self.run_style(size=t["sizes"]["section_title"], font=t["fonts"]["heading"]))
         self.para_format(p, alignment="CENTER", line_spacing_percent=130)
-        self.para_format(p_anchor, line_spacing_percent=100, spacing_before_pt=10, spacing_after_pt=10)
+        # 부분 제목이 단 맨 아래에 홀로 남지 않게 다음 문항과 붙인다
+        self.para_format(p_anchor, line_spacing_percent=100, spacing_before_pt=10, spacing_after_pt=10, keep_with_next=True)
 
     # ------------------------------------------------------------------ 그림
     @staticmethod
@@ -532,6 +549,14 @@ class ExamBuilder:
         return [p for p in paragraphs if p] or [[]]
 
     def build_item(self, item: dict, is_first: bool):
+        """문항 하나. 문항의 문단들은 '다음 문단과 함께'·'문단 보호'로 묶어 단·쪽 사이에서 잘리지 않게 한다."""
+        start = len(self.doc.paragraphs)
+        self._build_item(item, is_first)
+        made = self.doc.paragraphs[start:]
+        for k, p in enumerate(made):
+            self.para_format(p, keep_lines=True, **({"keep_with_next": True} if k < len(made) - 1 else {}))
+
+    def _build_item(self, item: dict, is_first: bool):
         t = self.tpl
         size = t["sizes"]["body"]
         no = item["no"]
