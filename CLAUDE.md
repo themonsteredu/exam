@@ -257,3 +257,6 @@
       요금 안내는 보통/많으면 (Opus 0.08/0.30, Sonnet 0.04/0.16 달러: 살피기 한 번을 더 셈), 결과 칸 '그림 N개 가운데 M개를 다시 읽어 바꿨습니다'
     - 로컬 시험(가짜 AI): scratchpad/e2e/local-reread.mjs (만들기 → 그림 하나를 빈 자리로 → 다시 만들기 칸의 의심 그림·버튼 → 다시 읽기 → 결과 → 다시 열면 버튼 없음).
       서버는 EXAM_STORE=local EXAM_FAKE_AI=1 APP_INITIAL_PASSWORD=3035 npx next dev -p 3124
+  - 배포 dpl_98ai6qKy7yuvongjvkK68Q6DMftK (커밋 2dcff62, 두 줄기 같음). 실제 사이트에서 삼육중 읽기 결과 + 원본 B4 PDF 시험용 문서로 '다시 만들기' 칸 확인:
+    '프로그램이 고친 그림 1개: 2번 (102° → 78°)', '다시 읽기 권함: 서답형 2 (E 76%)', 버튼(열쇠 없는 기기라 꺼짐 + 안내), 만들기 12초, 결과 파일 2번 바름·8번 점 보임·B4 (문서 지움):
+    scratchpad/e2e/live-review.mjs <출력 폴더> <exam.json> <원본 PDF>. 실제 AI 다시 읽기는 원장님 기기에서 (서답형 2 를 다시 읽으면 고쳐질 것)
