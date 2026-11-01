@@ -122,7 +122,6 @@ export function assembleExam(
   const layout = o.layout ?? SCHOOL_A_LAYOUT;
   const exam: any = { template: o.template ?? "school-A-2026", header: {}, footer: {}, boxes: [], sections: [] };
   const unsure: string[] = [];
-  let prev: { page: number; column: number } | undefined;
 
   const first = <T>(pick: (r: PageReading) => T | undefined) => {
     for (const { reading } of pages) {
@@ -176,16 +175,8 @@ export function assembleExam(
         item.source = { page: meta.page, ...toOriginal(it.source, meta.scale) };
         if (itemUnsure.length) item.unsure = itemUnsure;
 
-        // 원본에서 단이나 쪽이 바뀐 곳은 그대로 나눈다. 부분 제목 상자 바로 앞이면 제목 상자에서 나눈다
-        const column = it.column === 2 ? 2 : 1;
-        if (prev) {
-          const brk = meta.page !== prev.page ? "page" : column !== prev.column ? "column" : undefined;
-          if (brk) {
-            if (i === 0 && target.items.length === 0 && target.title) target.break_before = brk;
-            else item.break_before = brk;
-          }
-        }
-        prev = { page: meta.page, column };
+        // 원본의 단·쪽 나눔은 따르지 않는다: 우리 파일은 풀이 공간 없이 촘촘해서, 원본 자리에서 나누면 단 아래가 크게 빈다
+        // (2026-11-01 사용자 "문제 배열이 이상해, 여백이 왜 나와"). 문항은 2단에 이어서 흐른다
         target.items.push(item);
         pageItems.push({ it, item });
       });
@@ -223,6 +214,9 @@ export function assembleExam(
 export function tidyExam(exam: any): any {
   const groups = new Map<string, any[]>();
   for (const s of exam?.sections ?? []) {
+    // 예전 읽기 결과에 남은 원본 단·쪽 나눔도 지운다 (문항은 2단에 이어서 흐른다)
+    delete s.break_before;
+    for (const it of s.items ?? []) delete it.break_before;
     for (const it of s.items ?? []) {
       if (typeof it.no !== "number") continue;
       const key = it.label ? String(it.label).replace(/[\d\s.)\]]+$/g, "") : "";

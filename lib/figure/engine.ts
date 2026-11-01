@@ -93,7 +93,54 @@ function measureTextPx(text: string, font: string): number {
   return measureCtx.measureText(text).width;
 }
 
+/** 글자를 잉크 가운데로 맞춰 그릴 때(patchCanvasText) 기준선이 가운데에서 아래로 내려가는 거리(px) */
+function inkDropPx(text: string, font: string): number {
+  if (!measureCtx) measureCtx = document.createElement("canvas").getContext("2d");
+  if (!measureCtx) return 0;
+  measureCtx.font = font;
+  const m = measureCtx.measureText(text);
+  return (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2;
+}
+
 const DIRS: Record<string, number> = { E: 0, NE: 45, N: 90, NW: 135, W: 180, SW: 225, S: 270, SE: 315 };
+
+/** 그래프 이름 같은 식 글자(y=ax, y=-15/x, y=a/x)인지: 등호가 있거나 간단한 분수(15/x)가 있으면 식처럼 그린다 */
+const SIMPLE_FRACTION = /(\([^()]{1,12}\)|[0-9A-Za-z.]{1,8})\s*\/\s*(\([^()]{1,12}\)|[0-9A-Za-z.]{1,8})/;
+export function isMathLabel(text: string): boolean {
+  return /[=<>]/.test(text) || SIMPLE_FRACTION.test(text);
+}
+
+type MathToken =
+  | { kind: "op"; text: string }
+  | { kind: "run"; text: string; italic: boolean }
+  | { kind: "frac"; num: string; den: string };
+
+/** 식 글자를 조각으로: 연산자, 글자 덩어리(영문은 기울임), 분수 */
+export function mathTokens(text: string): MathToken[] {
+  const out: MathToken[] = [];
+  const src = text.replace(/\s+/g, "").replace(/-/g, "−");
+  let i = 0;
+  const push = (t: string, italic: boolean) => {
+    const last = out[out.length - 1];
+    if (last && last.kind === "run" && last.italic === italic) last.text += t;
+    else out.push({ kind: "run", text: t, italic });
+  };
+  while (i < src.length) {
+    const rest = src.slice(i);
+    const f = rest.match(/^(\([^()]{1,12}\)|[0-9A-Za-z.]{1,8})\/(\([^()]{1,12}\)|[0-9A-Za-z.]{1,8})/);
+    if (f) {
+      const strip = (t: string) => (t.startsWith("(") && t.endsWith(")") ? t.slice(1, -1) : t);
+      out.push({ kind: "frac", num: strip(f[1]), den: strip(f[2]) });
+      i += f[0].length;
+      continue;
+    }
+    const ch = src[i];
+    if ("=<>+−×÷≤≥".includes(ch)) out.push({ kind: "op", text: ch });
+    else push(ch, /[A-Za-z]/.test(ch));
+    i++;
+  }
+  return out;
+}
 const dirVec = (d: Dir): Vec => fromAngle(typeof d === "number" ? d : DIRS[d] ?? 90);
 
 export type RenderOptions = {
@@ -484,6 +531,77 @@ export class FigureRenderer {
     return t;
   }
 
+  /**
+   * 식 글자를 시험지 수식처럼 그린다: 영문은 기울임(수학 글꼴), 숫자·연산자는 바로, 등호·더하기·빼기 둘레는 띄우고,
+   * 15/x 같은 분수는 위아래로 쌓고 가로줄을 긋는다. 전체의 가운데가 at 에 온다.
+   */
+  private mathLabel(at: () => Vec, text: string, sizePx: number, color?: string) {
+    const tokens = mathTokens(text);
+    const fontOf = (italic: boolean, px: number) => {
+      const f = textFont(FONT_SERIF, italic);
+      return `${f.italic ? "italic " : ""}400 ${px}px ${f.family}`;
+    };
+    const em = sizePx;
+    const fracPx = sizePx * 0.8;
+    type Placed = { x: number; w: number; t: MathToken };
+    const placed: Placed[] = [];
+    let x = 0;
+    tokens.forEach((t, k) => {
+      if (t.kind === "op") {
+        const prev = tokens[k - 1];
+        const unary = (t.text === "−" || t.text === "+") && (!prev || prev.kind === "op");
+        const relation = "=<>≤≥".includes(t.text);
+        const space = unary ? 0.04 * em : relation ? 0.28 * em : 0.22 * em;
+        const w = measureTextPx(t.text, fontOf(false, sizePx));
+        x += unary && k === 0 ? 0 : space;
+        placed.push({ x, w, t });
+        x += w + space;
+      } else if (t.kind === "run") {
+        const w = measureTextPx(t.text, fontOf(t.italic, sizePx));
+        placed.push({ x, w, t });
+        x += w;
+      } else {
+        const wn = measureTextPx(t.num, fontOf(/^[A-Za-z]+$/.test(t.num), fracPx));
+        const wd = measureTextPx(t.den, fontOf(/^[A-Za-z]+$/.test(t.den), fracPx));
+        const w = Math.max(wn, wd) + 0.2 * em;
+        x += 0.06 * em;
+        placed.push({ x, w, t });
+        x += w + 0.06 * em;
+      }
+    });
+    const total = x;
+    const u = 1 / this.pxPerUnit; // 화면 px → 그림 단위
+    // 조각마다 따로 그리므로 기준선을 맞춘다 (잉크 가운데 맞춤을 되돌림). 기준은 "x" 의 기준선, 분수 가로줄은 "=" 의 가운데 높이
+    const refDrop = inkDropPx("x", fontOf(false, sizePx));
+    const lift = (txt: string, italic: boolean) => (inkDropPx(txt, fontOf(italic, sizePx)) - refDrop) * u;
+    const axis = lift("=", false);
+    for (const p of placed) {
+      const cx = (p.x + p.w / 2 - total / 2) * u;
+      const t = p.t;
+      if (t.kind === "frac") {
+        const gap = 0.12 * em;
+        const numY = axis + (gap + fracPx * 0.42) * u;
+        const denY = axis - (gap + fracPx * 0.42) * u;
+        const italicOf = (s: string) => /^[A-Za-z]+$/.test(s);
+        this.text(() => add(at(), v(cx, numY)), t.num, { sizePx: fracPx, family: FONT_SERIF, italic: italicOf(t.num), color });
+        this.text(() => add(at(), v(cx, denY)), t.den, { sizePx: fracPx, family: FONT_SERIF, italic: italicOf(t.den), color });
+        const half = (p.w / 2 - 0.06 * em) * u;
+        this.curve(() => {
+          const c = at();
+          return [add(c, v(cx - half, axis)), add(c, v(cx + half, axis))];
+        }, { strokeWidth: Math.max(1, em * 0.055), strokeColor: color || "#000000", layer: LAYER.text, lineCap: "butt" });
+      } else {
+        const dy = lift(t.text, t.kind === "run" ? t.italic : false);
+        this.text(() => add(at(), v(cx, dy)), t.text, {
+          sizePx,
+          family: FONT_SERIF,
+          italic: t.kind === "run" ? t.italic : false,
+          color,
+        });
+      }
+    }
+  }
+
   /** 이 그림에 쓴 글꼴 가운데 불러오지 못한 것이 있으면 알림 문장으로 돌려준다 */
   fontWarnings(): string[] {
     if (typeof document === "undefined" || !document.fonts) return [];
@@ -644,6 +762,13 @@ export class FigureRenderer {
       case "label": {
         const size = L * (el.size ?? 1);
         const serif = (el.font ?? "serif") === "serif";
+        if (serif && isMathLabel(el.text)) {
+          this.mathLabel(() => {
+            const at = this.pt(el.at);
+            return el.dir ? add(at, mul(dirVec(el.dir), size * (el.offset ?? 0.75))) : at;
+          }, el.text, size * this.pxPerUnit, el.color);
+          return;
+        }
         this.text(() => {
           const at = this.pt(el.at);
           return el.dir ? add(at, mul(dirVec(el.dir), size * (el.offset ?? 0.75))) : at;

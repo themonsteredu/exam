@@ -16,8 +16,19 @@ import zipfile
 import zlib
 
 from hwpx import HwpxDocument
+import hwpx.equation.measure as _eq_measure
 from hwpx.equation.measure import measure_equation
 from hwpx.form_fit.measure import estimate_text_width
+
+# 수식 상자 너비: python-hwpx 측정기는 한글보다 좁게 잰다. 사용자 한글 화면(2026-11-01 대자중 1·4번)에서
+# "2:3=x:6을", "0.5x-1.7의" 처럼 수식 끝이 뒤 글자와 겹쳤다 → 화면에서 잰 너비에 맞춰 숫자·소수점·기울인 x·연산자 둘레를 넓히고,
+# 비례식의 ':' 는 한글처럼 양옆을 띄운 관계 기호로 잰다. (상자가 조금 넓으면 뒤에 빈칸이 생길 뿐이지만, 좁으면 글자가 겹친다)
+_eq_measure._DIGIT = 0.51
+_eq_measure._PUNCT = 0.26
+_eq_measure._OPERATOR_SPACE = 0.27
+_eq_measure._LETTER_WIDTHS = {**_eq_measure._LETTER_WIDTHS, "x": 0.58}
+_eq_measure._RELATIONS = _eq_measure._RELATIONS | frozenset({":"})
+_eq_measure._OPERATOR_GLYPHS = {**_eq_measure._OPERATOR_GLYPHS, ":": 0.35}
 
 from .latex import latex_to_plain, script_for_measure, to_eqedit
 from .template import MM, get_template, mm
