@@ -3,7 +3,7 @@
 
 import type { BetaMessageParam } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { addUsage, assistantTurn, callClaude, extractJson, modelFor, ReadError, type Effort, type Usage } from "./claude";
-import { PageOutputS, pageReadingJsonSchema, type PageReading } from "./page-schema";
+import { PageReadingS, pageReadingJsonSchema, type PageReading } from "./page-schema";
 import { PAGE_SYSTEM, pageUserText } from "./prompts";
 
 export type ImageInput = {
@@ -43,10 +43,8 @@ export async function readPage(
         messages,
         effort: o.effort ?? PAGE_EFFORT,
         maxTokens: 32000,
+        // 구조화 출력: 답이 꼭 정해진 모양이 되게 한다 (API 가 이 모양을 받지 못하면 callClaude 가 지시문 방식으로 한 번 다시 묻는다)
         jsonSchema,
-        // 배치 정보를 담은 큰 스키마는 지시문으로 전달하고 받은 답을 아래에서 검사한다.
-        // output_config.format을 보내지 않으므로 compiled grammar 크기 제한에 걸리지 않는다.
-        jsonMode: "validated",
         signal: o.signal,
         deadline: o.deadline,
       });
@@ -56,7 +54,7 @@ export async function readPage(
     }
     usage = addUsage(usage, call.usage);
     try {
-      const parsed = PageOutputS.safeParse(extractJson(call.text));
+      const parsed = PageReadingS.safeParse(extractJson(call.text));
       if (parsed.success) return { reading: parsed.data, usage, raw: call.text };
       issue = parsed.error.message.slice(0, 2000);
     } catch (err) {
@@ -65,10 +63,10 @@ export async function readPage(
     if (attempt === 2 || o.signal?.aborted || (o.deadline && o.deadline - Date.now() < 120_000)) break;
     messages.push(assistantTurn(call.message), {
       role: "user",
-      content: `답을 검사하니 다음 오류가 있습니다. 처음 사진과 같은 인쇄 내용으로 전체 JSON을 한 번 더 작성해 주세요. 원본의 문항·조건·선택지·layout_blocks를 빠뜨리지 말고, 필드 형식도 지켜 주세요. 설명이나 코드 블록 없이 JSON 객체 하나만 답하세요.\n${issue.slice(0, 2000)}`,
+      content: `답을 검사하니 다음 오류가 있습니다. 같은 사진의 인쇄 내용으로 전체 JSON 을 한 번 더 보내 주세요. 문항·선택지를 빠뜨리지 말고 정해진 모양을 지켜 주세요. 설명이나 코드 블록 없이 JSON 하나만 답합니다.\n${issue.slice(0, 2000)}`,
     });
   }
-  const err = new ReadError("bad_answer", "AI의 답에서 문항 또는 배치 정보를 확인하지 못했습니다. 오류 상세를 확인해 주세요.", issue.slice(0, 500));
+  const err = new ReadError("bad_answer", "AI 의 답이 정해진 모양과 달라 문항을 확인하지 못했습니다. 다시 시도해 주세요.", issue.slice(0, 500));
   err.usage = usage;
   throw err;
 }

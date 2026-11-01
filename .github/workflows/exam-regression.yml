@@ -1,7 +1,7 @@
-name: Exam cost and layout regression
+name: Exam checks (no paid AI)
 on:
   push:
-    branches: ["codex/exam-cost-layout-fix"]
+    branches: ["claude/lucid-sagan-4tgi0y"]
   pull_request:
     paths: ["lib/**", "app/**", "components/**", "py/**", "scripts/**", "package*.json", ".github/workflows/exam-regression.yml"]
   workflow_dispatch:
@@ -23,15 +23,11 @@ jobs:
       - run: npm ci
       - run: pip install -r requirements.txt
       - run: npm run typecheck
+      - run: node scripts/check-ai.mjs
       - run: node scripts/run-ts.mjs scripts/check_cost_layout.ts
-      - run: node scripts/run-ts.mjs scripts/check_layout_quality.ts
+      - run: node scripts/run-ts.mjs scripts/check_graphics.ts
       - run: node scripts/run-ts.mjs scripts/check_ai_requests.ts
       - run: node scripts/run-ts.mjs scripts/check_exam_storage.ts
-      - run: python scripts/check_layout_safety.py
-      - run: python scripts/check_page_overflow_hwpx.py
-      - run: python scripts/check_original_geometry_hwpx.py
-      - run: python scripts/check_long_layout_hwpx.py
-      - run: python scripts/check_source_hwpx.py
-      - run: python scripts/check_cost_layout_hwpx.py
-      - run: python scripts/check_graphic_hwpx.py
+      - run: python scripts/check_hwpx_text.py
+      - run: python scripts/check_latex.py
       - run: python scripts/check_staged_hwpx.py

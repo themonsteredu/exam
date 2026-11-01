@@ -8,7 +8,6 @@ import type { ImageInput } from "@/lib/ai/read-page";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 export type PageSource = {
-  paperMm?: { width: number; height: number };
   /** 화면에 보여 줄 이름 (예: 시험지.pdf 3쪽) */
   label: string;
   /** PDF 를 꼼꼼히 읽어 봤을 때 그리지 못하는 부분이 있던 쪽이면 그 설명 (글이나 그림이 빠질 수 있다) */
@@ -157,12 +156,7 @@ export async function openSources(files: File[]): Promise<PageSource[]> {
       }
       const broken = await brokenPages(pdfjs, bytes, doc);
       for (let n = 1; n <= doc.numPages; n++) {
-        const info = await doc.getPage(n);
-        const physical = info.getViewport({ scale: 1 });
-        const paperMm = { width: physical.width * 25.4 / 72, height: physical.height * 25.4 / 72 };
-        info.cleanup();
         out.push({
-          paperMm,
           label: `${file.name} ${n}쪽`,
           problem: broken.has(n) ? "프로그램이 그리지 못하는 부분이 있어 글이나 그림이 빠질 수 있습니다" : undefined,
           async render() {
@@ -244,22 +238,6 @@ export function figureImage(page: HTMLCanvasElement, region: FigureRegion, pageS
   const send = figureSendSize(crop.w, crop.h);
   const c = resized(page, send.width, send.height, crop.x, crop.y, crop.w, crop.h);
   return { image: toInputWithin(c, "image/png"), crop, scale: send.width / crop.w };
-}
-
-/** 도형 명령으로 재현하기 어려운 지도·사진·표는 원본의 해당 영역을 PNG로 보존한다. */
-export function sourceFigureImage(page: HTMLCanvasElement, region: FigureRegion, pageScale: number) {
-  if (!(pageScale > 0)) throw new Error("원본 그림의 크기 비율을 확인하지 못했습니다.");
-  const x = Math.max(0, Math.floor(region.x / pageScale));
-  const y = Math.max(0, Math.floor(region.y / pageScale));
-  const right = Math.min(page.width, Math.ceil((region.x + region.w) / pageScale));
-  const bottom = Math.min(page.height, Math.ceil((region.y + region.h) / pageScale));
-  const w = right - x;
-  const h = bottom - y;
-  if (w < 2 || h < 2) throw new Error("원본 그림 영역이 페이지 밖에 있습니다.");
-  const scale = Math.min(1, 1600 / Math.max(w, h));
-  const c = resized(page, Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale)), x, y, w, h);
-  const image = toInput(c, "image/png");
-  return { image, crop: { x, y, w, h } };
 }
 
 /** 미리보기용 작은 그림 */

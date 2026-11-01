@@ -3,7 +3,7 @@
 //  → 합치기 → 그림 PNG → 한글 파일 → 내려받기·보관
 //  요금이 드는 AI 읽기 전에 파일을 먼저 열어 보고, 도중에 크게 실패하면 남은 그림 읽기도 멈춘다 (쓰지 못할 결과에 요금이 들지 않게).
 
-import { assembleExam, figureJobs, toExamPieces, type FigureResult, type PageMeta } from "@/lib/ai/assemble";
+import { assembleExam, figureJobs, normalizeLegacyExam, toExamPieces, type FigureResult, type PageMeta } from "@/lib/ai/assemble";
 import type { Usage } from "@/lib/ai/claude";
 import type { PageReading } from "@/lib/ai/page-schema";
 import type { FigureReading } from "@/lib/ai/read-figure";
@@ -11,14 +11,14 @@ import { continuationHint } from "@/lib/ai/read-page";
 import { attachFigurePngs, renderExamFigures } from "@/lib/figure/render-exam";
 import { ApiError, patchJson, postJson, uploadFile, type FileRef } from "./api";
 import { saveExamCheckpoint } from "./exam-storage";
-import { figureImage, openSources, pageImage, precheckFiles, sourceFigureImage } from "./pages";
+import { figureImage, openSources, pageImage, precheckFiles } from "./pages";
 import { assertFresh } from "./version";
 import { readCached } from "./read-cache";
 import { itemFigures } from "@/lib/figure/item-figures";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-export type Step = "upload" | "page" | "figure" | "draw" | "review" | "hwpx" | "save";
+export type Step = "upload" | "page" | "figure" | "draw" | "hwpx" | "save";
 
 export type Progress = {
   step: Step;
@@ -51,7 +51,6 @@ type FinishOptions = {
   hwpxEndpoint: string;
   onProgress: (p: Progress) => void;
   signal: AbortSignal;
-  reviewFigures?: (exam: any, signal: AbortSignal) => Promise<any>;
   onRecoverable?: (work: Recovery) => void;
 };
 
@@ -88,6 +87,23 @@ export function stripPngs(exam: any): any {
   return copy;
 }
 
+/** 잠깐의 실패인지 (인터넷이 끊김, 서버 함수가 죽음·시간 초과, AI 서버가 바쁨): 이런 실패는 조금 기다렸다 다시 해 본다.
+ *  열쇠가 틀림, 크레딧 부족 같은 실패는 다시 해도 같으므로 바로 그 까닭을 남긴다. */
+function transient(err: unknown): boolean {
+  if (!(err instanceof ApiError)) return true; // fetch 자체가 실패 (인터넷)
+  if (err.status === 0) return !/멈췄습니다/.test(err.message);
+  if ([408, 500, 503, 504].includes(err.status)) return true;
+  return err.status === 502 && /AI 서버|너무 자주|연결/.test(err.message);
+}
+
+const wait = (ms: number, signal: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    const t = setTimeout(() => { signal.removeEventListener("abort", stop); resolve(); }, ms);
+    const stop = () => { clearTimeout(t); reject(new ApiError("멈췄습니다.", 0)); };
+    if (signal.aborted) return stop();
+    signal.addEventListener("abort", stop, { once: true });
+  });
+
 export function countUnsure(exam: any): number {
   let n = (exam.unsure ?? []).length;
   for (const s of exam.sections ?? []) for (const it of s.items ?? []) n += (it.unsure ?? []).length;
@@ -107,7 +123,6 @@ export async function makeExam(o: {
   hwpxEndpoint: string;
   onProgress: (p: Progress) => void;
   signal: AbortSignal;
-  reviewFigures?: (exam: any, signal: AbortSignal) => Promise<any>;
   onRecoverable?: (work: Recovery) => void;
 }): Promise<MakeResult> {
   // 도중에 실패하면 남은 그림 읽기도 멈추도록 안에서 쓰는 멈춤 신호 (화면의 멈춤 버튼도 따른다)
@@ -135,7 +150,6 @@ async function run(
     hwpxEndpoint: string;
     onProgress: (p: Progress) => void;
     signal: AbortSignal;
-    reviewFigures?: (exam: any, signal: AbortSignal) => Promise<any>;
     onRecoverable?: (work: Recovery) => void;
   },
   signal: AbortSignal,
@@ -205,9 +219,7 @@ async function run(
     }
     tell({ usd: progress.usd + sumUsd(res.usage), reused: (progress.reused ?? 0) + (res.cached ? 1 : 0) });
     const page = i + 1;
-    // Header/notice/footer are editable text. Never crop them into the output.
-    const decorations: NonNullable<PageMeta["decorations"]> = [];
-    pages.push({ meta: { page, original: { width: canvas.width, height: canvas.height }, scale, paperMm: sources[i].paperMm, decorations }, reading: res.reading });
+    pages.push({ meta: { page, original: { width: canvas.width, height: canvas.height }, scale }, reading: res.reading });
     for (const s of res.reading.sections) {
       if (s.title) lastSection = s.title;
       if (s.items.length) lastNo = s.items[s.items.length - 1].no;
@@ -217,26 +229,8 @@ async function run(
     const jobs = figureJobs(page, res.reading);
     tell({ figuresTotal: progress.figuresTotal + jobs.length });
     for (const job of jobs) {
-      const nonGeometry = job.region.kind !== "diagram";
-      let original: { sourcePng?: string; sourcePngSize?: [number, number] } = {};
-      let rawCut: ReturnType<typeof sourceFigureImage> | undefined;
-      if (nonGeometry) {
-        try {
-          const cut = sourceFigureImage(canvas, job.region, scale);
-          rawCut = cut;
-          original = { sourcePng: cut.image.data, sourcePngSize: [cut.image.width, cut.image.height] };
-          if (job.region.kind === "photo") {
-            figures.set(job.key, { crop: cut.crop, scale: cut.image.width / cut.crop.w, ...original });
-            tell({ figuresDone: progress.figuresDone + 1 });
-            continue;
-          }
-        } catch (err) {
-          figures.set(job.key, { crop: { x: 0, y: 0, w: 0, h: 0 }, scale: 1, error: err instanceof Error ? err.message : String(err) });
-          tell({ figuresDone: progress.figuresDone + 1 });
-          continue;
-        }
-      }
-      const cut = rawCut ? { ...rawCut, scale: rawCut.image.width / rawCut.crop.w } : figureImage(canvas, job.region, scale);
+      // AI 에게 보낼 그림 사진 (읽기에만 쓴다. 한글 파일에는 원본을 잘라 붙이지 않는다)
+      const cut = figureImage(canvas, job.region, scale);
       const item = {
         no: job.item.no,
         stem: toExamPieces(job.item.stem),
@@ -246,20 +240,33 @@ async function run(
       const task = runFigure(async () => {
           check();
           try {
-            const r = await readCached<{ figure: FigureReading; usage: Usage }>("figure", {
-              image: `data:${cut.image.mediaType};base64,${cut.image.data}`,
-              item,
-              kind: job.region.kind,
-              model: o.models?.figure,
-              docId,
-            }, o.cacheScope ?? "", signal);
-            figures.set(job.key, { crop: cut.crop, scale: cut.scale, reading: r.figure, ...original });
-            tell({ usd: progress.usd + sumUsd(r.usage), reused: (progress.reused ?? 0) + (r.cached ? 1 : 0) });
-          } catch (err) {
-            if (err instanceof ApiError && err.usage) tell({ usd: progress.usd + err.usage.usd });
-            if (signal.aborted) throw err;
-            const detail = err instanceof ApiError && err.detail ? ` (${err.detail})` : "";
-            figures.set(job.key, { crop: cut.crop, scale: cut.scale, error: `${err instanceof Error ? err.message : String(err)}${detail}`, ...original });
+            // 잠깐의 실패(인터넷, 서버 함수 오류·시간 초과, AI 서버 바쁨)면 두 번까지 다시 해 본다.
+            // 그래도 안 되면 그 그림만 빈 자리로 두고 나머지로 한글 파일을 만든다 (그림 하나 때문에 전체를 멈추지 않는다)
+            for (let attempt = 1; ; attempt++) {
+              try {
+                const r = await readCached<{ figure: FigureReading; usage: Usage }>("figure", {
+                  image: `data:${cut.image.mediaType};base64,${cut.image.data}`,
+                  item,
+                  kind: job.region.kind,
+                  model: o.models?.figure,
+                  docId,
+                }, o.cacheScope ?? "", signal);
+                figures.set(job.key, { crop: cut.crop, scale: cut.scale, reading: r.figure });
+                tell({ usd: progress.usd + sumUsd(r.usage), reused: (progress.reused ?? 0) + (r.cached ? 1 : 0) });
+                break;
+              } catch (err) {
+                if (err instanceof ApiError && err.usage) tell({ usd: progress.usd + err.usage.usd });
+                if (signal.aborted) throw err;
+                if (attempt < 3 && transient(err)) {
+                  await wait(attempt === 1 ? 4_000 : 15_000, signal);
+                  continue;
+                }
+                const detail = err instanceof ApiError && err.detail ? ` (${err.detail})` : "";
+                const tries = attempt > 1 ? ` (${attempt}번 시도)` : "";
+                figures.set(job.key, { crop: cut.crop, scale: cut.scale, error: `${err instanceof Error ? err.message : String(err)}${tries}${detail}` });
+                break;
+              }
+            }
           } finally {
             tell({ figuresDone: progress.figuresDone + 1 });
           }
@@ -279,7 +286,7 @@ async function run(
   check();
 
   // 3) 합치기 → 그림 PNG
-  let exam = assembleExam(pages, figures);
+  const exam = assembleExam(pages, figures);
   if (o.title) exam.title = o.title;
   const work: Recovery = { docId, title: o.title || "시험지", exam: stripPngs(exam), usd: progress.usd, pageProblems };
   o.onRecoverable?.(work);
@@ -287,8 +294,10 @@ async function run(
 }
 
 /** 보관함 또는 현재 화면의 읽기 결과에서 AI 호출 없이 한글 파일 만들기를 다시 시작한다. */
-export async function resumeExam(o: FinishOptions, work: Recovery): Promise<MakeResult> {
+export async function resumeExam(o: FinishOptions, saved: Recovery): Promise<MakeResult> {
   await assertFresh();
+  // GPT 판으로 읽은 결과도 지금의 2단 본문 모양으로 바꿔서 만든다
+  const work: Recovery = { ...saved, exam: normalizeLegacyExam(saved.exam) };
   const figures = (work.exam.sections ?? []).reduce((n: number, s: any) => n + (s.items ?? []).reduce((count: number, it: any) => count + itemFigures(it).length, 0), 0);
   const pages = Array.isArray(work.exam.source_pages) ? work.exam.source_pages.length : 0;
   const progress: Progress = { step: "draw", message: "저장된 읽기 결과를 준비하는 중입니다.", pagesDone: pages, pagesTotal: pages, figuresDone: figures, figuresTotal: figures, usd: work.usd };
@@ -300,22 +309,15 @@ async function finishExam(o: FinishOptions, work: Recovery, signal: AbortSignal,
   const { docId, pageProblems } = work;
   const tell = (patch: Partial<Progress>) => { Object.assign(progress, patch); o.onProgress({ ...progress }); };
   const check = () => { if (signal.aborted) throw new ApiError("멈췄습니다.", 0); };
-  let exam = work.exam;
+  const exam = work.exam;
   // 데이터가 커도 조각을 모두 저장하고 나서만 보관함의 참조를 바꾼다.
   tell({ step: "draw", message: "AI가 읽은 결과를 보관하는 중입니다." });
   await saveExamCheckpoint(docId, stripPngs(exam), progress.usd, signal, pageProblems);
   check();
   tell({ step: "draw", message: "그림을 그리는 중입니다." });
-  let rendered = await renderExamFigures(o.JXG, exam);
-  if (o.reviewFigures && exam.sections.some((s: any) => s.items.some((it: any) => itemFigures(it).some(f => f.original_png)))) {
-    tell({ step: "review", message: "원본과 재작성한 자료를 확인해 주세요." });
-    exam = await o.reviewFigures(attachFigurePngs(exam, rendered, true), signal);
-    check();
-    o.onRecoverable?.({ ...work, exam: stripPngs(exam), usd: progress.usd });
-    rendered = await renderExamFigures(o.JXG, exam);
-  }
-  const withPng = attachFigurePngs(exam, rendered, true);
-  const failedFigures = rendered.filter((r) => !r.png).length;
+  const rendered = await renderExamFigures(o.JXG, exam);
+  const withPng = attachFigurePngs(exam, rendered);
+  const failedFigures = rendered.filter((r) => r.error).length;
 
   // 4) 한글 파일
   check();

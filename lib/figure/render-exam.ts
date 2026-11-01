@@ -1,39 +1,38 @@
 // 시험지 데이터에 든 그림 명령을 모두 PNG 로 그린다.
 // 브라우저에서 돈다 (확인 화면과 scripts/render-figures.mjs 가 같이 쓴다).
 // 결과 PNG 는 base64 글자로 figure.png 에 넣어서 한글 파일 만드는 쪽(Python)에 보낸다.
+// 원본 사진을 잘라 붙이지 않는다: 그림 명령(commands)은 JSXGraph 로, 표·지도·삽화의 그리기 명령(graphic)은 canvas 로 그리고,
+// 둘 다 없는 그림(사진, 읽지 못한 그림)은 PNG 없이 두어 한글 파일에 빈 자리로 들어가게 한다.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { loadFigureFonts, pxForPrint, renderFigurePng } from "./engine";
-import type { FigureSpec } from "./types";
 import { itemFigures } from "./item-figures";
-import { renderGraphicPng, renderOriginalPng } from "@/lib/graphic/render";
+import type { FigureSpec } from "./types";
+import { renderGraphicPng } from "@/lib/graphic/render";
 import type { GraphicSpec } from "@/lib/graphic/schema";
 
 export const DEFAULT_FIGURE_DPI = 360;
 
 export type ExamFigure = {
   commands?: FigureSpec;
+  /** 표·지도·통계 그래프·삽화를 다시 그리는 명령 (lib/graphic) */
+  graphic?: GraphicSpec;
   width_mm?: number;
   size_mm?: [number, number];
   /** 확인 화면에서 옮긴 자유점 위치 (점 이름 → 기준점에서의 거리) */
   gliders?: Record<string, number>;
   png?: string;
   png_size?: [number, number];
-  source_png?: string;
-  source_png_size?: [number, number];
-  graphic?: GraphicSpec;
-  original_png?: string;
-  original_size?: [number, number];
-  render_mode?: "redraw" | "original";
-  photo_adjustment?: { brightness: number; rotation: number };
+  /** 그림을 넣지 못할 때 빈 자리에 적을 말 (사진 자리, 그림 자리) */
+  placeholder_note?: string;
   [key: string]: unknown;
 };
 
 export type FigureRenderResult = {
-  usedOriginal?: boolean;
-  figureIndex?: number;
   section: number;
   index: number;
+  /** 문항 안의 몇 번째 그림인지 (0 은 figure, 1 부터 extra_figures) */
+  figureIndex: number;
   no: number | string;
   png?: string;
   size?: [number, number];
@@ -47,9 +46,12 @@ function figureWidthMm(fig: ExamFigure): number {
   return fig.width_mm || fig.size_mm?.[0] || 50;
 }
 
+const base64Of = (dataUrl: string) => dataUrl.slice(dataUrl.indexOf(",") + 1);
+
 /**
- * 그림이 있는 문항마다 PNG 를 만든다. 그리지 못한 그림은 error 에 까닭을 적는다.
+ * 문항의 그림마다 PNG 를 만든다. 그리지 못한 그림은 error 에 까닭을 적는다.
  * 그림 명령이 없거나 모양이 틀린 그림도 error 로 돌려준다 (예전에 만든 PNG 가 남아 들어가지 않게).
+ * 처음부터 빈 자리로 둔 그림(placeholder_note 가 있고 그릴 명령이 없음)은 알림 없이 빈 자리로 둔다.
  */
 export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGURE_DPI): Promise<FigureRenderResult[]> {
   await loadFigureFonts();
@@ -58,56 +60,41 @@ export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGUR
   for (let s = 0; s < sections.length; s++) {
     const items: any[] = Array.isArray(sections[s]?.items) ? sections[s].items : [];
     for (let i = 0; i < items.length; i++) {
-      const all = itemFigures(items[i]);
-      for (let f = 0; f < all.length; f++) {
-      const fig: ExamFigure = all[f];
-      const base = { section: s, index: i, figureIndex: f, no: items[i].no };
-      if (fig.graphic || fig.original_png) {
+      const figures: ExamFigure[] = itemFigures(items[i]);
+      for (let f = 0; f < figures.length; f++) {
+        const fig = figures[f];
+        const base = { section: s, index: i, figureIndex: f, no: items[i].no };
+        if (fig.graphic) {
+          try {
+            const out = await renderGraphicPng(fig.graphic, pxForPrint(figureWidthMm(fig), dpi), figureWidthMm(fig));
+            results.push({ ...base, png: base64Of(out.dataUrl), size: [out.width, out.height], ...(out.warnings.length ? { warnings: out.warnings } : {}) });
+          } catch (err) {
+            results.push({ ...base, error: err instanceof Error ? err.message : String(err) });
+          }
+          continue;
+        }
+        if (!fig.commands) {
+          results.push(fig.placeholder_note ? { ...base } : { ...base, error: "그림 명령이 없습니다" });
+          continue;
+        }
+        if (!Array.isArray(fig.commands.elements)) {
+          results.push({ ...base, error: "그림 명령에 그릴 것 목록(elements)이 없습니다" });
+          continue;
+        }
         try {
-          const useRedraw = fig.graphic && fig.graphic.kind !== "photo" && fig.render_mode !== "original";
-          const out = useRedraw
-            ? await renderGraphicPng(fig.graphic!, pxForPrint(figureWidthMm(fig), dpi), figureWidthMm(fig))
-            : await renderOriginalPng(fig.original_png || fig.source_png || "", fig.photo_adjustment);
-          results.push({ ...base, png: out.dataUrl.split(",")[1], size: [out.width, out.height], warnings: out.warnings });
-        } catch (e) {
-          if (fig.original_png && fig.render_mode !== "original") {
-            try {
-              const out = await renderOriginalPng(fig.original_png);
-              results.push({ ...base, png: out.dataUrl.split(",")[1], size: [out.width, out.height], usedOriginal: true,
-                warnings: [`자료를 다시 그리지 못해 원본을 사용했습니다: ${e instanceof Error ? e.message : String(e)}`] });
-            } catch { results.push({ ...base, error: "재작성 자료와 원본을 모두 열지 못했습니다" }); }
-          } else results.push({ ...base, error: e instanceof Error ? e.message : String(e) });
+          const out = await renderFigurePng(JXG, fig.commands, {
+            widthPx: pxForPrint(figureWidthMm(fig), dpi),
+            gliders: fig.gliders,
+          });
+          results.push({
+            ...base,
+            png: base64Of(out.dataUrl),
+            size: [out.width, out.height],
+            ...(out.warnings.length ? { warnings: out.warnings } : {}),
+          });
+        } catch (err) {
+          results.push({ ...base, error: err instanceof Error ? err.message : String(err) });
         }
-        continue;
-      }
-      if (!fig.commands) {
-        if (fig.source_png) {
-          results.push({ ...base, png: fig.source_png, size: fig.source_png_size });
-        } else {
-          results.push({ ...base, error: "그림 명령이 없습니다" });
-        }
-        continue;
-      }
-      if (!Array.isArray(fig.commands.elements)) {
-        results.push({ ...base, error: "그림 명령에 그릴 것 목록(elements)이 없습니다" });
-        continue;
-      }
-      try {
-        const out = await renderFigurePng(JXG, fig.commands, {
-          widthPx: pxForPrint(figureWidthMm(fig), dpi),
-          minFontPx: pxForPrint(3.5, dpi),
-          aspectRatio: fig.size_mm?.[1] ? figureWidthMm(fig) / fig.size_mm[1] : undefined,
-          gliders: fig.gliders,
-        });
-        results.push({
-          ...base,
-          png: out.dataUrl.slice(out.dataUrl.indexOf(",") + 1),
-          size: [out.width, out.height],
-          ...(out.warnings.length ? { warnings: out.warnings } : {}),
-        });
-      } catch (err) {
-        results.push({ ...base, error: err instanceof Error ? err.message : String(err) });
-      }
       }
     }
   }
@@ -115,12 +102,13 @@ export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGUR
 }
 
 /** renderExamFigures 결과를 시험지 데이터에 붙인 사본을 돌려준다. */
-export function attachFigurePngs(exam: any, results: FigureRenderResult[], keepOriginals = false): any {
+export function attachFigurePngs(exam: any, results: FigureRenderResult[]): any {
   const copy = JSON.parse(JSON.stringify(exam));
   for (const r of results) {
     const fig = itemFigures(copy.sections?.[r.section]?.items?.[r.index])[r.figureIndex ?? 0];
     if (!fig) continue;
-    if (r.usedOriginal) fig.render_mode = "original";
+    // GPT 판이 남긴 원본 조각은 한글 파일로 보내지 않는다 (원본 사진을 잘라 붙이지 않는다)
+    for (const key of ["source_png", "source_png_size", "original_png", "original_size", "render_mode", "photo_adjustment"]) delete fig[key];
     if (r.png) {
       fig.png = r.png;
       fig.png_size = r.size;
@@ -128,18 +116,13 @@ export function attachFigurePngs(exam: any, results: FigureRenderResult[], keepO
     } else {
       delete fig.png;
       delete fig.png_size;
-      fig.render_error = r.error;
+      if (r.error) {
+        fig.render_error = r.error;
+        fig.placeholder_note ??= "그림 자리";
+      } else delete fig.render_error;
     }
     if (r.warnings?.length) fig.render_warnings = r.warnings;
     else delete fig.render_warnings;
-    // 전송용 사본에는 같은 그림을 두 번 싣지 않는다. 원본 exam 은 보존한다.
-    delete fig.source_png;
-    delete fig.source_png_size;
-    if (!keepOriginals && (!fig.graphic || fig.render_mode === "original")) {
-      delete fig.original_png;
-      delete fig.original_size;
-    }
   }
   return copy;
 }
-

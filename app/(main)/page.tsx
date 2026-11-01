@@ -7,7 +7,6 @@ import { loadExamCheckpoint } from "@/lib/client/exam-storage";
 import { isStale, STALE_MESSAGE } from "@/lib/client/version";
 import { loadFigureFonts } from "@/lib/figure/engine";
 import { piecesToHtml } from "@/lib/ai/latex-view";
-import { FigureReview } from "@/components/app/FigureReview";
 import { itemFigures } from "@/lib/figure/item-figures";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -17,7 +16,6 @@ const STEPS: { key: Step; label: string }[] = [
   { key: "page", label: "쪽 읽기" },
   { key: "figure", label: "그림 읽기" },
   { key: "draw", label: "그림 그리기" },
-  { key: "review", label: "자료 비교" },
   { key: "hwpx", label: "한글 파일" },
   { key: "save", label: "보관함 저장" },
 ];
@@ -35,10 +33,8 @@ export default function MakePage() {
   const [error, setError] = useState("");
   const [errorDetail, setErrorDetail] = useState("");
   const [busy, setBusy] = useState(false);
-  const [economy, setEconomy] = useState(true);
   /** 이 화면을 연 뒤 프로그램이 새 판으로 바뀌었는지 (바뀌었으면 새로 고치라고 알린다) */
   const [stale, setStale] = useState(false);
-  const [review, setReview] = useState<{ exam: any; finish: (exam: any) => void } | null>(null);
   const [recovery, setRecovery] = useState<Recovery | null>(null);
   const [resuming, setResuming] = useState(false);
   const abort = useRef<AbortController | null>(null);
@@ -122,17 +118,12 @@ export default function MakePage() {
         onProgress: (value: Progress) => { currentCost = value.usd; setProgress(value); },
         signal: controller.signal,
         onRecoverable: setRecovery,
-        reviewFigures: (exam: any, signal: AbortSignal): Promise<any> => new Promise((resolve, reject) => {
-          const stop = () => { setReview(null); reject(new Error("자료 확인을 멈췄습니다")); };
-          if (signal.aborted) return stop();
-          signal.addEventListener("abort", stop, { once: true });
-          setReview({ exam, finish: value => { signal.removeEventListener("abort", stop); setReview(null); resolve(value); } });
-        }),
       };
       const out = savedWork ? await resumeExam(common, savedWork) : await makeExam({
         ...common,
         files,
-        models: economy ? { page: "claude-sonnet-5-5", figure: "claude-sonnet-5-5" } : ready.models,
+        // 모델은 설정 화면에서 이 기기에 저장한 것을 쓴다 (읽은 결과 재사용 기록도 모델별로 따로)
+        models: ready.models,
         cacheScope: ready.cacheScope,
         title: title.trim() || "시험지",
         createDoc: async () => {
@@ -172,7 +163,7 @@ export default function MakePage() {
     <main className="page" style={{ maxWidth: 900 }}>
       <div className="page-head">
         <h1>시험지 만들기</h1>
-        <p className="lead">시험지 PDF 나 사진을 올리면 원본의 용지와 문항 위치를 살려 편집 가능한 한글 파일로 만들어 줍니다. 원본과 만든 파일은 보관함에 저장됩니다.</p>
+        <p className="lead">시험지 PDF 나 사진을 올리면 AI 가 읽어서 학교 양식의 한글 파일로 만들어 줍니다. 원본과 만든 파일은 보관함에 저장됩니다.</p>
       </div>
 
       {(stale || error === STALE_MESSAGE) && (
@@ -228,14 +219,9 @@ export default function MakePage() {
             ))}
           </ul>
         )}
-        <label className="field">
-          제작 모델
-          <select value={economy ? "economy" : "saved"} disabled={busy} onChange={e => setEconomy(e.target.value === "economy")}>
-            <option value="economy">절약 · Sonnet 5.5</option>
-            <option value="saved">설정에 저장한 모델 사용</option>
-          </select>
-        </label>
-        <p className="muted small">절약 모드는 Opus 5.5보다 토큰 단가가 절반입니다. 실제 비용과 인식 품질은 시험지에 따라 달라집니다. 같은 기기·모델로 이미 읽은 쪽과 그림은 재사용하며, 한글 파일만 다시 만들 때는 AI 요금이 들지 않습니다.</p>
+        <p className="muted small">
+          읽는 AI 모델은 <a href="/settings">설정</a>에서 고릅니다. 같은 기기·모델로 이미 읽은 쪽과 그림은 다시 읽지 않고 그대로 써서 그만큼 요금이 들지 않습니다.
+        </p>
         <div className="row">
           <button className="primary" type="button" onClick={() => start()} disabled={busy || !files.length || !JXG || !ready?.keySaved}>
             {busy ? "만드는 중" : "한글 파일 만들기"}
@@ -296,8 +282,6 @@ export default function MakePage() {
           {errorDetail && <details><summary>오류 상세</summary><p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{errorDetail}</p></details>}
         </div>
       )}
-
-      {review && <FigureReview exam={review.exam} onContinue={review.finish} />}
 
       {result && <ResultView result={result} rate={ready?.krwPerUsd} resumed={resuming} />}
     </main>

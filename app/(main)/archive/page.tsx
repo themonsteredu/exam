@@ -93,8 +93,11 @@ export default function ArchivePage() {
                             한글 파일
                           </button>
                         )}
-                        {d.status !== "done" && d.item_count > 0 && (
-                          <a href={`/?resume=${encodeURIComponent(d.id)}`}>읽은 결과로 다시 만들기</a>
+                        {d.item_count > 0 && (
+                          // 보관한 읽기 결과로 한글 파일만 새로 만든다 (AI 를 다시 부르지 않아 요금이 들지 않는다)
+                          <a href={`/?resume=${encodeURIComponent(d.id)}`} title="AI 요금 없이 한글 파일만 새로 만듭니다">
+                            다시 만들기
+                          </a>
                         )}
                         {d.original_files.map((f, i) => (
                           <button key={f.path} type="button" onClick={() => download(f.path, f.name)}>

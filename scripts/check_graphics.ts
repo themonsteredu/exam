@@ -1,9 +1,9 @@
-// API 호출 없이 AI 응답 검사·원본 복구·사진 처리 분류·병합 표·출력 경로를 검사한다.
+// API 호출 없이 AI 응답 검사·사진 처리·병합 표·빈 자리를 검사한다 (원본을 잘라 붙이지 않는다).
 import assert from "node:assert/strict";
 import sample from "@/data/graphic_example.json";
 import { checkGraphic } from "@/lib/graphic/schema";
 import { judgeGraphic } from "@/lib/ai/read-graphic";
-import { assembleExam, figureKey } from "@/lib/ai/assemble";
+import { assembleExam, figureJobs, figureKey } from "@/lib/ai/assemble";
 import { tableCells } from "@/lib/graphic/render";
 import { attachFigurePngs } from "@/lib/figure/render-exam";
 import type { PageReading } from "@/lib/ai/page-schema";
@@ -25,13 +25,18 @@ const reading: PageReading = {
   sections:[{title:"",items:[{no:10,no_text:"10.",points:4,column:1,stem:[],choices:[],bogi:[],figures:[{x:50,y:100,w:400,h:240,kind:"map",place:"below"}],source:{x:0,y:0,w:500,h:700},unsure:[]}]}],
 };
 const args = [{ meta:{page:1,original:{width:1000,height:1500},scale:1},reading }];
-const figures = new Map([[figureKey(1,0,0,0),{crop:{x:50,y:100,w:400,h:240},scale:1,sourcePng:"original",sourcePngSize:[400,240] as [number,number],reading:r}]]);
+const figures = new Map([[figureKey(1,0,0,0),{crop:{x:50,y:100,w:400,h:240},scale:1,reading:r}]]);
 const exam=assembleExam(args,figures), fig=exam.sections[0].items[0].figure;
-assert.equal(fig.render_mode,"redraw"); assert.equal(fig.original_png,"original"); assert.ok(fig.graphic);
-const fallback=assembleExam(args,new Map([[figureKey(1,0,0,0),{crop:{x:50,y:100,w:400,h:240},scale:1,sourcePng:"original",error:"AI timeout"}]]));
-assert.equal(fallback.sections[0].items[0].figure.render_mode,"original");
-const reviewed=attachFigurePngs(exam,[{section:0,index:0,no:10,png:"redraw",size:[400,240]}],true);
-assert.equal(reviewed.sections[0].items[0].figure.original_png,"original");
-assert.equal(reviewed.sections[0].items[0].figure.png,"redraw");
+assert.ok(fig.graphic,"지도는 그리기 명령으로 다시 그린다"); assert.equal(fig.original_png,undefined,"원본을 잘라 붙이지 않는다");
+const failed=assembleExam(args,new Map([[figureKey(1,0,0,0),{crop:{x:50,y:100,w:400,h:240},scale:1,error:"AI timeout"}]]));
+assert.equal(failed.sections[0].items[0].figure.placeholder_note,"그림 자리","읽지 못한 그림은 빈 자리");
+assert.equal(failed.sections[0].items[0].figure.original_png,undefined);
+const photoPage: PageReading = { ...reading, sections:[{title:"",items:[{...reading.sections[0].items[0],figures:[{x:50,y:100,w:400,h:240,kind:"photo",place:"below"}]}]}] };
+assert.equal(figureJobs(1,photoPage).length,0,"사진은 AI 에게 보내지 않는다");
+assert.equal(assembleExam([{ meta:args[0].meta, reading:photoPage }],new Map()).sections[0].items[0].figure.placeholder_note,"사진 자리");
+const drawn=attachFigurePngs(exam,[{section:0,index:0,figureIndex:0,no:10,png:"redraw",size:[400,240]}]);
+assert.equal(drawn.sections[0].items[0].figure.png,"redraw");
+const broken=attachFigurePngs(exam,[{section:0,index:0,figureIndex:0,no:10,error:"bad"}]);
+assert.equal(broken.sections[0].items[0].figure.placeholder_note,"그림 자리");
 assert.equal(fig.png,undefined);
-console.log("지도/표 재작성·필수 표기·사진 분류·원본 복구·비교 자료 검사 통과");
+console.log("지도/표 다시 그리기·필수 표기·사진은 빈 자리·읽기 실패는 빈 자리·원본 조각 없음 검사 통과");

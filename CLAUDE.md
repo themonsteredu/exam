@@ -128,6 +128,22 @@
   - 사용자 요청 "배포머지": 깃허브 기본 줄기 claude/new-session-65lm7i 는 뿌리가 다른 예전 1단계 시험판 커밋 하나였다 (hwp/ 등, py/exam_hwpx 가 대신함).
     합치기 커밋 98960ab (부모: 기본 줄기 8ac96d9 + 작업 줄기 81b8296, 내용은 작업 줄기 그대로)를 두 줄기에 올려 지금은 두 줄기가 같다.
     앞으로 작업 줄기에 올린 것은 기본 줄기에도 그대로(빨리 감기로) 올린다. 기본 줄기에 올려도 Ignored Build Step 때문에 Vercel 이 다시 빌드하지 않는다
+- GPT(Codex)로 이어서 한 작업 되돌리기 (2026-11-01, 사용자 결정 "2단 본문으로 되돌리기"):
+  - 사용자가 GPT 로 PR #8~#11 (88c7ccb..595e84f) 을 올렸는데 결과가 나빴다: 원본 배치 따라 하기(source layout, 글 상자 160개를 쪽 위치에 띄움)로
+    쪽 수 두 배·낱말 중간 줄바꿈·선택지 빠짐, 원본 조각(머리말·꼬리말·지도·사진) 붙이기, 점 이름 자동 옮기기로 그림 망가짐,
+    그림 하나 못 읽으면 한글 파일 만들기 전체 멈춤, 절약 모드가 설정 모델 대신 Sonnet 강제, SDK 다시 보내기 끔, 지시문 모순으로 조건 상자가 문제 글에서 빠짐
+  - 되돌림: 2단 본문만 (builder 의 source 갈래, source_layout.py·layout_safety.py·graphic.py 삭제), 원본 조각 경로 모두 삭제(FigureReview·sourceFigureImage·renderOriginalPng),
+    그림 엔진은 88c7ccb 판(label-layout.ts 삭제), 쪽 읽기는 구조화 출력 + PageReadingS (layout_blocks·page_artifacts·page_rules 없음), SDK maxRetries 3(마감 있으면 1/0),
+    모델은 설정 화면 값, 읽기 기억 판 two-column-v2
+  - 살림: 큰 시험지 4MB 조각 보관(exam-storage.ts, api/hwpx.py input_paths, staging.py), 요금 없이 다시 만들기(보관함 "다시 만들기", 완료 문서도),
+    읽기 기억(read-cache.ts), 그림 여러 개(extra_figures), 표·지도·통계 그래프·삽화는 graphic 명령 → canvas PNG(사진은 "사진 자리" 빈 상자),
+    굵게·밑줄, 배점 중복 막기(괄호 (4점)·[총 6점]도), \triangle·\parallel, 오류 상세(apiErrorDetail), 실패한 읽기 요금 기록, allowFallback 기본 끔
+  - 새로 넣음: 그림 읽기가 잠깐 실패(인터넷·500·503·504·AI 서버 바쁨)하면 4초·15초 뒤 두 번 더 시도, 그래도 안 되면 그 그림만 "그림 자리" 빈 상자로 두고 파일은 만든다.
+    선택지가 모두 그림이면(빈 선택지 수 = 그림 수, 또는 선택지 없이 묻는 문장 + 그림 4~5개) ①~⑤ 를 붙여 테두리 없는 2열 표로(builder picture_choices·build_choice_figures).
+    GPT 판 읽기 결과는 다시 만들 때 normalizeLegacyExam 으로 바꾼다(그림 크기 다시 계산, layout_blocks 에만 있던 조건 상자는 cond_box, <보기>는 bogi)
+  - AGENTS.md: Codex 등 다른 도구도 이 규칙을 따르게 함. CI(.github/workflows/exam-regression.yml)는 요금 없는 검사만
+  - 확인: 저장해 둔 읽기 결과 3개(금호중 10-30·10-31, 조대부중 11-01)로 요금 없이 다시 만들어 구조 확인 (2단, 문항·선택지·수식 모두, 그림 선택지 표, 빈 자리, 조건 상자).
+    1·3단계 결과는 그림 PNG 까지 같음(기울인 x 글꼴과 GPT 의 \triangle 표기만 다름)
   - 남은 일: 세 모델 비교 → 가장 싼 쓸 만한 조합을 기본값으로. 열쇠가 기기마다 따로라서 read-samples --via 로는 원장님 열쇠를 쓸 수 없다
     → 프로그램 화면 안에 '모델 비교' 기능을 만들어 원장님 기기에서 돌리고, 결과는 보관함(DB)에서 읽어 판단할 것.
     그림 속 기울인 글자: 코드 완료(아직 배포 안 함, 사용자에게 전후 비교 그림 보냄). public/fonts/ExamMathItalic.woff2 = Latin Modern Math 1.959 의 수학 기울임 글자만

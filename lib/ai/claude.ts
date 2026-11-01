@@ -1,6 +1,7 @@
 // Claude 부르기 (서버 전용: 열쇠는 서버에만 있다. 화면 코드로 보내지 않는다).
 // 모델은 쪽 읽기·그림 읽기마다 고를 수 있다: ANTHROPIC_MODEL_PAGE / ANTHROPIC_MODEL_FIGURE, 없으면 ANTHROPIC_MODEL (기본 claude-opus-5-5).
-// 자동 유료 모델 전환과 SDK 전송 재시도는 기본으로 끈다. 검증 후 필요한 JSON 수정만 최대 한 번 허용한다.
+// 다른 모델로 자동으로 바꾸는 기능(fallbacks)은 기본으로 끈다 (allowFallback 을 줄 때만).
+// 연결이 끊기거나 AI 서버가 잠깐 바쁜(429·5xx) 실패는 SDK 가 알아서 다시 보낸다 (이런 실패는 요금이 들지 않는다).
 
 import Anthropic, { type APIError } from "@anthropic-ai/sdk";
 import type {
@@ -162,7 +163,7 @@ function getClient(apiKey?: string): Anthropic {
   let client = clients.get(key);
   if (!client) {
     // 주소는 공식 주소로 고정한다 (다른 프로그램이 ANTHROPIC_BASE_URL 을 바꿔 두었어도 열쇠가 다른 곳으로 가지 않게)
-    client = new Anthropic({ apiKey: key, baseURL: "https://api.anthropic.com", maxRetries: 0, timeout: 15 * 60 * 1000 });
+    client = new Anthropic({ apiKey: key, baseURL: "https://api.anthropic.com", maxRetries: 3, timeout: 15 * 60 * 1000 });
     clients.set(key, client);
   }
   return client;
@@ -228,8 +229,8 @@ export async function callClaude(req: {
       const system = !structured && req.jsonSchema
         ? `${req.system}\n\n다음 JSON 스키마를 따르는 JSON 객체 하나만 답한다. 설명이나 코드 블록은 넣지 않는다. 모든 필드를 채운다. 해당 내용이 없을 때만 필드 형식에 맞춰 빈 배열·빈 문자열·0·false를 쓴다. 인쇄된 문항·조건 상자·선택지·배치 정보를 임의로 생략하지 않는다.\n${JSON.stringify(req.jsonSchema)}`
         : req.system;
-      // 복구 호출도 전체 마감 시각을 공유한다. 남은 시간이 짧으면 SDK의 재시도도 끈다.
-      const limits = remaining !== undefined ? { timeout: remaining - 3_000, maxRetries: 0 } : {};
+      // 마감 시각이 있으면: 끝낼 시각 3초 전까지만 기다리고, 시간이 넉넉할 때만 한 번 다시 보낸다
+      const limits = remaining !== undefined ? { timeout: remaining - 3_000, maxRetries: remaining > 150_000 ? 1 : 0 } : {};
       stream = anthropic.beta.messages.stream(
         {
           model: req.model,

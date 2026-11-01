@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import Anthropic from "@anthropic-ai/sdk";
 import { apiErrorDetail, callClaude, extractJson, ReadError } from "@/lib/ai/claude";
-import { pageReadingJsonSchema, PageOutputS, PageReadingS } from "@/lib/ai/page-schema";
+import { pageReadingJsonSchema, PageReadingS } from "@/lib/ai/page-schema";
 import { readPage } from "@/lib/ai/read-page";
 import { api, ApiError } from "@/lib/client/api";
 import { failFrom } from "@/lib/ai/http";
@@ -14,14 +14,13 @@ function inspect(node: any): void {
   for (const child of Object.values(node)) inspect(child);
 }
 inspect(schema);
-assert.ok(schema.$defs, "반복되는 조각은 참조로 재사용한다");
-const item = { no:1,no_text:"1.",points:4,column:1,stem:[{kind:"t",text:"조건을 읽으시오."}],bogi:[],choices:[],figures:[],source:{x:10,y:20,w:300,h:200},unsure:[],
-  layout_blocks:[{role:"box",region:{x:20,y:80,w:260,h:80},title:"조건",choice_no:0,lines:[[{kind:"m",text:"l \\parallel m"}]]}] };
+const item = { no:1,no_text:"1.",points:4,column:1,stem:[{kind:"t",text:"조건을 읽으시오."}],bogi:[],choices:[],figures:[],source:{x:10,y:20,w:300,h:200},unsure:[] };
 const page = { header:{present:false,title:"",target_label:"",target:"",date:""},boxes:[],sections:[{title:"",items:[item]}],
-  footer:{present:false,right_top:"",right_bottom:"",notice:""},page_end_note:"",print_area:{x:0,y:0,w:1000,h:1500},unsure:[],page_artifacts:[],page_rules:[] };
-const oldPage = { ...page, page_artifacts:undefined, page_rules:undefined, sections:[{title:"",items:[{...item,layout_blocks:undefined}]}] };
-assert.ok(PageReadingS.safeParse(oldPage).success, "옛 보관함 결과와 호환된다");
-assert.equal(PageOutputS.safeParse(oldPage).success, false, "새 변환에서 배치 정보 누락은 잡아낸다");
+  footer:{present:false,right_top:"",right_bottom:"",notice:""},page_end_note:"",print_area:{x:0,y:0,w:1000,h:1500},unsure:[] };
+// 모양이 틀린 답 (문항의 문제 글이 빠짐)
+const badPage = { ...page, sections:[{title:"",items:[{...item,stem:undefined}]}] };
+assert.ok(PageReadingS.safeParse(page).success);
+assert.equal(PageReadingS.safeParse(badPage).success, false);
 
 function streamReply(text: string): Response {
   const events = [
@@ -51,16 +50,21 @@ const read = () => readPage(image,{page:1,total:1,apiKey:"request-test-placehold
 const strict = () => callClaude({system:"Return the exam JSON",messages:[{role:"user",content:"test"}],model:"claude-opus-5-5",effort:"medium",maxTokens:32000,jsonSchema:schema,apiKey:"request-test-placeholder",deadline:Date.now()+120000});
 // 사용자 캡처에 나온 제공자의 정확한 오류 문구.
 const compiledError = "The compiled grammar is too large, which would cause performance issues. Simplify your tool schemas or reduce the number of strict tools.";
+function overloaded(): Response {
+  return new Response(JSON.stringify({type:"error",error:{type:"overloaded_error",message:"Overloaded"}}),{status:529,headers:{"content-type":"application/json","request-id":"req_busy"}});
+}
 try {
-  respond = n => calls[n-1].output_config?.format ? rejected(compiledError) : streamReply(JSON.stringify(page));
+  respond = () => streamReply(JSON.stringify(page));
   const normal = await read();
-  assert.equal(calls.length,1,"쪽 읽기는 컴파일 오류를 유발하는 요청 자체를 보내지 않는다");
+  assert.equal(calls.length,1);
+  assert.ok(calls[0].output_config.format,"쪽 읽기는 구조화 출력으로 보낸다");
   assert.equal(calls[0].fallbacks,undefined,"선택하지 않은 유료 모델로 자동 전환하지 않는다");
-  assert.deepEqual(normal.reading.sections[0].items[0].layout_blocks,item.layout_blocks);
-  assert.equal(calls[0].output_config.format,undefined);
-  assert.equal(calls[0].tools,undefined);
-  assert.ok(calls[0].system[0].text.includes("layout_blocks"));
-  assert.ok(calls[0].system[0].text.includes("page_artifacts"));
+  assert.deepEqual(normal.reading.sections[0].items[0].stem,item.stem);
+  assert.ok(!calls[0].system[0].text.includes("layout_blocks"),"원본 배치 따라 하기 지시는 없다");
+  calls=[];
+  respond = n => n === 1 ? overloaded() : streamReply(JSON.stringify(page));
+  await read();
+  assert.equal(calls.length,2,"AI 서버가 잠깐 바쁘면(529) SDK 가 한 번 다시 보낸다");
   for (const message of [compiledError,"Schema is too complex for compilation."]) {
     calls=[];
     respond = n => n === 1 ? rejected(message) : streamReply("```json\n"+JSON.stringify(page)+"\n```");
@@ -70,31 +74,29 @@ try {
     assert.equal(calls[1].output_config.format,undefined);
     assert.equal(calls[1].model,calls[0].model);
     assert.deepEqual(calls[1].messages,calls[0].messages);
-    assert.ok(calls[1].system[0].text.includes("layout_blocks"));
-    assert.deepEqual(PageOutputS.parse(extractJson(recovered.text)).sections[0].items[0].layout_blocks,item.layout_blocks);
+    assert.ok(calls[1].system[0].text.includes('"sections"'),"구조화 출력을 못 받으면 모양을 지시문에 넣는다");
+    assert.deepEqual(PageReadingS.parse(extractJson(recovered.text)).sections[0].items[0].stem,item.stem);
     assert.equal(recovered.usage.output,50);
   }
   calls=[];
-  respond = n => streamReply(JSON.stringify(n === 1 ? oldPage : page));
+  respond = n => streamReply(JSON.stringify(n === 1 ? badPage : page));
   const repaired = await read();
   assert.equal(calls.length,2);
-  assert.ok(calls.every(c=>c.output_config.format===undefined));
   assert.equal(calls[1].model,calls[0].model);
   assert.deepEqual(calls[1].messages[0],calls[0].messages[0],"수정 요청에도 원본 사진과 문항 문맥을 유지한다");
   assert.equal(calls[1].messages.length,3);
-  assert.ok(calls[1].messages[2].content.includes("layout_blocks"));
   assert.equal(repaired.usage.output,100,"수정 요청의 사용량을 합산한다");
-  assert.deepEqual(repaired.reading.sections[0].items[0].layout_blocks,item.layout_blocks);
+  assert.deepEqual(repaired.reading.sections[0].items[0].stem,item.stem);
   calls=[];
   respond = n => streamReply(n === 1 ? "invalid JSON" : JSON.stringify(page));
   await read();
   assert.equal(calls.length,2,"JSON 구문 오류도 한 번 수정 요청한다");
   calls=[];
-  respond = () => streamReply(JSON.stringify(oldPage));
-  await assert.rejects(read, (e: unknown) => e instanceof ReadError && e.code === "bad_answer" && e.usage?.output === 100 && !!e.detail?.includes("layout_blocks"));
-  assert.equal(calls.length,2,"수정 후에도 배치 정보가 없으면 결과를 내보내지 않는다");
+  respond = () => streamReply(JSON.stringify(badPage));
+  await assert.rejects(read, (e: unknown) => e instanceof ReadError && e.code === "bad_answer" && e.usage?.output === 100);
+  assert.equal(calls.length,2,"수정 후에도 모양이 틀리면 결과를 내보내지 않는다");
   calls=[];
-  respond = n => n === 1 ? streamReply(JSON.stringify(oldPage)) : rejected("image source is invalid");
+  respond = n => n === 1 ? streamReply(JSON.stringify(badPage)) : rejected("image source is invalid");
   await assert.rejects(read,(e: unknown)=>e instanceof ReadError && e.usage?.output === 50 && !!e.detail?.includes("req_test"));
   calls=[];
   respond = () => rejected(compiledError);
@@ -109,7 +111,7 @@ try {
   } finally { Date.now=realNow; }
   calls=[];
   try {
-    respond=()=>{ Date.now=()=>realNow()+165000; return streamReply(JSON.stringify(oldPage)); };
+    respond=()=>{ Date.now=()=>realNow()+165000; return streamReply(JSON.stringify(badPage)); };
     await assert.rejects(read,(e: unknown)=>e instanceof ReadError && e.code === "bad_answer" && e.usage?.output === 50);
     assert.equal(calls.length,1,"쪽 읽기도 마감 시간이 부족하면 수정 요청을 보내지 않는다");
   } finally { Date.now=realNow; }
@@ -128,9 +130,9 @@ try {
   assert.ok(!apiErrorDetail(error).includes("A".repeat(100)));
   globalThis.fetch=async()=>new Response(JSON.stringify({error:"요청 오류",detail:"Claude 400: schema unsupported · req_test"}),{status:502});
   await assert.rejects(()=>api("/api/read/page"),(e: unknown)=>e instanceof ApiError && e.status===502 && !!e.detail?.includes("req_test"));
-  const body = await failFrom(new ReadError("bad_answer","검사 실패","layout_blocks 없음")).json();
-  assert.equal(body.detail,"layout_blocks 없음");
-  console.log("AI 요청: 쪽 읽기 문법 컴파일 제거·캡처의 정확한 400 문구 복구·배치 누락 수정·사용량 합산·시간 제한·취소·오류 상세 검사 통과");
+  const body = await failFrom(new ReadError("bad_answer","검사 실패","stem 없음")).json();
+  assert.equal(body.detail,"stem 없음");
+  console.log("AI 요청: 쪽 읽기 구조화 출력·바쁠 때 다시 보내기·400 문구 복구·모양 틀림 수정·사용량 합산·시간 제한·취소·오류 상세 검사 통과");
 } finally {
   globalThis.fetch=savedFetch;
 }

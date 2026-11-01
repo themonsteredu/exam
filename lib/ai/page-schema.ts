@@ -28,15 +28,6 @@ export const FigureRegionS = z.strictObject({
   kind: z.enum(["diagram", "table", "map", "chart", "illustration", "photo", "other"]),
 });
 
-/** 원본에서 따로 배치할 글 상자. lines는 인쇄된 줄 단위이며 편집 가능한 글/수식이다. */
-export const LayoutBlockS = z.strictObject({
-  role: z.enum(["stem", "text", "box", "choice"]),
-  region: RegionS,
-  title: z.string(),
-  choice_no: z.int(),
-  lines: z.array(z.array(PieceS)),
-});
-
 export const ItemReadingS = z.strictObject({
   no: z.int(),
   no_text: z.string(),
@@ -48,7 +39,6 @@ export const ItemReadingS = z.strictObject({
   figures: z.array(FigureRegionS),
   source: RegionS,
   unsure: z.array(z.string()),
-  layout_blocks: z.array(LayoutBlockS).optional(),
 });
 
 export const PageReadingS = z.strictObject({
@@ -75,9 +65,6 @@ export const PageReadingS = z.strictObject({
   page_end_note: z.string(),
   print_area: RegionS,
   unsure: z.array(z.string()),
-  // 옛 읽기 결과도 열 수 있게 선택 칸. 새 변환은 원본의 머리말/안내/꼬리말 영역을 보존한다.
-  page_artifacts: z.array(z.strictObject({ kind: z.enum(["header", "notice", "footer"]), region: RegionS, lines: z.array(z.array(PieceS)).optional(), boxed: z.boolean().optional() })).optional(),
-  page_rules: z.array(RegionS).optional(),
 });
 
 export type Piece = z.infer<typeof PieceS>;
@@ -85,17 +72,6 @@ export type Region = z.infer<typeof RegionS>;
 export type FigureRegion = z.infer<typeof FigureRegionS>;
 export type ItemReading = z.infer<typeof ItemReadingS>;
 export type PageReading = z.infer<typeof PageReadingS>;
-
-// 보관함의 옛 결과는 배치 정보가 없어도 열지만, 새 AI 답에서는 반드시 받는다.
-// 중첩된 선택 칸은 구조화 출력 문법의 크기를 크게 늘리므로 API에는 선택 칸을 보내지 않는다.
-export const PageOutputS = PageReadingS.extend({
-  sections: z.array(z.strictObject({
-    title: z.string(),
-    items: z.array(ItemReadingS.required({ layout_blocks: true })),
-  })),
-  page_artifacts: z.array(PageReadingS.shape.page_artifacts.unwrap().element.required({ lines: true, boxed: true })),
-  page_rules: PageReadingS.shape.page_rules.unwrap(),
-});
 
 /** 구조화 출력이 받지 않는 제한 (정수 칸에 zod 가 붙이는 범위 등). 받은 답은 zod 로 다시 검사한다 */
 const UNSUPPORTED = new Set(["$schema", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minLength", "maxLength"]);
@@ -108,6 +84,5 @@ function strip(node: unknown): unknown {
 
 /** 구조화 출력에 보낼 JSON 스키마 (zod 스키마에서 만든다) */
 export function pageReadingJsonSchema(): Record<string, unknown> {
-  return strip(z.toJSONSchema(PageOutputS, { target: "draft-2020-12", unrepresentable: "throw", reused: "ref" })) as Record<string, unknown>;
+  return strip(z.toJSONSchema(PageReadingS, { target: "draft-2020-12", unrepresentable: "throw" })) as Record<string, unknown>;
 }
-

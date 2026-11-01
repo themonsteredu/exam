@@ -19,7 +19,7 @@ export async function renderGraphicPng(raw: GraphicSpec, widthPx: number, widthM
   const check = checkGraphic(raw);
   if (!check.spec) throw new Error(check.errors.join(" / "));
   const s = check.spec;
-  if (s.kind === "photo") throw new Error("사진은 원본 이미지를 사용합니다");
+  if (s.kind === "photo") throw new Error("사진은 다시 그릴 수 없어 빈 자리로 둡니다");
   await loadFigureFonts();
   const c = document.createElement("canvas");
   c.width = Math.max(1, Math.round(widthPx)); c.height = Math.max(1, Math.round(widthPx * s.height / s.width));
@@ -64,25 +64,4 @@ export async function renderGraphicPng(raw: GraphicSpec, widthPx: number, widthM
   }
   s.texts.forEach(text);
   return { dataUrl: c.toDataURL("image/png"), width: c.width, height: c.height, warnings: [...new Set(warnings)] };
-}
-
-export async function renderOriginalPng(data: string, adjustment?: { brightness?: number; rotation?: number }) {
-  const img = new Image();
-  await new Promise<void>((resolve, reject) => { img.onload = () => resolve(); img.onerror = () => reject(new Error("원본 이미지를 열지 못했습니다")); img.src = data.startsWith("data:") ? data : `data:image/png;base64,${data}`; });
-  const angle = Math.max(-5, Math.min(5, Number(adjustment?.rotation) || 0)) * Math.PI / 180;
-  const brightness = Math.max(.7, Math.min(1.3, Number(adjustment?.brightness) || 1));
-  const c = document.createElement("canvas");
-  // 회전하면서 모서리를 잘라내지 않는다.
-  c.width = Math.ceil(Math.abs(img.width * Math.cos(angle)) + Math.abs(img.height * Math.sin(angle)));
-  c.height = Math.ceil(Math.abs(img.height * Math.cos(angle)) + Math.abs(img.width * Math.sin(angle)));
-  if (c.width * c.height > 25000000) throw new Error("사진이 너무 큽니다");
-  const ctx = c.getContext("2d")!; ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
-  ctx.translate(c.width / 2, c.height / 2); ctx.rotate(angle); ctx.drawImage(img, -img.width / 2, -img.height / 2);
-  // filter 속성이 없는 태블릿 브라우저에서도 같은 보정 결과를 만든다.
-  if (brightness !== 1) {
-    const pixels = ctx.getImageData(0, 0, c.width, c.height);
-    for (let i = 0; i < pixels.data.length; i += 4) for (let channel = 0; channel < 3; channel++) pixels.data[i + channel] = Math.min(255, Math.round(pixels.data[i + channel] * brightness));
-    ctx.putImageData(pixels, 0, 0);
-  }
-  return { dataUrl: c.toDataURL("image/png"), width: c.width, height: c.height, warnings: [] as string[] };
 }
