@@ -146,6 +146,19 @@
     실제 사이트에서 시험용 문서로 '다시 만들기' 확인(12초, 2단·24문항·그림 20·조건 상자, 문서 지움): scratchpad/e2e/live-resume.mjs <출력 폴더> <exam.json>
   - 확인: 저장해 둔 읽기 결과 3개(금호중 10-30·10-31, 조대부중 11-01)로 요금 없이 다시 만들어 구조 확인 (2단, 문항·선택지·수식 모두, 그림 선택지 표, 빈 자리, 조건 상자).
     1·3단계 결과는 그림 PNG 까지 같음(기울인 x 글꼴과 GPT 의 \triangle 표기만 다름)
+- 대자중 시험지 보완 (2026-11-01, 사용자 "맘에 안 들어, 너가 봐봐"): 사용자가 GPT 판으로 읽은 대자중(문서 62beb9f2, 제목은 금호중으로 잘못 붙음)을
+  내 판의 '다시 만들기'로 받은 파일. 원본과 비교해 고친 것 (커밋 a8f197d, 배포 dpl_8ELXBeneyYbvRDGfoRvVbuKx6xXc):
+  - 선택지 배치를 원본대로: 쪽 읽기 ItemReadingS.choice_layout(column/row/grid), GPT 판은 layout_blocks 의 choice 자리로 추정.
+    builder choice_columns: row 면 5→3→2 개, grid 면 3→2 개를 단 너비에 들어가는지 재서(piece_width_mm, estimate_text_width·measure_equation) 테두리 없는 표로. 모르면 한 줄에 하나(3단계 모양)
+  - 그림 수 = 선택지 수(4개 이상)면 그림 선택지 칸(번호·그림·선택지 글). 선택지 표(칸에 ①~⑤)와 선·글자 없는 표 자료는 한글 표(build_native_table)
+  - 응시대상 값이 없으면 머리를 굵은 상자 하나(제목 줄 + 날짜 줄)로 (build_simple_header). exam_p1 처럼 응시대상이 있으면 예전 그대로
+  - add_rich_text 가 __**글**__ 처럼 겹친 표시도 푼다. 배점은 마지막 문단 끝(3단계 자리)으로 되돌림
+  - tidyExam: 앞뒤 번호 사이 혼자 어긋난 번호(14→5→16) 고침 (만들기·다시 만들기 모두)
+  - 안내 상자: 쪽 읽기 boxes 에 before(다음 문항 no_text) 추가 → 머리 아래는 exam.boxes, 쪽 중간은 그 문항 boxes_before, 끝은 boxes_after.
+    GPT 판은 둘째 쪽부터의 notice text_blocks(저작권 안내 등)를 boxes_after 로. 읽기 기억 판 two-column-v3-boxes
+  - 이 문서의 원래 GPT 판 읽기 결과는 보관함에 남아 있다(generated/62beb9f2…/926cd242….bin). 지금 문서의 exam_json 은 04:39 다시 만들기로 바뀐 판(선택지 자리 정보 없음)이라
+    보관함에서 다시 만들기를 하면 선택지가 한 줄에 하나씩 나온다. 보낸 파일(대자중_원본처럼_고침_1101.hwpx)은 원래 읽기 결과로 만든 것
+  - 남은 것: 9번 그림 글자(y=ax 등)가 작음(AI 가 정한 크기), 서술형4 b·l 글자 겹침, 서술형 유의사항 상자는 그때 AI 가 읽지 않음(새로 읽으면 들어감)
   - 남은 일: 세 모델 비교 → 가장 싼 쓸 만한 조합을 기본값으로. 열쇠가 기기마다 따로라서 read-samples --via 로는 원장님 열쇠를 쓸 수 없다
     → 프로그램 화면 안에 '모델 비교' 기능을 만들어 원장님 기기에서 돌리고, 결과는 보관함(DB)에서 읽어 판단할 것.
     그림 속 기울인 글자: 코드 완료(아직 배포 안 함, 사용자에게 전후 비교 그림 보냄). public/fonts/ExamMathItalic.woff2 = Latin Modern Math 1.959 의 수학 기울임 글자만
