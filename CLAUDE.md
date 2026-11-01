@@ -142,6 +142,8 @@
     선택지가 모두 그림이면(빈 선택지 수 = 그림 수, 또는 선택지 없이 묻는 문장 + 그림 4~5개) ①~⑤ 를 붙여 테두리 없는 2열 표로(builder picture_choices·build_choice_figures).
     GPT 판 읽기 결과는 다시 만들 때 normalizeLegacyExam 으로 바꾼다(그림 크기 다시 계산, layout_blocks 에만 있던 조건 상자는 cond_box, <보기>는 bogi)
   - AGENTS.md: Codex 등 다른 도구도 이 규칙을 따르게 함. CI(.github/workflows/exam-regression.yml)는 요금 없는 검사만
+  - 배포 2026-11-01 dpl_F1qLCZhXUxYyf6uJbLMXKyjEj4LN (커밋 f410b67, 두 줄기 같음). push 로 생긴 자동 빌드는 Ignored Build Step 이 둘 다 취소했고 실서비스는 MCP create_deployment 로 올림.
+    실제 사이트에서 시험용 문서로 '다시 만들기' 확인(12초, 2단·24문항·그림 20·조건 상자, 문서 지움): scratchpad/e2e/live-resume.mjs <출력 폴더> <exam.json>
   - 확인: 저장해 둔 읽기 결과 3개(금호중 10-30·10-31, 조대부중 11-01)로 요금 없이 다시 만들어 구조 확인 (2단, 문항·선택지·수식 모두, 그림 선택지 표, 빈 자리, 조건 상자).
     1·3단계 결과는 그림 PNG 까지 같음(기울인 x 글꼴과 GPT 의 \triangle 표기만 다름)
   - 남은 일: 세 모델 비교 → 가장 싼 쓸 만한 조합을 기본값으로. 열쇠가 기기마다 따로라서 read-samples --via 로는 원장님 열쇠를 쓸 수 없다
