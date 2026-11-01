@@ -26,7 +26,7 @@ pages = []
 items = []
 for page_no in range(1, 7):
     pages.append({"page": page_no, "width": 1000, "height": 1414, "paper_mm": [210, 297],
-                  "text_blocks": [{"role": "text", "box": {"x": 40, "y": 1360, "w": 920, "h": 40},
+                  "text_blocks": [{"role": "text", "artifact_kind": "footer", "box": {"x": 40, "y": 1360, "w": 920, "h": 40},
                                    "lines": [[{"t": f"FOOTER{page_no}"}]]}]})
     for index in range(4):
         no = (page_no - 1) * 4 + index + 1
@@ -58,6 +58,8 @@ with zipfile.ZipFile(io.BytesIO(dense_data)) as archive:
         assert output_text.count(f"CHOICE{no:02d}") == 1, no
     for page in range(1, 7):
         assert output_text.count(f"FOOTER{page}") == 1, page
+        source_page = next(root for root in pages_xml if f"QUESTION{(page - 1) * 4 + 1:02d}" in "".join(root.xpath("//hp:t/text()", namespaces=ns)))
+        assert f"FOOTER{page}" in "".join(source_page.xpath("//hp:t/text()", namespaces=ns)), page
     assert "2번 이어서" in output_text and "4번 이어서" in output_text
     assert sum(len(root.xpath("//hp:pic", namespaces=ns)) for root in pages_xml) == 20
     for root in pages_xml:
