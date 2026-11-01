@@ -12,6 +12,7 @@ import {
   SHAPE_DEVIATION_LIMIT,
   shapeDeviation,
   shapeDeviationNote,
+  withShape,
   worthReporting,
   type Anchor,
 } from "@/lib/figure/review";
@@ -389,7 +390,7 @@ function reviewOne(fig: any): string[] {
       delete fig.png_size;
     }
     const shape = anchors.length ? shapeDeviation(fig.commands, anchors) : undefined;
-    for (const m of degreeMismatches(fig.commands)) if (worthReporting(m, fig.notes, shape)) reasons.push(degreeMismatchNote(m));
+    for (const m of withShape(degreeMismatches(fig.commands), shape)) if (worthReporting(m, fig.notes, shape)) reasons.push(degreeMismatchNote(m));
     if (shape && shape.worst > SHAPE_DEVIATION_LIMIT) reasons.push(shapeDeviationNote(shape));
     if (fig.render_error) reasons.push(`그림을 그리지 못했습니다: ${String(fig.render_error).slice(0, 80)}`);
   } else if (!fig.graphic && fig.asset_kind !== "photo" && fig.placeholder_note !== "사진 자리" && fig.box) {

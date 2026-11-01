@@ -8,6 +8,7 @@
 
 import { add, angleAt, fromAngle, mul, v, type Vec } from "./geometry";
 import { PointBook } from "./points";
+import { checkFigureSpec } from "./validate";
 import type { FigureSpec, LabelSpec, PointRef } from "./types";
 
 /** 각 글자와 그린 각이 이만큼(도) 넘게 다르면 틀린 것으로 본다 */
@@ -37,6 +38,8 @@ export type DegreeMismatch = {
   points: [PointRef, PointRef, PointRef];
   /** 따로 둔 글자(label 요소)를 가까운 각 표시와 짝지은 것인지 */
   free: boolean;
+  /** 그린 각의 보각(180° − 그린 각)이 글자와 맞음: 그림은 맞고 각 표시 호가 반대쪽에 그려진 것으로 보인다 */
+  otherSide?: boolean;
 };
 
 function refName(ref: PointRef | undefined): string {
@@ -57,69 +60,96 @@ function labelCenter(el: LabelSpec, book: PointBook, spec: FigureSpec): Vec {
   return add(at, mul(fromAngle(ang), size * (el.offset ?? 0.75)));
 }
 
+/** 숫자 각 글자와 그 글자가 가리키는 각 표시의 세 점 (짝지은 것만) */
+type DegreePair = { where: string; label: string; want: number; points: [PointRef, PointRef, PointRef]; free: boolean };
+
 /**
- * 숫자로 적힌 각(35°)과 그린 각이 다른 곳을 찾는다.
+ * 숫자로 적힌 각 글자(35°)마다 어느 각을 가리키는지 짝짓는다.
  * - angle 요소의 label
- * - 따로 둔 글자(label 요소): 글자에서 가장 가까운 이름 있는 점이 글자 없는 각 표시 하나의 꼭짓점이고, 그 거리가 base × 0.6 안이면 그 각과 견준다
+ * - 따로 둔 글자(label 요소): 글자에서 가장 가까운 이름 있는 점이 글자 없는 각 표시 하나의 꼭짓점이고, 그 거리가 base × 0.6 안이면 그 각.
+ *   그 꼭짓점 가까이에 문자 각 글자(x 등)가 따로 있으면 그 각 표시는 그 글자의 것이라 짝짓지 않는다
+ */
+function degreePairs(spec: FigureSpec, book: PointBook): DegreePair[] {
+  const out: DegreePair[] = [];
+  const angles = spec.elements
+    .map((el, i) => ({ el, i }))
+    .filter((x): x is { el: Extract<FigureSpec["elements"][number], { type: "angle" }>; i: number } => x.el?.type === "angle");
+  for (const { el, i } of angles) {
+    const want = typeof el.label === "string" ? degreeLabel(el.label) : undefined;
+    if (want !== undefined) out.push({ where: `elements[${i}]`, label: el.label!, want, points: el.points, free: false });
+  }
+  const bare = angles.filter(({ el }) => !el.label);
+  if (!bare.length) return out;
+  const named = book.ids().map((id) => ({ id, p: book.pt(id) })).filter(({ p }) => Number.isFinite(p.x) && Number.isFinite(p.y));
+  const nearestOf = (el: LabelSpec) => {
+    const c = labelCenter(el, book, spec);
+    let nearest: { id: string; d: number } | undefined;
+    for (const { id, p } of named) {
+      const d = Math.hypot(p.x - c.x, p.y - c.y);
+      if (!nearest || d < nearest.d) nearest = { id, d };
+    }
+    return nearest && nearest.d <= spec.base * FREE_LABEL_REACH ? nearest.id : undefined;
+  };
+  // 문자 각 글자(x 등)를 따로 둔 꼭짓점: 그 각 표시는 그 글자의 것이다
+  const claimed = new Set<string>();
+  for (const el of spec.elements) {
+    if (el?.type !== "label" || typeof el.text !== "string" || !LETTER_ANGLE.test(el.text.replace(/\s+/g, "")) || book.has(el.text)) continue;
+    const id = nearestOf(el);
+    if (id) claimed.add(id);
+  }
+  spec.elements.forEach((el, i) => {
+    if (el?.type !== "label" || typeof el.text !== "string" || (el.font ?? "serif") !== "serif") return;
+    const want = degreeLabel(el.text);
+    if (want === undefined) return;
+    const vertex = nearestOf(el);
+    if (!vertex || claimed.has(vertex)) return;
+    const at = bare.filter(({ el: a }) => a.points[1] === vertex);
+    if (at.length !== 1) return; // 그 꼭짓점에 글자 없는 각 표시가 없거나 여럿이면 짝짓지 않는다
+    out.push({ where: `elements[${i}]`, label: el.text, want, points: at[0].el.points, free: true });
+  });
+  return out;
+}
+
+/**
+ * 각 글자와 그린 각이 이만큼(도) 넘게 다르면 틀린 것으로 본다.
+ * 세 점이 모두 좌표로 찍은 점(at)이면 AI 가 손으로 어림한 각이라 5°, 조건으로 계산한 점이 있으면 2° (인쇄에서 보이지 않는 차이로 다시 묻지 않게)
+ */
+function toleranceFor(spec: FigureSpec, points: PointRef[]): number {
+  const byId = new Map((spec.points ?? []).map((p: any) => [p?.id, p]));
+  const handPlaced = points.every((r) => Array.isArray(r) || (typeof r === "string" && !!byId.get(r) && "at" in (byId.get(r) as object)));
+  return handPlaced ? 5 : DEGREE_TOLERANCE;
+}
+
+function measured(book: PointBook, points: PointRef[]): number {
+  const [a, o, b] = points.map((p) => book.pt(p));
+  return angleAt(a, o, b);
+}
+
+/**
+ * 숫자로 적힌 각(35°)과 그린 각이 다른 곳을 찾는다 (짝짓기는 degreePairs).
  * 점 위치를 계산하지 못하면 빈 목록 (그 문제는 다른 검사가 알린다).
  */
 export function degreeMismatches(spec: FigureSpec, book?: PointBook): DegreeMismatch[] {
-  const out: DegreeMismatch[] = [];
   try {
     book ??= new PointBook(spec.points ?? []);
-    const angles = spec.elements
-      .map((el, i) => ({ el, i }))
-      .filter((x): x is { el: Extract<FigureSpec["elements"][number], { type: "angle" }>; i: number } => x.el?.type === "angle");
-    const measure = (pts: PointRef[]) => {
-      const [a, o, b] = pts.map((p) => book!.pt(p));
-      return angleAt(a, o, b);
-    };
-    for (const { el, i } of angles) {
-      const want = typeof el.label === "string" ? degreeLabel(el.label) : undefined;
-      if (want === undefined) continue;
-      const got = measure(el.points);
-      if (Math.abs(got - want) > DEGREE_TOLERANCE) out.push({ where: `elements[${i}]`, label: el.label!, want, got, points: el.points, free: false });
+    const out: DegreeMismatch[] = [];
+    for (const pair of degreePairs(spec, book)) {
+      const got = measured(book, pair.points);
+      const tol = toleranceFor(spec, pair.points);
+      if (Math.abs(got - pair.want) > tol) out.push({ ...pair, got, ...(Math.abs(180 - got - pair.want) <= tol ? { otherSide: true } : {}) });
     }
-    // 따로 둔 숫자 각 글자
-    const bare = angles.filter(({ el }) => !el.label);
-    if (!bare.length) return out;
-    const named = book.ids().map((id) => ({ id, p: book!.pt(id) })).filter(({ p }) => Number.isFinite(p.x) && Number.isFinite(p.y));
-    const nearestOf = (el: LabelSpec) => {
-      const c = labelCenter(el, book!, spec);
-      let nearest: { id: string; d: number } | undefined;
-      for (const { id, p } of named) {
-        const d = Math.hypot(p.x - c.x, p.y - c.y);
-        if (!nearest || d < nearest.d) nearest = { id, d };
-      }
-      return nearest && nearest.d <= spec.base * FREE_LABEL_REACH ? nearest.id : undefined;
-    };
-    // 문자 각 글자(x 등)를 따로 둔 꼭짓점: 그 각 표시는 그 글자의 것이다
-    const claimed = new Set<string>();
-    for (const el of spec.elements) {
-      if (el?.type !== "label" || !LETTER_ANGLE.test(el.text.replace(/\s+/g, "")) || book.has(el.text)) continue;
-      const id = nearestOf(el);
-      if (id) claimed.add(id);
-    }
-    spec.elements.forEach((el, i) => {
-      if (el?.type !== "label" || (el.font ?? "serif") !== "serif") return;
-      const want = degreeLabel(el.text);
-      if (want === undefined) return;
-      const vertex = nearestOf(el);
-      if (!vertex || claimed.has(vertex)) return;
-      const at = bare.filter(({ el: a }) => a.points[1] === vertex);
-      if (at.length !== 1) return; // 그 꼭짓점에 글자 없는 각 표시가 없거나 여럿이면 짝짓지 않는다
-      const got = measure(at[0].el.points);
-      if (Math.abs(got - want) > DEGREE_TOLERANCE) out.push({ where: `elements[${i}]`, label: el.text, want, got, points: at[0].el.points, free: true });
-    });
-  } catch {
     return out;
+  } catch {
+    return [];
   }
-  return out;
 }
 
 /** 검사 오류 문장 (그림 읽기에서 AI 에게 돌려보낸다) */
 export function degreeMismatchText(m: DegreeMismatch): string {
   const angle = m.points.map(refName).join("");
+  if (m.otherSide) {
+    return `${m.where}: 각 글자 ${m.label} 가 붙은 각 표시 ${angle} 는 ${m.got.toFixed(1)}° 쪽(반대쪽)에 그려져 있습니다. 그림은 그대로 두고, 각 표시의 앞점이나 뒷점을 반대쪽 반직선 위의 점으로 바꿔 ${m.label} 인 쪽에 표시하세요`;
+  }
   const tail = "그 각을 정하는 점을 다시 계산하세요 (intersect 의 angle 은 x축에서 잰 방향각입니다. 사잇각과 헷갈리지 않았는지, turn 의 방향(+ 는 시계 반대)이 맞는지)";
   return m.free
     ? `${m.where}: 각 글자 ${m.label} 가 꼭짓점 ${refName(m.points[1])} 의 각 표시 옆에 있는데 그린 각 ${angle} 는 ${m.got.toFixed(1)}° 입니다. 숫자로 적힌 각은 그 각의 angle 요소 label 로 넣고, ${tail}`
@@ -128,6 +158,7 @@ export function degreeMismatchText(m: DegreeMismatch): string {
 
 /** 확인할 곳에 적을 짧은 문장 */
 export function degreeMismatchNote(m: DegreeMismatch): string {
+  if (m.otherSide) return `각 글자 ${m.label} 의 각 표시가 반대쪽(${Math.round(m.got)}°)에 그려져 있습니다`;
   return `각 글자 ${m.label} 와 그린 각 ${m.points.map(refName).join("")}(${Math.round(m.got)}°)이 다릅니다`;
 }
 
@@ -208,17 +239,23 @@ export type DegreeRepair = { spec: FigureSpec; changes: string[] };
 export function repairDegrees(spec: FigureSpec, anchors?: Anchor[]): DegreeRepair | undefined {
   const before = degreeMismatches(spec);
   if (!before.length) return undefined;
+  // 보각이 글자와 맞으면 두 경우가 있다: 각 표시 호만 반대쪽에 그려짐(그림은 원본과 같음) / 점이 반대쪽에 찍힘(그림이 원본과 다름).
+  // 원본 기준점으로 그림이 원본과 같으면 호의 문제라 점을 옮기지 않는다(옮기면 곧은 선이 꺾인다). 기준점이 없어 모르면 AI 에게 맡긴다
+  const shapeBefore = anchors?.length ? shapeDeviation(spec, anchors)?.worst : undefined;
+  if (before.every((m) => m.otherSide) && !(shapeBefore !== undefined && shapeBefore > SHAPE_DEVIATION_LIMIT)) return undefined;
+  const book0 = computable(spec);
+  if (!book0) return undefined;
+  // 처음 그림에서 짝지은 각 글자 전부 (맞던 것도). 고친 그림에서 다시 짝지으면, 점을 글자 곁으로 옮겨 짝이 바뀐 것만으로 '맞음'이 될 수 있다
+  const pairs = degreePairs(spec, book0);
   const edits = candidateEdits(spec);
   const tryEdits = (chosen: Edit[]): FigureSpec | undefined => {
     const copy: FigureSpec = JSON.parse(JSON.stringify(spec));
     for (const e of chosen) e.apply(copy);
     const book = computable(copy);
-    if (!book || degreeMismatches(copy, book).length) return undefined;
-    // 따로 둔 글자는 자리가 그대로라, 꼭짓점이 멀어져 짝이 풀린 것만으로 '맞음'이 되면 안 된다 → 처음 틀린 각을 같은 세 점으로 다시 잰다
-    for (const m of before) {
+    if (!book || !checkFigureSpec(copy).spec) return undefined;
+    for (const pair of pairs) {
       try {
-        const [a, o, b] = m.points.map((r) => book.pt(r));
-        if (!(Math.abs(angleAt(a, o, b) - m.want) <= DEGREE_TOLERANCE)) return undefined;
+        if (!(Math.abs(measured(book, pair.points) - pair.want) <= toleranceFor(copy, pair.points))) return undefined;
       } catch {
         return undefined;
       }
@@ -383,11 +420,19 @@ export function shapeDeviationText(d: ShapeDeviation): string {
   return `${what}. 문자로 적힌 값(3x° 등)을 풀어서 그리지 않았는지, 원본 모양대로 그릴 부분을 조건으로 정하지 않았는지 확인하고 원본처럼 고치세요. 숫자로 주어진 조건 때문에 어쩔 수 없으면 그대로 두고 notes 에 까닭을 적으세요.`;
 }
 
+/** 그림이 원본과 크게 다르면 '각 표시 호가 반대쪽' 으로 보지 않는다 (점이 반대쪽에 찍힌 것일 수 있다) */
+export function withShape(mismatches: DegreeMismatch[], shape: ShapeDeviation | undefined): DegreeMismatch[] {
+  if (!shape || shape.worst <= SHAPE_DEVIATION_LIMIT) return mismatches;
+  return mismatches.map((m) => (m.otherSide ? { ...m, otherSide: false } : m));
+}
+
 /**
  * 숫자 각 불일치를 알릴지: AI 가 notes 에 그 값(45°)을 들어 까닭을 적었거나, 그림이 원본 사진과 거의 같으면(원본 자체가 축척이 맞지 않음) 알리지 않는다.
  * 2026-11-01 조대부중 4번(4cm·6cm·70° 면 45° 가 아니라 39°), 대자중 서술형5(100° 와 107°)는 AI 가 이미 notes 에 까닭을 적었고 그림은 원본과 같았다.
  */
 export function worthReporting(m: DegreeMismatch, notes: string | undefined, shape: ShapeDeviation | undefined): boolean {
+  // 각 표시 호가 반대쪽에 그려진 것은 원본이 그렇게 생긴 것이 아니다 (그림이 원본과 같아도 알린다)
+  if (m.otherSide) return true;
   if (typeof notes === "string" && notes.includes(`${m.want}°`)) return false;
   if (shape && shape.worst < 0.1) return false;
   return true;

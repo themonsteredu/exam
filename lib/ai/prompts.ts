@@ -170,8 +170,9 @@ export function figureUserText(o: {
   return lines.join("\n");
 }
 
-export function figureRepairText(errors: string[], advice: string[] = []): string {
+export function figureRepairText(errors: string[], advice: string[] = [], fixes: string[] = []): string {
   const lines: string[] = [];
+  if (fixes.length) lines.push("프로그램이 각 글자에 맞게 먼저 고친 곳 (다시 보낼 JSON 에도 이렇게 넣으세요):", ...fixes.slice(0, 10).map((e) => `- ${e}`));
   if (errors.length) lines.push("보내 준 답을 검사해 보니 고칠 곳이 있습니다:", ...errors.slice(0, 20).map((e) => `- ${e}`));
   if (advice.length) {
     lines.push(

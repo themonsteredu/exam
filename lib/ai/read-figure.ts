@@ -14,6 +14,7 @@ import {
   shapeDeviation,
   shapeDeviationNote,
   shapeDeviationText,
+  withShape,
   worthReporting,
 } from "@/lib/figure/review";
 import type { FigureSpec, PointRef } from "@/lib/figure/types";
@@ -119,6 +120,12 @@ export async function readFigure(
         deadline: o.deadline,
       });
     } catch (err) {
+      // 살펴 달라고 다시 묻다가 실패(시간 초과·AI 서버 바쁨 등)해도, 그릴 수 있던 앞 답이 있으면 그것을 쓴다 (빈 자리가 되거나 처음부터 다시 사지 않게)
+      if (lastDrawable && usage && !o.signal?.aborted) {
+        if (err instanceof ReadError && err.usage) usage = addUsage(usage, err.usage);
+        result = lastDrawable;
+        break;
+      }
       // 앞서 고쳐 받느라 쓴 토큰도 요금 기록에 넣게 붙여 보낸다
       if (err instanceof ReadError && usage) err.usage = err.usage ? addUsage(usage, err.usage) : usage;
       throw err;
@@ -129,7 +136,7 @@ export async function readFigure(
     if ((!result.errors.length && !result.advice?.length) || attempt === maxAttempts) break;
     // 고쳐 받을 시간이 모자라면 그대로 돌려준다 (서버 함수 시간 한도를 넘겨 이미 받은 답까지 잃지 않게)
     if (o.deadline && o.deadline - Date.now() < 120_000) break;
-    messages.push(assistantTurn(call.message), { role: "user", content: figureRepairText(result.errors, result.advice ?? []) });
+    messages.push(assistantTurn(call.message), { role: "user", content: figureRepairText(result.errors, result.advice ?? [], result.fixes ?? []) });
   }
   // 살펴 달라고 다시 물었는데 고친 답에 고칠 곳(오류)이 생겼으면, 그릴 수 있었던 앞 답을 쓴다 (그려지던 그림이 빈 자리가 되지 않게)
   if (result!.errors.length && lastDrawable) result = { ...lastDrawable, attempts: result!.attempts };
@@ -181,7 +188,7 @@ export function judge(text: string, image: { width: number; height: number }, at
       fixes.push(...fixed.changes);
     }
     const shape = anchors.length ? shapeDeviation(spec, anchors) : undefined;
-    for (const m of degreeMismatches(spec)) {
+    for (const m of withShape(degreeMismatches(spec), shape)) {
       // 원본 그림 자체가 조건과 맞지 않는 시험지(AI 가 notes 에 까닭을 적음, 그림은 원본과 같음)는 다시 묻지 않는다
       if (!worthReporting(m, a.notes, shape)) continue;
       advice.push(degreeMismatchText(m));
