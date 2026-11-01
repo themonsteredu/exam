@@ -156,6 +156,8 @@ export function figureUserText(o: {
   stem: string;
   choices: string[];
   bogi: string[];
+  /** 다시 읽을 때: 지난 그림에서 프로그램이 찾은 문제 (예: 점 E 가 원본 자리와 많이 다름) */
+  hint?: string;
 }): string {
   const lines = [
     `${o.no}번 문항에 딸린 그림입니다. 보낸 사진 크기: 가로 ${o.width}px, 세로 ${o.height}px (시험지 사진에서 잘라 크게 키운 것).`,
@@ -163,14 +165,21 @@ export function figureUserText(o: {
   ];
   if (o.bogi.length) lines.push(`<보기>: ${o.bogi.join(" / ")}`);
   if (o.choices.length) lines.push(`선택지: ${o.choices.map((c, i) => `${"①②③④⑤⑥⑦⑧"[i] ?? `(${i + 1})`} ${c}`).join("  ")}`);
+  if (o.hint) lines.push(`지난번에 옮긴 그림에서 프로그램이 찾은 문제: ${o.hint}\n이번에는 이 문제가 없게 원본과 같은 모양으로 옮겨 주세요.`);
   lines.push("이 그림을 그림 명령으로 옮겨 주세요.");
   return lines.join("\n");
 }
 
-export function figureRepairText(errors: string[]): string {
-  return [
-    "보내 준 답을 검사해 보니 고칠 곳이 있습니다:",
-    ...errors.slice(0, 20).map((e) => `- ${e}`),
-    "고친 전체 JSON 을 같은 모양으로 다시 보내 주세요.",
-  ].join("\n");
+export function figureRepairText(errors: string[], advice: string[] = []): string {
+  const lines: string[] = [];
+  if (errors.length) lines.push("보내 준 답을 검사해 보니 고칠 곳이 있습니다:", ...errors.slice(0, 20).map((e) => `- ${e}`));
+  if (advice.length) {
+    lines.push(
+      "그릴 수는 있지만 원본이나 문제 조건과 달라 보이는 곳이 있습니다. 살펴보고 고치세요:",
+      ...advice.slice(0, 10).map((e) => `- ${e}`),
+      "원본 그림 자체가 조건과 맞지 않게 그려져 있는 등 어쩔 수 없으면 그 부분은 그대로 두고 notes 에 까닭을 적으세요.",
+    );
+  }
+  lines.push("고친 전체 JSON 을 같은 모양으로 다시 보내 주세요.");
+  return lines.join("\n");
 }

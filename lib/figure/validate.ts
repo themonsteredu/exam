@@ -3,7 +3,6 @@
 // 확인 화면에서 그림 명령을 직접 고칠 때도 같은 검사를 쓴다. JSXGraph 없이 돈다.
 
 import { z } from "zod";
-import { angleAt } from "./geometry";
 import { PointBook } from "./points";
 import type { ElementSpec, FigureSpec, PointRef } from "./types";
 
@@ -271,13 +270,6 @@ export function checkFigureSpec(input: unknown): FigureCheck {
     }
     if (pts && (el.type === "angle" || el.type === "rightAngle") && (same(pts[0], pts[1]) || same(pts[1], pts[2]))) {
       errors.push(`${path}: 각의 꼭짓점이 다른 점과 같은 자리입니다`);
-    } else if (pts && el.type === "angle" && typeof el.label === "string") {
-      // 숫자로 적힌 각(35°)은 그린 각과 맞아야 한다 (2026-11-01 호남삼육중 2번: 방향각 102° 를 사잇각으로 써서 ∠A 가 59° 로 그려짐)
-      const want = degreeLabel(el.label);
-      const got = angleAt(pts[0], pts[1], pts[2]);
-      if (want !== undefined && Math.abs(got - want) > 2) {
-        errors.push(`${path}: 각 표시가 ${el.label} 인데 그린 각 ${el.points.join("")} 는 ${got.toFixed(1)}° 입니다. 그 각을 정하는 점을 다시 계산하세요 (intersect 의 angle 은 x축에서 잰 방향각입니다. 사잇각과 헷갈리지 않았는지)`);
-      }
     }
     if (el.type === "function") {
       for (const problem of functionExprProblems(el.expr)) errors.push(`${path}: ${problem}`);
@@ -292,14 +284,6 @@ export function checkFigureSpec(input: unknown): FigureCheck {
     errors.push("bbox 는 [왼쪽, 위, 오른쪽, 아래] 이고 오른쪽 > 왼쪽, 위 > 아래 여야 합니다");
   }
   return errors.length ? { errors, warnings } : { spec, errors, warnings };
-}
-
-/** 각 글자가 숫자 도(35°, 37.5°)면 그 값. 문자(x, 3x°)나 0·180 이상이면 undefined */
-export function degreeLabel(label: string): number | undefined {
-  const m = label.replace(/\s+/g, "").match(/^(\d{1,3}(?:\.\d+)?)(?:°|º|˚|\^\\circ)$/);
-  if (!m) return undefined;
-  const value = Number(m[1]);
-  return value > 0 && value < 180 ? value : undefined;
 }
 
 /** 그림 명령에 쓰인 점 (경로, 이름이나 좌표) */

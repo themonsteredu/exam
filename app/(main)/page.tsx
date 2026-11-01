@@ -1,11 +1,63 @@
 "use client";
 
-import { DragEvent, useEffect, useRef, useState } from "react";
-import { api, ApiError, downloadStored, patchJson, postJson, won } from "@/lib/client/api";
-import { makeExam, resumeExam, type MakeResult, type Progress, type Recovery, type Step } from "@/lib/client/make-exam";
+import { DragEvent, useEffect, useMemo, useRef, useState } from "react";
+import { api, ApiError, downloadStored, patchJson, postJson, won, type FileRef } from "@/lib/client/api";
+import { figureRereadUsd, makeExam, rereadFigures, resumeExam, stripPngs, type MakeResult, type Progress, type Recovery, type Step } from "@/lib/client/make-exam";
+import { normalizeLegacyExam, reviewFigures, tidyExam, type FigureSuspect } from "@/lib/ai/assemble";
 import { loadExamCheckpoint } from "@/lib/client/exam-storage";
 import { pdfPaperMm } from "@/lib/client/pages";
 import { applyPaper, paperOf } from "@/lib/ai/assemble";
+
+/** 그림 살피기 결과: 프로그램이 고친 그림과 다시 읽기를 권하는 그림 (시험지 데이터는 바꾸지 않는다) */
+type FigureReview = { fixes: { name: string; changes: string[] }[]; suspects: FigureSuspect[] };
+
+function figureReview(exam: any): FigureReview {
+  const copy = tidyExam(normalizeLegacyExam(JSON.parse(JSON.stringify(exam ?? {}))));
+  const suspects = reviewFigures(copy);
+  const fixes: FigureReview["fixes"] = [];
+  for (const s of copy.sections ?? []) {
+    for (const it of s.items ?? []) {
+      itemFigures(it).forEach((f: any, k: number) => {
+        if (!Array.isArray(f.auto_fixes) || !f.auto_fixes.length) return;
+        const name = it.label ? String(it.label).trim() : `${it.no}번`;
+        fixes.push({ name: k ? `${name} (그림 ${k + 1})` : name, changes: f.auto_fixes });
+      });
+    }
+  }
+  return { fixes, suspects };
+}
+
+function FigureReviewNotes({ review }: { review: FigureReview | null }) {
+  if (!review || (!review.fixes.length && !review.suspects.length)) return null;
+  return (
+    <div className="small">
+      {review.fixes.length > 0 && (
+        <>
+          <p>프로그램이 원본 조건에 맞게 고친 그림 {review.fixes.length}개 (AI 요금 없음):</p>
+          <ul>
+            {review.fixes.map((f, i) => (
+              <li key={i}>
+                {f.name}: {f.changes.join(", ")}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {review.suspects.length > 0 && (
+        <>
+          <p>원본과 다르게 그려졌거나 읽지 못한 것으로 보이는 그림 {review.suspects.length}개:</p>
+          <ul>
+            {review.suspects.map((t, i) => (
+              <li key={i}>
+                {t.name}: {t.reasons.join(", ")}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
 import { isStale, STALE_MESSAGE } from "@/lib/client/version";
 import { loadFigureFonts } from "@/lib/figure/engine";
 import { piecesToHtml } from "@/lib/ai/latex-view";
@@ -41,6 +93,9 @@ export default function MakePage() {
   const [stale, setStale] = useState(false);
   const [recovery, setRecovery] = useState<Recovery | null>(null);
   const [resuming, setResuming] = useState(false);
+  /** 그림 다시 읽기로 만드는 중이거나 만든 결과인지 (요금 문구가 다르다) */
+  const [rereading, setRereading] = useState(0);
+  const recoveryReview = useMemo(() => (recovery ? figureReview(recovery.exam) : null), [recovery]);
   const abort = useRef<AbortController | null>(null);
   const input = useRef<HTMLInputElement>(null);
 
@@ -115,10 +170,23 @@ export default function MakePage() {
     choose(e.dataTransfer.files);
   }
 
-  async function start(savedWork?: Recovery) {
+  /** 고른 그림만 AI 로 다시 읽고 다시 만든다 (요금을 먼저 알리고 묻는다) */
+  function askReread(work: Recovery, targets: FigureSuspect[]) {
+    if (!ready?.keySaved || !targets.length) return;
+    const most = won(targets.length * figureRereadUsd(ready.models?.figure), ready.krwPerUsd);
+    const ok = window.confirm(
+      `그림 ${targets.length}개를 AI 로 다시 읽고 한글 파일을 다시 만듭니다.\n` +
+        `${targets.map((t) => `- ${t.name}`).join("\n")}\n\n` +
+        `AI 요금은 많아도 약 ${most}입니다 (보통 그 절반쯤). 다시 읽을까요?`,
+    );
+    if (ok) start(work, targets);
+  }
+
+  async function start(savedWork?: Recovery, reread?: FigureSuspect[]) {
     if (abort.current || !JXG || !ready || (!savedWork && (!files.length || !ready.keySaved))) return;
     setBusy(true);
     setResuming(!!savedWork);
+    setRereading(savedWork && reread?.length ? reread.length : 0);
     setProgress(null);
     setError("");
     setErrorDetail("");
@@ -135,7 +203,13 @@ export default function MakePage() {
         signal: controller.signal,
         onRecoverable: setRecovery,
       };
-      const out = savedWork ? await resumeExam(common, savedWork) : await makeExam({
+      const originals = async (): Promise<FileRef[]> => {
+        const { doc } = await api<{ doc: { original_files?: FileRef[] } }>(`/api/documents/${savedWork!.docId}`, { signal: controller.signal });
+        return Array.isArray(doc.original_files) ? doc.original_files : [];
+      };
+      const out = savedWork && reread?.length
+        ? await rereadFigures({ ...common, originals: await originals(), models: ready.models, cacheScope: ready.cacheScope }, savedWork, reread)
+        : savedWork ? await resumeExam(common, savedWork) : await makeExam({
         ...common,
         files,
         // 모델은 설정 화면에서 이 기기에 저장한 것을 쓴다 (읽은 결과 재사용 기록도 모델별로 따로)
@@ -255,9 +329,20 @@ export default function MakePage() {
         <section className="card" aria-live="polite">
           <h2>읽은 결과로 다시 만들기</h2>
           <p>AI를 다시 부르지 않고 읽은 문항과 그림으로 한글 파일을 만듭니다.</p>
-          <button className="primary" type="button" onClick={() => start(recovery)} disabled={!JXG || !ready}>
-            읽은 결과로 한글 파일 만들기
-          </button>
+          <FigureReviewNotes review={recoveryReview} />
+          <div className="row">
+            <button className="primary" type="button" onClick={() => start(recovery)} disabled={!JXG || !ready}>
+              읽은 결과로 한글 파일 만들기
+            </button>
+            {!!recoveryReview?.suspects.length && (
+              <button type="button" onClick={() => askReread(recovery, recoveryReview.suspects)} disabled={!JXG || !ready?.keySaved}>
+                그 그림 {recoveryReview.suspects.length}개만 AI로 다시 읽고 만들기
+              </button>
+            )}
+          </div>
+          {!!recoveryReview?.suspects.length && ready && !ready.keySaved && (
+            <p className="muted small">그림 다시 읽기는 AI 열쇠를 넣은 기기에서 할 수 있습니다.</p>
+          )}
         </section>
       )}
 
@@ -281,7 +366,7 @@ export default function MakePage() {
             ))}
           </ul>
           <p className="muted small">
-            {busy ? progress.message : result ? "다 됐습니다." : stopped ? "작업이 중단됐습니다." : ""} {resuming ? "이전 읽기의 AI 요금" : "지금까지 AI 요금"}: 약 {won(progress.usd, ready?.krwPerUsd)}
+            {busy ? progress.message : result ? "다 됐습니다." : stopped ? "작업이 중단됐습니다." : ""} {resuming && !rereading ? "이전 읽기의 AI 요금" : "지금까지 AI 요금"}: 약 {won(progress.usd, ready?.krwPerUsd)}
           </p>
         </section>
       )}
@@ -299,19 +384,33 @@ export default function MakePage() {
         </div>
       )}
 
-      {result && <ResultView result={result} rate={ready?.krwPerUsd} resumed={resuming} />}
+      {result && (
+        <ResultView
+          result={result}
+          rate={ready?.krwPerUsd}
+          resumed={resuming}
+          reread={rereading}
+          canReread={!!JXG && !!ready?.keySaved && !busy}
+          onReread={(targets) => askReread({ docId: result.docId, title: title.trim() || "시험지", exam: stripPngs(result.exam), usd: result.usd, pageProblems: [] }, targets)}
+        />
+      )}
     </main>
   );
 }
 
-function ResultView({ result, rate, resumed }: { result: MakeResult; rate?: number; resumed: boolean }) {
+function ResultView({ result, rate, resumed, reread, canReread, onReread }: { result: MakeResult; rate?: number; resumed: boolean; reread: number; canReread: boolean; onReread: (targets: FigureSuspect[]) => void }) {
   const items = (result.exam.sections ?? []).flatMap((s: any) => (s.items ?? []).map((it: any) => ({ ...it, _section: s.title })));
+  const review = useMemo(() => figureReview(result.exam), [result]);
   return (
     <section className="card">
       <h2>다 만들었습니다</h2>
       <p>
         문항 {items.length}개를 옮겼습니다. 한글 파일을 만들었{result.saved ? "고 보관함에도 저장했" : ""}습니다.{" "}
-        {resumed ? `이전 읽기의 AI 요금은 약 ${won(result.usd, rate)}이며, 다시 만들기에 추가 AI 요금은 없습니다.` : `이번 AI 요금은 약 ${won(result.usd, rate)}입니다.`}
+        {reread
+          ? `그림 ${reread}개를 AI 로 다시 읽었습니다. 이 시험지의 AI 요금은 지금까지 모두 약 ${won(result.usd, rate)}입니다.`
+          : resumed
+            ? `이전 읽기의 AI 요금은 약 ${won(result.usd, rate)}이며, 다시 만들기에 추가 AI 요금은 없습니다.`
+            : `이번 AI 요금은 약 ${won(result.usd, rate)}입니다.`}
       </p>
       {result.saveProblem && (
         <p className="notice error" role="alert">
@@ -335,10 +434,16 @@ function ResultView({ result, rate, resumed }: { result: MakeResult; rate?: numb
           </ul>
         </details>
       )}
+      <FigureReviewNotes review={review} />
       <div className="row">
         <button className="primary" type="button" onClick={() => downloadStored(result.hwpxPath, result.fileName).catch(() => alert("한글 파일을 내려받지 못했습니다. 다시 시도해 주세요."))}>
           한글 파일 다시 내려받기
         </button>
+        {review.suspects.length > 0 && (
+          <button type="button" onClick={() => onReread(review.suspects)} disabled={!canReread}>
+            그 그림 {review.suspects.length}개만 AI로 다시 읽고 다시 만들기
+          </button>
+        )}
       </div>
       {result.exam.unsure?.length > 0 && <p className="muted small">쪽 전체: {result.exam.unsure.join(" / ")}</p>}
       <div className="items">
@@ -351,6 +456,7 @@ function ResultView({ result, rate, resumed }: { result: MakeResult; rate?: numb
             {itemFigures(it).map((f, index) => <div key={index}>
               {f.png && <img className="figure" src={`data:image/png;base64,${f.png}`} alt={`${it.no}번 그림 ${index + 1}`} />}
               {f.render_error && <p className="notice error small">그림 {index + 1}을 그리지 못했습니다: {f.render_error}</p>}
+              {Array.isArray(f.auto_fixes) && f.auto_fixes.length > 0 && <p className="muted small">프로그램이 고친 곳: {f.auto_fixes.join(", ")}</p>}
             </div>)}
             {it.bogi?.length > 0 && (
               <div className="small">

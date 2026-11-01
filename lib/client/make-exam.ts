@@ -3,7 +3,7 @@
 //  → 합치기 → 그림 PNG → 한글 파일 → 내려받기·보관
 //  요금이 드는 AI 읽기 전에 파일을 먼저 열어 보고, 도중에 크게 실패하면 남은 그림 읽기도 멈춘다 (쓰지 못할 결과에 요금이 들지 않게).
 
-import { assembleExam, figureJobs, normalizeLegacyExam, tidyExam, toExamPieces, type FigureResult, type PageMeta } from "@/lib/ai/assemble";
+import { assembleExam, figureJobs, normalizeLegacyExam, replaceFigureReading, reviewFigures, tidyExam, toExamPieces, type FigureResult, type FigureSuspect, type PageMeta } from "@/lib/ai/assemble";
 import type { Usage } from "@/lib/ai/claude";
 import type { PageReading } from "@/lib/ai/page-schema";
 import type { FigureReading } from "@/lib/ai/read-figure";
@@ -32,6 +32,8 @@ export type Progress = {
 };
 
 export type MakeResult = {
+  /** 보관함 문서 */
+  docId: string;
   exam: any;
   hwpxPath: string;
   fileName: string;
@@ -297,13 +299,105 @@ async function run(
 /** 보관함 또는 현재 화면의 읽기 결과에서 AI 호출 없이 한글 파일 만들기를 다시 시작한다. */
 export async function resumeExam(o: FinishOptions, saved: Recovery): Promise<MakeResult> {
   await assertFresh();
-  // GPT 판으로 읽은 결과도 지금의 2단 본문 모양으로 바꿔서 만든다
+  // GPT 판으로 읽은 결과도 지금의 2단 본문 모양으로 바꿔서 만든다. 그림의 뻔한 실수(각 글자와 다른 방향각)도 AI 없이 고친다
   const work: Recovery = { ...saved, exam: tidyExam(normalizeLegacyExam(saved.exam)) };
+  reviewFigures(work.exam);
   const figures = (work.exam.sections ?? []).reduce((n: number, s: any) => n + (s.items ?? []).reduce((count: number, it: any) => count + itemFigures(it).length, 0), 0);
   const pages = Array.isArray(work.exam.source_pages) ? work.exam.source_pages.length : 0;
   const progress: Progress = { step: "draw", message: "저장된 읽기 결과를 준비하는 중입니다.", pagesDone: pages, pagesTotal: pages, figuresDone: figures, figuresTotal: figures, usd: work.usd };
   o.onProgress({ ...progress });
   return finishExam(o, work, o.signal, progress);
+}
+
+/** 그림 하나에 드는 AI 요금의 많은 쪽 어림 (달러). 2026-11 기록: Opus 평균 0.06·많을 때 0.14, Sonnet 평균 0.03·많을 때 0.08 */
+export function figureRereadUsd(model?: string): number {
+  if (!model || /opus/i.test(model)) return 0.15;
+  if (/sonnet/i.test(model)) return 0.08;
+  return 0.04;
+}
+
+/**
+ * 고른 그림만 AI 로 다시 읽고 한글 파일을 다시 만든다 (요금은 그 그림들만).
+ * 원본 파일을 보관함에서 받아 그 쪽을 다시 그리고, 처음 읽을 때와 같은 자리를 잘라 보낸다. 지난 그림에서 찾은 문제를 함께 알려 준다.
+ */
+export async function rereadFigures(
+  o: FinishOptions & { originals: FileRef[]; models?: { page: string; figure: string }; cacheScope?: string },
+  saved: Recovery,
+  targets: FigureSuspect[],
+): Promise<MakeResult> {
+  await assertFresh();
+  const signal = o.signal;
+  const check = () => {
+    if (signal.aborted) throw new ApiError("멈췄습니다.", 0);
+  };
+  const work: Recovery = { ...saved, exam: tidyExam(normalizeLegacyExam(JSON.parse(JSON.stringify(saved.exam)))) };
+  const progress: Progress = { step: "figure", message: "원본 파일을 받는 중입니다.", pagesDone: 0, pagesTotal: 0, figuresDone: 0, figuresTotal: targets.length, usd: work.usd };
+  const tell = (patch: Partial<Progress>) => { Object.assign(progress, patch); o.onProgress({ ...progress }); };
+  tell({});
+  if (!o.originals.length) throw new ApiError("보관함에 원본 파일이 없어 그림을 다시 읽을 수 없습니다.", 400);
+  const files: File[] = [];
+  for (const ref of o.originals) {
+    check();
+    const { url } = await postJson<{ url: string }>("/api/files/download-url", { path: ref.path }, signal);
+    const res = await fetch(url, { signal });
+    if (!res.ok) throw new ApiError("원본 파일을 받지 못했습니다. 잠시 뒤 다시 해 주세요.", res.status);
+    const blob = await res.blob();
+    files.push(new File([blob], ref.name || "원본", { type: ref.type || blob.type }));
+  }
+  const sources = await openSources(files);
+  const canvases = new Map<number, HTMLCanvasElement>();
+  try {
+    for (const t of targets) {
+      check();
+      const item = work.exam.sections?.[t.section]?.items?.[t.index];
+      const fig: any = itemFigures(item)[t.figureIndex];
+      const page = Number(fig?.box?.page);
+      if (!item || !fig?.box || !(page >= 1 && page <= sources.length)) {
+        tell({ figuresDone: progress.figuresDone + 1 });
+        continue;
+      }
+      tell({ message: `${t.name} 그림을 다시 읽는 중입니다.` });
+      let canvas = canvases.get(page);
+      if (!canvas) {
+        canvas = await sources[page - 1].render();
+        canvases.set(page, canvas);
+      }
+      // 처음 읽을 때와 같은 자리 (box 는 원본 쪽 그림의 픽셀)
+      const kind = fig.asset_kind ?? "diagram";
+      const cut = figureImage(canvas, { x: fig.box.x, y: fig.box.y, w: fig.box.w, h: fig.box.h, kind, place: fig.place ?? "below" } as any, 1);
+      let result: FigureResult;
+      try {
+        const r = await readCached<{ figure: FigureReading; usage: Usage }>("figure", {
+          image: `data:${cut.image.mediaType};base64,${cut.image.data}`,
+          item: { no: item.no, stem: item.stem ?? [], choices: item.choices ?? [], bogi: item.bogi ?? [] },
+          kind,
+          model: o.models?.figure,
+          docId: work.docId,
+          hint: t.reasons.join(" / ").slice(0, 600),
+        }, o.cacheScope ?? "", signal);
+        tell({ usd: progress.usd + sumUsd(r.usage), reused: (progress.reused ?? 0) + (r.cached ? 1 : 0) });
+        result = { crop: cut.crop, scale: cut.scale, reading: r.figure };
+      } catch (err) {
+        if (err instanceof ApiError && err.usage) tell({ usd: progress.usd + err.usage.usd });
+        if (signal.aborted) throw err;
+        const detail = err instanceof ApiError && err.detail ? ` (${err.detail})` : "";
+        // 열쇠가 없거나 틀린 것처럼 다시 해도 같은 실패는 바로 알린다 (지난 그림은 그대로 둔다)
+        if (err instanceof ApiError && [400, 401, 402, 403].includes(err.status)) throw err;
+        result = { crop: cut.crop, scale: cut.scale, error: `${err instanceof Error ? err.message : String(err)}${detail}` };
+      }
+      // 다시 읽기에 실패하면 지난 그림을 그대로 둔다 (빈 자리로 바꾸지 않는다)
+      if (!result.error) replaceFigureReading(item, t.figureIndex, result);
+      tell({ figuresDone: progress.figuresDone + 1 });
+    }
+  } finally {
+    for (const c of canvases.values()) {
+      c.width = 0;
+      c.height = 0;
+    }
+  }
+  reviewFigures(work.exam);
+  work.usd = progress.usd;
+  return finishExam(o, work, signal, progress);
 }
 
 async function finishExam(o: FinishOptions, work: Recovery, signal: AbortSignal, progress: Progress, uploads?: Promise<FileRef[]>): Promise<MakeResult> {
@@ -360,6 +454,7 @@ async function finishExam(o: FinishOptions, work: Recovery, signal: AbortSignal,
     problems.unshift(`한글 파일을 보관함에 저장하지 못했습니다 (${err instanceof Error ? err.message : String(err)})`);
   }
   return {
+    docId,
     exam: withPng,
     hwpxPath: res.path,
     fileName,

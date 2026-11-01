@@ -228,3 +228,17 @@
     작업 폴더: /home/user/exam-work/samyuk (to_b4.py, fix_figs.py)
   배포 dpl_4bGHKW8VmroTa4eEnYbKmEAS8Bwu (커밋 e44f5b7, 두 줄기 같음). 실제 사이트에서 B4 원본 PDF 를 붙인 시험용 문서로 '다시 만들기' 확인
     (16초, B4·11pt·원본과 같은 4쪽 배열·수식 168개, 문서 지움): scratchpad/e2e/live-resume-b4.mjs <출력 폴더> <exam.json> <원본 PDF>
+- 사용자 "프로그램을 고쳐야지" (2026-11-01, 손으로 고친 삼육중 그림 세 개를 프로그램이 스스로): lib/figure/review.ts (AI 없이 그림 살피기·고치기)
+  - degreeMismatches: 숫자 각 글자(35°)와 그린 각 비교. angle 요소의 label 과, 글자 없는 각 표시 하나의 꼭짓점이 가장 가까운 이름 있는 점이고 base×0.6 안인 '따로 둔 글자'(삼육중 2번)
+  - repairDegrees: 점 정의 속 각 숫자를 뒤집어(직선 방향 180−θ, polar 180−θ·−θ·θ+180, turn 부호, isoApex 꼭지각↔밑각) 하나, 안 되면 둘을 바꿔 모든 각 글자가 맞는 것을 찾음.
+    여럿이면 원본 기준점과 더 닮은 것 → AI 그림에서 점이 덜 옮겨지는 것(뒤집힌 삼각형을 고르지 않게) → 덜 바꾼 것. 삼육중 2번: C 를 지나는 직선 102° → 78° (손으로 고친 것과 같음)
+  - shapeDeviation: 이름 있는 점을 하나씩 빼고 나머지로 닮은꼴 맞춤(돌리기·키우기·옮기기)을 한 뒤 뺀 점이 원본 기준점(anchors)에서 얼마나 벗어나는지 (원본 기준점 퍼짐 대비).
+    모두로 한 번에 맞추면 멀리 그린 점 하나가 맞춤을 끌어당겨 숨는다(서답형 2 의 E 가 4% 로 보임). SHAPE_DEVIATION_LIMIT 0.3: 보관된 그림 93개에서 서답형 2 만 76%, 나머지는 23% 이하(원본과 같은 모양)
+  - 읽을 때(read-figure judge): 각 글자 불일치는 먼저 repairDegrees 로 고치고(fixes → 그림 auto_fixes), 남은 불일치·모양 차이는 advice 로 AI 에게 한 번만 살피게 함
+    (막지 않음: 조대부중 4번처럼 원본 그림 자체가 조건과 안 맞는 시험지가 있다 — 4cm, 6cm, 70° 면 45° 가 아니라 39°). 끝까지 남으면 확인할 곳에 짧게. validate.ts 의 각 오류는 뺌
+  - 만들 때·다시 만들 때(assemble.reviewFigures, assembleExam 끝과 resumeExam): 같은 고침을 하고, 남은 의심 그림(각 불일치·모양 차이·읽지 못한 그림)을 FigureSuspect 로.
+    화면(다시 만들기 칸·결과 칸)에 '프로그램이 고친 그림'과 '원본과 다르게 그려진 것 같은 그림'을 보이고, '그 그림 N개만 AI로 다시 읽고 만들기' 버튼(요금 확인 창: 그림당 많아도 Opus 0.15·Sonnet 0.08달러)
+    → make-exam.rereadFigures: 보관함 원본을 받아 그 쪽을 다시 그리고 fig.box 자리를 잘라(pageScale 1) 그림 읽기에 hint(찾은 문제, 600자까지)를 붙여 보냄 → replaceFigureReading → 다시 만들기
+  - 엔진: 점(•) 인쇄 반지름 최소 DOT_MIN_MM 0.4mm (삼육중 8번 점이 0.18mm 라 안 보였음). 3단계 그림 2 의 점 E 가 아주 조금 커짐(나머지 PNG 는 그대로)
+  - 보관된 시험지 5개에 돌린 결과: 삼육중 2번 고침, 의심 그림: 삼육중 서답형 2(모양), 금호중 10-31 5번(읽지 못함), 조대부중 4번(원본 조건 불일치), 대자중 서술형5(100° 와 107°)
+  - 점검: check-ai 에 실제 그림 명령(삼육중 2번·서답형 2, 도형만)으로 잡기·고치기·모양 검사. 작업 폴더 /home/user/exam-work/calib (calib.ts, review-all.ts, resume-like.ts, fixtures.json)

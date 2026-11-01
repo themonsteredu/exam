@@ -21,7 +21,7 @@ export async function POST(req: Request) {
   const deadline = Date.now() + BUDGET_MS;
   const denied = await requireSession(req);
   if (denied) return denied;
-  let body: { image?: unknown; item?: Record<string, unknown>; model?: unknown; docId?: unknown; kind?: unknown };
+  let body: { image?: unknown; item?: Record<string, unknown>; model?: unknown; docId?: unknown; kind?: unknown; hint?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -61,6 +61,8 @@ export async function POST(req: Request) {
         apiKey: config.apiKey,
         signal: req.signal,
         deadline,
+        // 다시 읽기: 지난 그림에서 프로그램이 찾은 문제 (그림 읽기에만 쓴다)
+        hint: typeof body.hint === "string" && body.hint.trim() ? body.hint.trim().slice(0, 600) : undefined,
       },
     );
     await logUsage("figure", usage, docId, config.keyTag);

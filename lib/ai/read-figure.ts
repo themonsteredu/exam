@@ -5,6 +5,16 @@
 import type { BetaMessageParam } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { z } from "zod";
 import { checkFigureSpec } from "@/lib/figure/validate";
+import {
+  degreeMismatches,
+  degreeMismatchNote,
+  degreeMismatchText,
+  repairDegrees,
+  SHAPE_DEVIATION_LIMIT,
+  shapeDeviation,
+  shapeDeviationNote,
+  shapeDeviationText,
+} from "@/lib/figure/review";
 import type { FigureSpec, PointRef } from "@/lib/figure/types";
 import { addUsage, assistantTurn, callClaude, extractJson, modelFor, ReadError, type Effort, type Usage } from "./claude";
 import type { Piece, Region } from "./page-schema";
@@ -45,6 +55,12 @@ export type FigureReading = {
   notes: string;
   /** 남은 문제 (비어 있으면 그릴 수 있음) */
   errors: string[];
+  /** 그릴 수는 있지만 원본·조건과 달라 보이는 곳 (AI 에게 한 번 돌려보내 살피게 한다. 끝까지 남으면 unsure 에 짧게 적는다) */
+  advice?: string[];
+  /** advice 와 짝을 이루는 짧은 문장 (확인할 곳에 적는다) */
+  adviceNotes?: string[];
+  /** 프로그램이 AI 없이 고친 곳 (각 글자에 맞게 방향각을 뒤집는 등) */
+  fixes?: string[];
   warnings: string[];
   /** AI 에게 물은 횟수 (고쳐 받은 횟수 + 1) */
   attempts: number;
@@ -60,7 +76,7 @@ export type FigureContext = {
 export async function readFigure(
   image: ImageInput,
   item: FigureContext,
-  o: { model?: string; effort?: Effort; maxAttempts?: number; apiKey?: string; signal?: AbortSignal; deadline?: number } = {},
+  o: { model?: string; effort?: Effort; maxAttempts?: number; apiKey?: string; signal?: AbortSignal; deadline?: number; hint?: string } = {},
 ): Promise<{ figure: FigureReading; usage: Usage }> {
   const model = modelFor("figure", o.model);
   const maxAttempts = o.maxAttempts ?? 2;
@@ -78,6 +94,7 @@ export async function readFigure(
             stem: piecesToText(item.stem),
             choices: item.choices.map(piecesToText),
             bogi: item.bogi.map(piecesToText),
+            hint: o.hint,
           }),
         },
       ],
@@ -105,11 +122,13 @@ export async function readFigure(
     }
     usage = addUsage(usage, call.usage);
     result = judge(call.text, image, attempt);
-    if (!result.errors.length || attempt === maxAttempts) break;
+    if ((!result.errors.length && !result.advice?.length) || attempt === maxAttempts) break;
     // 고쳐 받을 시간이 모자라면 그대로 돌려준다 (서버 함수 시간 한도를 넘겨 이미 받은 답까지 잃지 않게)
     if (o.deadline && o.deadline - Date.now() < 120_000) break;
-    messages.push(assistantTurn(call.message), { role: "user", content: figureRepairText(result.errors) });
+    messages.push(assistantTurn(call.message), { role: "user", content: figureRepairText(result.errors, result.advice ?? []) });
   }
+  // 끝까지 남은 살필 곳은 확인할 곳에 짧게 남긴다 (그림은 그대로 쓴다)
+  if (result!.adviceNotes?.length) result!.unsure = [...result!.unsure, ...result!.adviceNotes];
   return { figure: result!, usage: usage! };
 }
 
@@ -142,15 +161,40 @@ export function judge(text: string, image: { width: number; height: number }, at
   }
   const box = BoxS.safeParse(a.content_box);
   const contentBox = box.success ? clampBox(box.data, image) : undefined;
+  // 그릴 수 있는 그림은 원본·조건과 맞는지 더 살핀다:
+  //  1) 숫자 각 글자와 그린 각이 다르면 방향각을 헷갈린 실수부터 AI 없이 고쳐 본다 (2026-11-01 삼육중 2번)
+  //  2) 그래도 다르거나, 원본 사진 속 점 자리와 모양이 크게 다르면(삼육중 서답형 2) AI 에게 한 번 살피게 한다
+  let spec = check.spec;
+  const fixes: string[] = [];
+  const advice: string[] = [];
+  const adviceNotes: string[] = [];
+  if (spec) {
+    const fixed = repairDegrees(spec, anchors);
+    if (fixed) {
+      spec = fixed.spec;
+      fixes.push(...fixed.changes);
+    }
+    for (const m of degreeMismatches(spec)) {
+      advice.push(degreeMismatchText(m));
+      adviceNotes.push(`그림: ${degreeMismatchNote(m)}`);
+    }
+    const shape = anchors.length ? shapeDeviation(spec, anchors) : undefined;
+    if (shape && shape.worst > SHAPE_DEVIATION_LIMIT) {
+      advice.push(shapeDeviationText(shape));
+      adviceNotes.push(`그림: ${shapeDeviationNote(shape)}`);
+    }
+  }
   return {
     ...base,
-    commands: check.spec,
+    commands: spec,
     rawCommands: check.spec ? undefined : a.commands,
     anchors,
     contentBox,
     unsure: a.unsure,
     notes: a.notes,
     errors: check.errors,
+    ...(advice.length ? { advice, adviceNotes } : {}),
+    ...(fixes.length ? { fixes } : {}),
     warnings,
   };
 }

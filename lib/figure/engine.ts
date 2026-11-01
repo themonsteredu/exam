@@ -150,6 +150,8 @@ const dirVec = (d: Dir): Vec => fromAngle(typeof d === "number" ? d : DIRS[d] ??
 export const LABEL_MM: [number, number] = [3.0, 4.3];
 /** 인쇄될 그림 선 굵기의 최소값(mm). AI 가 정한 base 가 그림에 비해 작으면 선이 원본(약 0.3mm)보다 가늘게(0.15mm) 찍혔다 */
 export const LINE_MIN_MM = 0.2;
+/** 인쇄될 점(•)의 반지름 최소값(mm). 2026-11-01 삼육중 8번: 긴 직선 위의 점 A, B, C 가 반지름 0.18mm 로 찍혀 거의 보이지 않았다 */
+export const DOT_MIN_MM = 0.4;
 
 export type RenderOptions = {
   /** 보드 가로 크기(px, 화면 기준) */
@@ -179,6 +181,8 @@ export class FigureRenderer {
   /** 선 굵기 배율 (인쇄 굵기 맞춤. 보통 1) */
   lineFit = 1;
   naturalLineMm = 0;
+  /** 점(•)의 가장 작은 반지름 (그림 단위). 인쇄 가로를 알 때만 (DOT_MIN_MM) */
+  dotMinUnits = 0;
   /** 다 그리지 못한 까닭 (없는 점, 계산되지 않는 점, 모르는 요소 등). 비어 있지 않으면 PNG 를 만들지 않는다 */
   issues: string[] = [];
   /** 점 위치 계산 (자유점은 보드를 만든 뒤 JSXGraph glider 위치를 따른다) */
@@ -227,6 +231,7 @@ export class FigureRenderer {
       }
       this.naturalLineMm = (0.01 * this.base * (spec.style?.lineScale ?? 1) * opts.printWidthMm) / (r - l);
       if (this.naturalLineMm > 0 && this.naturalLineMm < LINE_MIN_MM) this.lineFit = LINE_MIN_MM / this.naturalLineMm;
+      this.dotMinUnits = (DOT_MIN_MM * (r - l)) / opts.printWidthMm;
     }
     this.pxPerUnit = opts.widthPx / (r - l);
     this.heightPx = Math.round((t - b) * this.pxPerUnit);
@@ -274,6 +279,11 @@ export class FigureRenderer {
   get labelUnits() {
     return 0.15 * this.base * (this.spec.style?.labelScale ?? 1) * this.labelFit;
   }
+  /** 점(•) 반지름 (그림 단위): base 의 1.2% × size, 인쇄 크기를 알면 DOT_MIN_MM 보다 작지 않게 */
+  dotRadius(size?: number): number {
+    return Math.max((size ?? 1) * this.base * 0.012, this.dotMinUnits);
+  }
+
   get labelPx() {
     return this.labelUnits * this.pxPerUnit;
   }
@@ -510,7 +520,7 @@ export class FigureRenderer {
         return box(mid(a, b), s, s);
       }
       case "dot": {
-        const r = (el.size ?? 1) * this.base * 0.012;
+        const r = this.dotRadius(el.size);
         return box(this.pt(el.at), r, r);
       }
       default:
@@ -815,7 +825,7 @@ export class FigureRenderer {
         return;
       }
       case "dot": {
-        const r = (el.size ?? 1) * this.base * 0.012;
+        const r = this.dotRadius(el.size);
         this.curve(() => this.arcPoints(this.pt(el.at), r, 0, 360, 24), {
           strokeWidth: 0, fillColor: el.color || "#000", fillOpacity: 1, layer: LAYER.dot,
         });

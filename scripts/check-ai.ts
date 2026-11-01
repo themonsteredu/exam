@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { EXAMPLES } from "@/lib/figure/examples";
 import { checkFigureSpec } from "@/lib/figure/validate";
+import { degreeMismatches, repairDegrees, SHAPE_DEVIATION_LIMIT, shapeDeviation } from "@/lib/figure/review";
 import { pageReadingJsonSchema, PageReadingS, type PageReading } from "@/lib/ai/page-schema";
 import { FIGURE_SYSTEM } from "@/lib/ai/prompts";
 import { assembleExam, figureKey, toExamPieces, type FigureResult } from "@/lib/ai/assemble";
@@ -76,15 +77,32 @@ console.log("2) 그림 명령 검사기 - 지금까지 만든 그림");
     { base: 10, elements: [{ type: "arc2" }] },
   ];
   broken.forEach((b, i) => ok(checkFigureSpec(b).errors.length > 0, `틀린 그림 명령 ${i + 1} 을 잡아냄`));
-  // 숫자 각 글자와 그린 각이 다르면 잡는다 (2026-11-01 호남삼육중 2번: C 를 지나는 방향각 102° 를 써서 ∠BAC 가 35° 가 아니라 59°)
-  const triangle = (dirAtC: number, label: string) => ({
+  // 숫자 각 글자와 그린 각이 다르면 잡고, 방향각을 헷갈린 실수는 AI 없이 고친다 (2026-11-01 호남삼육중 2번: C 를 지나는 방향각 78° 를 102° 로 써서 ∠BAC 가 59°)
+  const triangle = (dirAtC: number, label: string): any => ({
     base: 6,
     points: [{ id: "B", at: [0, 0] }, { id: "C", at: [5.42, 0] }, { id: "A", intersect: [{ through: ["B"], angle: 43 }, { through: ["C"], angle: dirAtC }] }],
     elements: [{ type: "angle", points: ["B", "A", "C"], label }, { type: "angle", points: ["C", "B", "A"], label: "43°" }],
   });
-  ok(checkFigureSpec(triangle(102, "35°")).errors.some((e) => e.includes("35°") && e.includes("59.0°")), "각 글자 35° 와 그린 각 59° 가 다른 것을 잡아냄");
-  ok(checkFigureSpec(triangle(78, "35°")).errors.length === 0, "각 글자와 그린 각이 맞으면 통과");
-  ok(checkFigureSpec(triangle(102, "x")).errors.length === 0, "문자 각 글자(x)는 각 크기를 따지지 않음");
+  ok(degreeMismatches(triangle(102, "35°")).some((m) => m.label === "35°" && Math.round(m.got) === 59), "각 글자 35° 와 그린 각 59° 가 다른 것을 잡아냄");
+  ok(degreeMismatches(triangle(78, "35°")).length === 0, "각 글자와 그린 각이 맞으면 통과");
+  ok(degreeMismatches(triangle(102, "x")).length === 0, "문자 각 글자(x)는 각 크기를 따지지 않음");
+  ok(checkFigureSpec(triangle(102, "35°")).errors.length === 0, "각이 달라도 그릴 수는 있음 (원본 그림 자체가 조건과 안 맞는 시험지도 있다)");
+  ok(repairDegrees(triangle(102, "35°"))?.changes.join() === "점 A: C 를 지나는 직선의 방향 102° → 78°", "방향각 102° → 78° 로 고침");
+  // 실제로 나온 그림 명령 (도형만): 35° 가 angle 요소가 아니라 따로 둔 글자였다
+  const q2: any = {"commands":{"base":6,"points":[{"id":"B","at":[0,0]},{"id":"C","at":[5.42,0]},{"id":"A","intersect":[{"through":["B"],"angle":43},{"through":["C"],"angle":102}]},{"id":"E","glider":{"line":["C","A"],"from":"C","dist":3.9,"segment":true}},{"id":"D","intersect":[{"through":["B","C"]},{"through":["E"],"angle":-60}]}],"elements":[{"type":"segment","points":["A","B"]},{"type":"segment","points":["B","D"]},{"type":"segment","points":["A","C"]},{"type":"segment","points":["E","D"]},{"type":"angle","points":["C","B","A"],"radius":1.2,"label":"43°","labelDist":2.3},{"type":"angle","points":["E","D","B"],"radius":1.1,"label":"60°","labelDist":2},{"type":"angle","points":["B","A","C"],"radius":0.8},{"type":"label","at":[4.3,7],"text":"35°","size":0.8},{"type":"angle","points":["D","E","A"],"radius":0.7,"label":"x","labelDist":1.5},{"type":"label","at":"A","text":"A","dir":"N"},{"type":"label","at":"B","text":"B","dir":"W"},{"type":"label","at":"C","text":"C","dir":"S"},{"type":"label","at":"D","text":"D","dir":"E"},{"type":"label","at":"E","text":"E","dir":"W"}]},"anchors":[{"at":"A","px":[640,1203]},{"at":"B","px":[403,1435]},{"at":"C","px":[576,1435]},{"at":"D","px":[736,1435]},{"at":"E","px":[618,1295]}]};
+  ok(degreeMismatches(q2.commands).some((m) => m.free && m.label === "35°"), "따로 둔 각 글자 35° 를 꼭짓점 A 의 각 표시와 짝지어 잡아냄");
+  const q2fix = repairDegrees(q2.commands, q2.anchors);
+  ok(!!q2fix && q2fix.changes.join() === "점 A: C 를 지나는 직선의 방향 102° → 78°" && degreeMismatches(q2fix.spec).length === 0, `삼육중 2번을 AI 없이 고침 (${q2fix?.changes.join()})`);
+  const q2judged = judge(JSON.stringify({ commands: q2.commands, anchors: [], unsure: [], notes: "" }), { width: 800, height: 600 });
+  ok(!!q2judged.commands && q2judged.fixes?.length === 1 && !q2judged.advice?.length, "그림 읽기 검사에서 바로 고치고 다시 묻지 않음");
+  // 삼육중 서답형 2: x 를 풀어 그려 E 가 원본 자리에서 크게 벗어남 → 모양 검사로 잡고 AI 에게 한 번 살피게 함
+  const s2: any = {"commands":{"base":12,"points":[{"id":"B","at":[0,0]},{"id":"A","polar":{"from":"B","length":10,"angle":54}},{"id":"C","polar":{"from":"B","length":10,"angle":-36}},{"id":"D","intersect":[{"through":["A"],"angle":-36},{"through":["C"],"angle":54}]},{"id":"E","intersect":[{"through":["B","D"]},{"through":["A"],"angle":0}]},{"id":"L1","polar":{"from":"A","length":9.3,"angle":180}},{"id":"L2","polar":{"from":"E","length":4,"angle":0}},{"id":"M1","polar":{"from":"C","length":11.5,"angle":180}},{"id":"M2","polar":{"from":"C","length":51,"angle":0}}],"elements":[{"type":"segment","points":["L1","L2"]},{"type":"segment","points":["M1","M2"]},{"type":"segment","points":["A","B"]},{"type":"segment","points":["B","C"]},{"type":"segment","points":["C","D"]},{"type":"segment","points":["D","A"]},{"type":"segment","points":["B","E"]},{"type":"angle","points":["B","A","L1"],"radius":1.5,"label":"3x°","labelDist":3.6},{"type":"angle","points":["M1","C","B"],"radius":2.8,"label":"2x°","labelDist":6.2},{"type":"angle","points":["A","E","D"],"radius":3.2},{"type":"label","at":"A","text":"A","dir":"N"},{"type":"label","at":"B","text":"B","dir":"W"},{"type":"label","at":"C","text":"C","dir":"S"},{"type":"label","at":"D","text":"D","dir":"SE"},{"type":"label","at":"E","text":"E","dir":"N"},{"type":"label","at":"L2","text":"l","dir":"E","italic":true},{"type":"label","at":"M2","text":"m","dir":"E","italic":true}]},"anchors":[{"at":"A","px":[501,2385]},{"at":"B","px":[447,2492]},{"at":"C","px":[555,2549]},{"at":"D","px":[612,2439]},{"at":"E","px":[787,2380]}]};
+  const shape = shapeDeviation(s2.commands, s2.anchors);
+  ok(!!shape && shape.worstPoint === "E" && shape.worst > SHAPE_DEVIATION_LIMIT, `서답형 2 의 E 가 원본과 많이 다름 (${Math.round((shape?.worst ?? 0) * 100)}%)`);
+  const same = shapeDeviation(s2.commands, s2.anchors.filter((a: any) => a.at !== "E"));
+  ok(!!same && same.worst < 0.25, `E 를 빼면 원본과 비슷함 (${Math.round((same?.worst ?? 0) * 100)}%)`);
+  const s2judged = judge(JSON.stringify({ commands: s2.commands, anchors: s2.anchors.map((a: any) => ({ at: a.at, px: [a.px[0] - 300, a.px[1] - 2300] })), unsure: [], notes: "" }), { width: 800, height: 600 });
+  ok(!!s2judged.commands && (s2judged.advice ?? []).some((t) => t.includes("점 E")), "그림 읽기 검사가 모양이 다른 그림을 AI 에게 한 번 살피게 함");
 }
 
 console.log("3) 그림 읽기 지시문 속 예시");
