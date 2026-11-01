@@ -18,8 +18,18 @@ from .layout_safety import LayoutOverflow, PageOverflow, _split_math_at_operator
 HP = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
 
 
+class FooterPlacementOverflow(LayoutOverflow):
+    """A footer cannot be safely reserved before laying out the page."""
+
+
 def valid_box(box):
     return isinstance(box, dict) and all(isinstance(box.get(k), (int, float)) and math.isfinite(box[k]) for k in ("x", "y", "w", "h")) and box["w"] > 0 and box["h"] > 0
+
+
+def figure_box(fig):
+    """Prefer the detected source bounds over an automatically enlarged box."""
+    box = fig.get("box")
+    return box if valid_box(box) else fig.get("layout_box")
 
 
 class SourceLayout:
@@ -31,6 +41,7 @@ class SourceLayout:
         self.page_shift = 0
         self.is_continuation = False
         self.seen_items = set()
+        self.preparing_footer = False
 
     def start_section(self, section):
         """Create the anchor and collision space for one physical page."""
@@ -56,6 +67,25 @@ class SourceLayout:
         """Reserve a non-overlapping location, adding a page when needed."""
         if box["h"] > self.paper_height - 13:
             raise LayoutOverflow(f"{self.source_page}쪽: 한 글 또는 그림 영역이 한 쪽보다 큽니다. 읽은 결과는 보관되어 있습니다.")
+        if self.preparing_footer:
+            # A small OCR error may place a footer partly beyond the bottom or
+            # make its detected boxes overlap. Search upward on the same page;
+            # never create a continuation before any of the questions exist.
+            candidate = {**box, "y": max(0, min(box["y"], self.paper_height - 3 - box["h"]))}
+            for _ in range(len(self.occupied) + 1):
+                collisions = [b for b in self.occupied if candidate["x"] < b["x"] + b["w"] - .05
+                              and candidate["x"] + candidate["w"] > b["x"] + .05
+                              and candidate["y"] < b["y"] + b["h"] - .05
+                              and candidate["y"] + candidate["h"] > b["y"] + .05]
+                if not collisions:
+                    self.occupied.append(candidate)
+                    if abs(candidate["y"] - box["y"]) > .05:
+                        self.b.warnings.append(f"{self.source_page}쪽: 꼬리말이 겹치거나 용지를 벗어나 위치를 조정했습니다. 원본과 비교해 주세요.")
+                    return self.anchor, candidate
+                candidate["y"] = min(b["y"] for b in collisions) - box["h"] - .7
+                if candidate["y"] < 0:
+                    break
+            raise FooterPlacementOverflow("꼬리말을 원래 쪽에 미리 배치할 수 없습니다.")
         for attempt in range(2):
             candidate = {**box, "y": max(10 if self.is_continuation else 0, box["y"] - self.page_shift)}
             occupied = list(self.occupied)
@@ -150,8 +180,10 @@ class SourceLayout:
         available_w, available_h = max(1, w - pad * 2), max(1, h - pad * 2)
         # 원본의 줄 수·줄 폭에 맞추되 학생용 글씨를 무한정 줄이지 않는다.
         font = min(14, max(11, 11 * self.paper_width / 210), available_h * 72 / 25.4 / len(lines) * .80)
-        font = max(9.5, font)
-        minimum_font = 9.5
+        # Footers in school exam sheets often use much smaller print than the
+        # questions. A 9.5 pt floor expands them beyond their original row.
+        minimum_font = 5 if block.get("artifact_kind") == "footer" else 9.5
+        font = max(minimum_font, font)
         if isinstance(block.get("font_pt"), (int, float)):
             minimum_font = max(3, min(8.5, block.get("minimum_font_pt", 8.5)))
             font = min(20, max(minimum_font, block["font_pt"]))
@@ -227,6 +259,8 @@ class SourceLayout:
                 chunk_total += height
             if chunk_lines:
                 chunks.append((chunk_lines, chunk_heights, start))
+            if self.preparing_footer and (force_wide_page or len(chunks) > 1):
+                raise FooterPlacementOverflow("긴 꼬리말을 원래 쪽에 미리 배치할 수 없습니다.")
             if force_wide_page:
                 self.continue_page(source_y)
 
@@ -235,9 +269,19 @@ class SourceLayout:
             if chunk_index:
                 self.continue_page(source_y)
             natural_h = sum(chunk_heights) + pad * 2 + .8
-            desired_h = max(h, natural_h) if len(chunks) == 1 else natural_h
+            if len(chunks) > 1:
+                desired_h = natural_h
+            elif boxed or self.suppress_reserve:
+                # A visible border or graphic's text region is part of its design.
+                desired_h = max(h, natural_h)
+            else:
+                # OCR regions can contain substantial blank space. Keep a small
+                # rendering allowance without reserving that entire empty area.
+                desired_h = min(max(h, natural_h + 1), natural_h + 2)
             if not self.suppress_reserve:
                 desired_h = min(desired_h, self.paper_height - 20)
+            if self.preparing_footer and desired_h > self.paper_height * .25:
+                raise FooterPlacementOverflow("꼬리말 영역이 너무 커서 미리 배치할 수 없습니다.")
             placed = {"x": x, "y": source_y, "w": w, "h": desired_h}
             if not self.suppress_reserve:
                 anchor, placed = self.allocate(placed, no)
@@ -339,7 +383,26 @@ class SourceLayout:
                     rule = self.doc.shapes.add_line(end_x=0, end_y=mm(max(1, bottom - y)), line_width="28", treat_as_char=False, paragraph=anchor)
                     self.place(rule.element, x, y)
             entries = []
-            for block in self.page_text(page, on_page, i):
+            page_blocks = self.page_text(page, on_page, i)
+            deferred_footers = []
+            # Reserve a page's footer on that page before laying out questions.
+            # Otherwise a question that continues to another page carries the
+            # original page number and school footer along with it.
+            for block in page_blocks:
+                if block.get("artifact_kind") == "footer":
+                    try:
+                        self.preparing_footer = True
+                        self.text(self.anchor, block, sx, sy, f"{page['page']}쪽")
+                    except FooterPlacementOverflow:
+                        # Preserve every footer even when its reading is too
+                        # large to reserve with the other footer blocks.
+                        deferred_footers.append(block)
+                        self.b.warnings.append(f"{page['page']}쪽: 꼬리말 위치를 확인해 주세요.")
+                    finally:
+                        self.preparing_footer = False
+            for block in page_blocks:
+                if block.get("artifact_kind") == "footer" and block not in deferred_footers:
+                    continue
                 entries.append((block["box"]["y"], block["box"]["x"], "text", block, f"{page['page']}쪽"))
             for item in on_page:
                 numbered = False
@@ -359,7 +422,7 @@ class SourceLayout:
                     entries.append((block["box"]["y"], block["box"]["x"], "text", block, item["no"]))
                 for fig in [item.get("figure"), *item.get("extra_figures", [])]:
                     if fig:
-                        box = fig.get("layout_box") or fig.get("box")
+                        box = figure_box(fig)
                         if valid_box(box):
                             entries.append((box["y"], box["x"], "figure", fig, item["no"]))
                         else:
@@ -374,7 +437,7 @@ class SourceLayout:
                         for _, _, other_kind, other, _ in entries:
                             if other is value:
                                 continue
-                            neighbour = other.get("box") if other_kind == "text" else (other.get("layout_box") or other.get("box"))
+                            neighbour = other.get("box") if other_kind == "text" else figure_box(other)
                             if valid_box(neighbour) and neighbour["x"] >= box["x"] + box["w"] - .5 and neighbour["y"] < box["y"] + box["h"] and neighbour["y"] + neighbour["h"] > box["y"]:
                                 limit = min(limit, neighbour["x"] - 1)
                         value["_right_limit"] = max(box["x"] + box["w"], limit)
@@ -383,7 +446,7 @@ class SourceLayout:
                     self.figure(self.anchor, value, sx, sy, no)
 
     def figure(self, anchor, fig, sx, sy, no):
-        placement = fig.get("layout_box") or fig.get("box")
+        placement = figure_box(fig)
         x, y = placement["x"] * sx, placement["y"] * sy
         w, h = placement["w"] * sx, placement["h"] * sy
         scale = min(1, (self.paper_width - 6) / w, (self.paper_height - 20) / h)
@@ -454,7 +517,7 @@ class SourceLayout:
         footer_lines = [footer.get(k, "") for k in ("right_top", "right_bottom", "notice")]
         if any(footer_lines):
             region = bottom[-1] if bottom else {"x": area["x"], "y": page["height"] * .93, "w": area["w"], "h": page["height"] * .05}
-            blocks.append({"role": "text", "title": "", "box": region, "font_pt": 9.5,
+            blocks.append({"role": "text", "title": "", "box": region, "font_pt": 7, "minimum_font_pt": 5, "artifact_kind": "footer",
                            "lines": [[{"t": str(t)}] for t in footer_lines if t]})
         return blocks
 

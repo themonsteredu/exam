@@ -174,13 +174,6 @@ export function assembleExam(
           role: b.role, title: b.title, choice_no: b.choice_no,
           box: toOriginal(b.region, meta.scale), lines: b.lines.map(toExamPieces),
         }));
-        const redraw = !item.extra_figures?.length && (item.figure?.commands || (item.figure?.graphic && item.figure.graphic.kind !== "photo"));
-        if (redraw && item.layout_blocks?.length) {
-          const box = enlargeIntoWhitespace(item.figure.box, item.source, item.layout_blocks.map((b: any) => b.box));
-          item.figure.layout_box = box;
-          item.figure.width_mm = round1(box.w * mmPerPx);
-          item.figure.size_mm = [round1(box.w * mmPerPx), round1(box.h * mmPerPx)];
-        }
         if (itemUnsure.length) item.unsure = itemUnsure;
 
         // 원본에서 단이나 쪽이 바뀐 곳은 그대로 나눈다. 부분 제목 상자 바로 앞이면 제목 상자에서 나눈다
@@ -215,19 +208,6 @@ export function assembleExam(
   }));
   if (unsure.length) exam.unsure = unsure;
   return exam;
-}
-
-/** 글/선택지 위치를 건드리지 않고 확보된 빈 공간 안에서만 그림을 확대한다. */
-export function enlargeIntoWhitespace(figure: Region, item: Region, text: Region[]): Region {
-  const intersects = (a: Region, b: Region) => a.x < b.x + b.w + 3 && a.x + a.w + 3 > b.x && a.y < b.y + b.h + 3 && a.y + a.h + 3 > b.y;
-  for (const scale of [1.4, 1.25, 1.1]) {
-    const w = figure.w * scale, h = figure.h * scale;
-    const x = Math.max(item.x, Math.min(item.x + item.w - w, figure.x + (figure.w - w) / 2));
-    const y = Math.max(item.y, Math.min(item.y + item.h - h, figure.y + (figure.h - h) / 2));
-    const box = { x, y, w, h };
-    if (w <= item.w && h <= item.h && !text.some(b => intersects(box, b))) return box;
-  }
-  return { x: figure.x, y: figure.y, w: figure.w, h: figure.h };
 }
 
 function makeFigure(
