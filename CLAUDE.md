@@ -226,3 +226,5 @@
   수식: 쉼표로 나열한 조건(∠A=70°, ∠C=30° …)은 builder.split_condition_list 가 수식 하나씩으로 나눔 (한글 수식은 줄을 못 바꿔 21번 첫 줄 뒤가 비었음). 괄호 안·관계식 아닌 나열은 그대로
   보낸 파일(삼육중_B4원본크기_그림고침_1101.hwpx)은 2번(C 를 지나는 방향 102→78°), 8번(점 크게), 서답형 2(63°/27° 원본 모양) 그림을 손으로 고친 것 (그림 notes 에 적음).
     작업 폴더: /home/user/exam-work/samyuk (to_b4.py, fix_figs.py)
+  배포 dpl_4bGHKW8VmroTa4eEnYbKmEAS8Bwu (커밋 e44f5b7, 두 줄기 같음). 실제 사이트에서 B4 원본 PDF 를 붙인 시험용 문서로 '다시 만들기' 확인
+    (16초, B4·11pt·원본과 같은 4쪽 배열·수식 168개, 문서 지움): scratchpad/e2e/live-resume-b4.mjs <출력 폴더> <exam.json> <원본 PDF>
