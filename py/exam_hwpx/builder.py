@@ -359,7 +359,7 @@ class ExamBuilder:
         return data
 
     def figure_width_mm(self, fig: dict) -> float:
-        width = fig.get("width_mm") or (fig.get("size_mm") or [50])[0]
+        width = (fig.get("width_mm") or (fig.get("size_mm") or [50])[0]) * self.tpl["figure"].get("scale", 1.0)
         column_mm = self.column_width() / MM
         limit = column_mm * self.tpl["figure"]["right_max_ratio"] if fig.get("place") == "right" else column_mm - 1
         return min(float(width), limit)
@@ -959,7 +959,93 @@ def postprocess(data: bytes) -> bytes:
     return out.getvalue()
 
 
+def estimated_pages(data: bytes) -> int | None:
+    """한글이 이 파일을 몇 쪽으로 짤지 python-hwpx 의 쪽 어림으로 잰다 (못 재면 None).
+    어림기가 다루지 못하는 '글 옆에 띄운 그림'은 빼고 잰다 (그 문항은 실제보다 조금 짧게 잡힌다)."""
+    try:
+        from hwpx.layout.pages import estimate_pages
+
+        zin = zipfile.ZipFile(io.BytesIO(data))
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zout:
+            for info in zin.infolist():
+                raw = zin.read(info.filename)
+                if info.filename.startswith("Contents/section") and info.filename.endswith(".xml"):
+                    text = raw.decode("utf-8")
+                    text = re.sub(r'<hp:pic\b(?:(?!</hp:pic>).)*?treatAsChar="0"(?:(?!</hp:pic>).)*?</hp:pic>', "", text, flags=re.S)
+                    raw = text.encode("utf-8")
+                zout.writestr(info, raw)
+        est = estimate_pages(buf.getvalue())
+        return est.pages if not est.unsupported else None
+    except Exception:  # noqa: BLE001 - 어림을 못 하면 맞추지 않고 그대로 만든다
+        return None
+
+
+# 원본과 같은 자리에서 단·쪽을 나눌 때, 우리 글이 원본보다 길면 단이 넘쳐 빈 단이 생기고 쪽이 늘어난다
+# (2026-11-01 대자중: 5쪽이 8쪽). 원본 쪽 수 안에 들어갈 때까지 줄 간격 → 글자 크기 → 문항 사이 → 그림 크기 순으로 조금씩 줄인다.
+FIT_STEPS = [
+    {},
+    {"line_spacing": {"body": 165, "choice": 150, "box": 140}},
+    {"line_spacing": {"body": 160, "choice": 145, "box": 140}, "sizes": {"body": 10.5, "choice": 10.5}},
+    {"line_spacing": {"body": 150, "choice": 140, "box": 135}, "sizes": {"body": 10.5, "choice": 10.5}, "item_gap_pt": 8},
+    {"line_spacing": {"body": 150, "choice": 140, "box": 135}, "sizes": {"body": 10, "choice": 10, "box": 9}, "item_gap_pt": 6,
+     "figure": {"scale": 0.9}},
+    {"line_spacing": {"body": 140, "choice": 130, "box": 130}, "sizes": {"body": 9.5, "choice": 9.5, "box": 8.5}, "item_gap_pt": 4,
+     "figure": {"scale": 0.8}},
+]
+
+
+def _fitted_template(base: dict, step: dict) -> dict:
+    tpl = copy.deepcopy(base)
+    for key, value in step.items():
+        if isinstance(value, dict):
+            tpl[key] = {**tpl.get(key, {}), **value}
+        else:
+            tpl[key] = value
+    return tpl
+
+
+def _without_breaks(exam: dict, kinds: set[str]) -> dict:
+    copy_ = copy.deepcopy(exam)
+    for section in copy_.get("sections", []):
+        if section.get("break_before") in kinds:
+            section.pop("break_before", None)
+        for item in section.get("items", []):
+            if item.get("break_before") in kinds:
+                item.pop("break_before", None)
+    return copy_
+
+
 def build_exam(exam: dict, template: dict | None = None) -> tuple[bytes, list[str]]:
-    builder = ExamBuilder(exam, template)
-    return builder.build(), builder.warnings
+    base = template or get_template(exam.get("template"))
+    target = len(exam.get("source_pages") or [])
+    has_breaks = any(s.get("break_before") or any(i.get("break_before") for i in s.get("items", []))
+                     for s in exam.get("sections", []))
+    builder = ExamBuilder(exam, base)
+    data = builder.build()
+    if not target or not has_breaks:
+        return data, builder.warnings
+    pages = estimated_pages(data)
+    if pages is None or pages <= target:
+        return data, builder.warnings
+    first_pages = pages
+    # 1) 글을 조금씩 촘촘하게
+    for n, step in enumerate(FIT_STEPS[1:], start=1):
+        tpl = _fitted_template(base, step)
+        builder = ExamBuilder(exam, tpl)
+        data = builder.build()
+        pages = estimated_pages(data) or pages
+        if pages <= target:
+            builder.warnings.append(f"원본({target}쪽)과 같은 배열이 되도록 줄 간격·글자 크기를 조금 줄였습니다 (맞춤 {n}단계)")
+            return data, builder.warnings
+    # 2) 그래도 넘치면 단 나눔을 풀고(쪽 나눔은 둔다), 3) 그래도 넘치면 쪽 나눔도 풀어 빈 단·빈 쪽이 생기지 않게 한다
+    tightest = _fitted_template(base, FIT_STEPS[-1])
+    for kinds, note in (({"column"}, "원본의 단 나눔"), ({"column", "page"}, "원본의 단·쪽 나눔")):
+        builder = ExamBuilder(_without_breaks(exam, kinds), tightest)
+        data = builder.build()
+        pages = estimated_pages(data) or pages
+        if pages <= target or kinds == {"column", "page"}:
+            builder.warnings.append(f"글이 원본보다 길어 {note}을 따르지 않고 이어서 넣었습니다 (원본 {target}쪽, 처음 어림 {first_pages}쪽 → {pages}쪽)")
+            return data, builder.warnings
+    return data, builder.warnings
 
