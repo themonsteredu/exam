@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { assembleExam, figureJobs } from "@/lib/ai/assemble";
+import { assembleExam, figureJobs, joinPrintedLines } from "@/lib/ai/assemble";
 import { itemFigures } from "@/lib/figure/item-figures";
 import { attachFigurePngs } from "@/lib/figure/render-exam";
 import { readCached, readingCacheKey } from "@/lib/client/read-cache";
@@ -57,4 +57,19 @@ try {
   await assert.rejects(readCached("page",input,"owner-a",stopped.signal));
   assert.equal(calls,6,"cancellation cannot start a paid call");
 } finally {globalThis.fetch=savedFetch;}
-console.log("그림 모두 넣기·머리 글자·모델별 재사용·같은 요청 한 번만·실패 요금 검사 통과 (AI 요금 없음)");
+// GPT 판 상자 글: 인쇄된 줄마다 끊긴 것을 잇는다 (항목 첫머리·문장 끝은 그대로, 조사로 시작하면 띄우지 않음)
+{
+  const joined=joinPrintedLines([
+    [{t:"(가) 점 M은 선분 AB의 중점이고, 점 N은 선분 BC"}],[{t:"의 중점이다."}],
+    [{t:"(나) "},{m:"x"},{t:"의 값은 "}],[{m:"y"},{t:"보다 크다."}],
+    [{t:"직사각형의 넓이가 56일"}],[{t:"때, 다음을 구하시오."}],[{t:"(다) 새 항목"}],
+  ]);
+  const text=(l:any[])=>l.map((p:any)=>p.t??`[${p.m}]`).join("");
+  assert.deepEqual(joined.map(text),[
+    "(가) 점 M은 선분 AB의 중점이고, 점 N은 선분 BC의 중점이다.",
+    "(나) [x]의 값은 [y]보다 크다.",
+    "직사각형의 넓이가 56일 때, 다음을 구하시오.",
+    "(다) 새 항목",
+  ]);
+}
+console.log("그림 모두 넣기·머리 글자·모델별 재사용·같은 요청 한 번만·실패 요금·상자 글 줄 잇기 검사 통과 (AI 요금 없음)");

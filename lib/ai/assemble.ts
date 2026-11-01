@@ -326,6 +326,32 @@ function makeFigure(
   return fig;
 }
 
+// 상자 안 한 항목의 첫머리: (가) ㄱ. ① ㉠ ※ - • (1) 1. 같은 것
+const LINE_HEAD = /^\s*(?:\(\s*[가-하]\s*\)|[가-하]\.|[ㄱ-ㅎ]\s*\.|[①-⑳]|[㉠-㉭]|※|[-•·▶◦○]|\(\s*\d+\s*\)|\d+\s*[.)])/;
+// 이어지는 줄이 조사로 시작하면 앞 줄 끝 낱말에 붙여 쓴다 ("선분 BC" + "의 중점이다")
+const LINE_PARTICLE = /^\s*(?:을|를|의|이|가|은|는|와|과|에|에서|로|으로|도|만|까지|부터|이다|이고|이며|이면|일|인)(?=[\s,.)?!]|$)/;
+
+/**
+ * GPT 판은 상자 글을 인쇄된 줄마다 따로 읽었다. 그대로 두면 한글 파일에서 줄마다 문단이 되어
+ * "선분 BC / 의 중점이다", "56일 / 때" 처럼 낱말 중간에서 끊긴다 → 항목 첫머리((가) ㄱ. ① …)로 시작하지 않고,
+ * 앞 줄이 문장 끝(. ? ! :)으로 끝나지 않은 줄은 앞 줄에 이어 붙인다. 조사로 시작하면 띄우지 않는다.
+ */
+export function joinPrintedLines(lines: any[][]): any[][] {
+  const text = (pieces: any[]) => (pieces ?? []).map((p: any) => (typeof p?.t === "string" ? p.t : typeof p?.m === "string" ? "x" : "")).join("");
+  const out: any[][] = [];
+  for (const line of lines) {
+    const prev = out[out.length - 1];
+    const own = text(line);
+    if (prev && !LINE_HEAD.test(own) && !/[.?!:]\s*$/.test(text(prev))) {
+      const glue = LINE_PARTICLE.test(own) ? [] : [{ t: " " }];
+      const head = line.map((p: any, k: number) => (k === 0 && typeof p?.t === "string" ? { ...p, t: p.t.replace(/^\s+/, "") } : p));
+      const tail = prev.map((p: any, k: number) => (k === prev.length - 1 && typeof p?.t === "string" ? { ...p, t: p.t.replace(/\s+$/, "") } : p));
+      out[out.length - 1] = [...tail, ...glue, ...head];
+    } else out.push(line);
+  }
+  return out;
+}
+
 /**
  * GPT 판(2026-11-01, 원본 배치 따라 하기)으로 만든 읽기 결과를 지금 모양으로 바꾼다 (보관함에서 "다시 만들기" 할 때).
  * - 원본 배치 정보(layout_mode, layout_blocks, 쪽 장식·선)와 원본 조각(original_png 등)을 뺀다
@@ -359,7 +385,7 @@ export function normalizeLegacyExam(exam: any, layout: Layout = SCHOOL_A_LAYOUT)
       }
       for (const b of Array.isArray(it.layout_blocks) ? it.layout_blocks : []) {
         if (b?.role !== "box" || !Array.isArray(b.lines) || !b.lines.length) continue;
-        const lines = b.lines.filter((line: any) => Array.isArray(line) && plain(line));
+        const lines = joinPrintedLines(b.lines.filter((line: any) => Array.isArray(line) && plain(line)));
         const head = plain(lines[0] ?? []).slice(0, 12);
         if (!head || stemText.includes(head)) continue;
         if (/보기/.test(String(b.title ?? ""))) {
