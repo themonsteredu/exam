@@ -74,17 +74,19 @@ with zipfile.ZipFile(io.BytesIO(dense_data)) as archive:
                 assert x + w <= xx + 2 or xx + ww <= x + 2 or y + h <= yy + 2 or yy + hh <= y + 2, (rects[i], (xx, yy, ww, hh))
 
 # A single very tall condition box can span pages without losing any line.
-long_lines = [[{"t": f"LINE{n:03d}"}] for n in range(100)]
+long_lines = [[{"t": f"LINE{n:03d}"}] for n in range(200)]
 long_exam = {"layout_mode": "source", "source_pages": [{"page": 1, "width": 1000, "height": 1414, "paper_mm": [210, 297]}],
              "sections": [{"items": [{"no": 1, "source": {"page": 1, "x": 40, "y": 80, "w": 500, "h": 1300},
                 "layout_blocks": [{"role": "box", "title": "조건", "box": {"x": 40, "y": 80, "w": 500, "h": 1300}, "lines": long_lines}]}]}]}
 data, warnings = build_exam(long_exam)
 with zipfile.ZipFile(io.BytesIO(data)) as archive:
     paths = sorted(name for name in archive.namelist() if name.startswith("Contents/section") and name.endswith(".xml"))
-    assert len(paths) >= 2 and any("이어" in w for w in warnings)
-    text = "".join("".join(ET.fromstring(archive.read(name)).xpath("//hp:t/text()", namespaces=ns)) for name in paths)
+    assert len(paths) >= 3 and any("이어" in w for w in warnings)
+    page_texts = ["".join(ET.fromstring(archive.read(name)).xpath("//hp:t/text()", namespaces=ns)) for name in paths]
+    text = "".join(page_texts)
     assert text.count("조건") == 1
-    for n in range(100):
+    assert all("1번 이어서" in t for t in page_texts[1:] if "LINE" in t), page_texts
+    for n in range(200):
         assert text.count(f"LINE{n:03d}") == 1, n
 
 # An atomic equation that cannot fit a narrow box uses a wider continuation.

@@ -212,7 +212,8 @@ class SourceLayout:
             # A native chart/table must stay together inside its reserved box.
             chunks = [(lines, heights, 0)]
         else:
-            max_inner = self.paper_height - 13 - pad * 2 - .8
+            # Reserve room for a question-continuation label on every page.
+            max_inner = self.paper_height - 20 - pad * 2 - .8
             if max_inner <= 0 or any(height > max_inner for height in heights):
                 raise LayoutOverflow(f"{location}: 한 줄의 높이가 용지보다 큽니다. 읽은 결과는 보관되어 있습니다.")
             chunks, chunk_lines, chunk_heights, start, chunk_total = [], [], [], 0, 0
@@ -236,7 +237,7 @@ class SourceLayout:
             natural_h = sum(chunk_heights) + pad * 2 + .8
             desired_h = max(h, natural_h) if len(chunks) == 1 else natural_h
             if not self.suppress_reserve:
-                desired_h = min(desired_h, self.paper_height - 13)
+                desired_h = min(desired_h, self.paper_height - 20)
             placed = {"x": x, "y": source_y, "w": w, "h": desired_h}
             if not self.suppress_reserve:
                 anchor, placed = self.allocate(placed, no)
@@ -385,7 +386,7 @@ class SourceLayout:
         placement = fig.get("layout_box") or fig.get("box")
         x, y = placement["x"] * sx, placement["y"] * sy
         w, h = placement["w"] * sx, placement["h"] * sy
-        scale = min(1, (self.paper_width - 6) / w, (self.paper_height - 13) / h)
+        scale = min(1, (self.paper_width - 6) / w, (self.paper_height - 20) / h)
         w, h = w * scale, h * scale
         fitted_x = max(3, min(x, self.paper_width - 3 - w))
         if scale < 1 or abs(fitted_x - x) > .05:
