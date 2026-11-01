@@ -42,7 +42,7 @@ export async function renderGraphicPng(raw: GraphicSpec, widthPx: number, widthM
   }
   const warnings: string[] = [];
   const text = (t: { x: number; y: number; w: number; h: number; text: string; size: number; align: string; direction?: string }) => {
-    const lines = t.direction === "vertical" ? [...t.text.replace(/\n/g, "")] : t.text.split("\n");
+    const lines = t.direction === "vertical" ? [...t.text.replace(/\s+/g, "")] : t.text.split("\n");
     // 글자나 사물의 위치를 임의로 바꾸지 않는다. 공간이 부족하면 비교 화면에서 알린다.
     const minSize = s.width / widthMm * 25.4 / 72 * 8.5;
     let size = Math.max(t.size, minSize);

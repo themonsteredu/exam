@@ -552,6 +552,8 @@ class ExamBuilder:
         """문항 하나. 문항의 문단들은 '다음 문단과 함께'·'문단 보호'로 묶어 단·쪽 사이에서 잘리지 않게 한다."""
         start = len(self.doc.paragraphs)
         self._build_item(item, is_first)
+        if item.get("split_ok"):
+            return  # 원본에서도 다음 단으로 이어진 문항: 원본처럼 단 사이에서 나뉘게 둔다
         made = self.doc.paragraphs[start:]
         for k, p in enumerate(made):
             self.para_format(p, keep_lines=True, **({"keep_with_next": True} if k < len(made) - 1 else {}))
@@ -569,6 +571,9 @@ class ExamBuilder:
         score_present = bool(points is not None and re.search(
             r"[\[(]\s*(?:총\s*)?" + re.escape(str(points)) + r"\s*점(?:\s*[-–−]\s*부분\s*점수)?\s*[\])]", stem_text
         ))
+        # 소문항 (1)·(2) 가 있으면 그림은 원본처럼 큰 물음 다음, 소문항 앞에 둔다 (서술형5)
+        sub_at = next((k for k, pieces in enumerate(paragraphs)
+                       if k > 0 and re.match(r"^\s*(\(\s*1\s*\)|⑴|1\))", "".join(str(x.get("t", "")) for x in pieces if isinstance(x, dict) and "t" in x))), None)
         first = None
         brk = item.get("break_before")
         # 문항 앞의 안내 상자 (쪽 중간의 "서술형 유의사항" 같은 것). 단·쪽 나눔은 상자 앞에서 한다
@@ -578,7 +583,28 @@ class ExamBuilder:
                 self.set_break(pa, brk)
                 brk = None
             self.build_box(box, anchor=pa)
+        figures = [f for f in [item.get("figure"), *(item.get("extra_figures") or [])] if f]
+        # 선택지를 표로 인쇄한 문항(번호 ①~⑤ 가 든 표): 그 표가 곧 선택지라 선택지 자리에 한글 표로 넣는다
+        dup = [f for f in figures if self.is_choice_table(f, item)]
+        choice_table = None
+        if dup:
+            figures = [f for f in figures if not any(f is d for d in dup)]
+            choice_table = self.native_table_of(dup[0])
+        picture_choices = self.picture_choices(item, figures)
+
+        def put_figures():
+            if picture_choices:
+                return
+            for figure in figures:
+                # 선·글자 없이 표 하나뿐인 자료는 고칠 수 있는 한글 표로 (안 되면 그림으로)
+                spec = self.native_table_of(figure)
+                if spec and self.build_native_table(spec, self.figure_width_mm(figure), no):
+                    continue
+                self.build_figure({**item, "figure": figure}, first)
+
         for k, pieces in enumerate(paragraphs):
+            if sub_at is not None and k == sub_at:
+                put_figures()
             p = self.doc.add_paragraph("")
             if k == 0:
                 first = p
@@ -600,21 +626,8 @@ class ExamBuilder:
                 # 둘째 문단부터는 번호 다음 글자와 같은 세로줄에서 시작한다
                 self.para_format(p, alignment="JUSTIFY", line_spacing_percent=t["line_spacing"]["body"],
                                  indent_left_mm=5.5, first_line_indent_mm=0, spacing_before_pt=2)
-        figures = [f for f in [item.get("figure"), *(item.get("extra_figures") or [])] if f]
-        # 선택지를 표로 인쇄한 문항(번호 ①~⑤ 가 든 표): 그 표가 곧 선택지라 선택지 자리에 한글 표로 넣는다
-        dup = [f for f in figures if self.is_choice_table(f, item)]
-        choice_table = None
-        if dup:
-            figures = [f for f in figures if not any(f is d for d in dup)]
-            choice_table = self.native_table_of(dup[0])
-        picture_choices = self.picture_choices(item, figures)
-        if not picture_choices:
-            for figure in figures:
-                # 선·글자 없이 표 하나뿐인 자료는 고칠 수 있는 한글 표로 (안 되면 그림으로)
-                spec = self.native_table_of(figure)
-                if spec and self.build_native_table(spec, self.figure_width_mm(figure), no):
-                    continue
-                self.build_figure({**item, "figure": figure}, first)
+        if sub_at is None:
+            put_figures()
         if item.get("cond_box"):
             # 예전(GPT 판) 읽기 결과에서 옮긴 조건 상자 (지금 읽기는 조건을 문제 글 문단으로 넣는다)
             self.build_bogi(item["cond_box"], no, title=None)

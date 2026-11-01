@@ -42,6 +42,8 @@ export type FigureRenderResult = {
   /** 맞추기 전 그림 글자 인쇄 크기(mm)와 맞춘 배율 (점검용) */
   labelMm?: number;
   labelFit?: number;
+  lineMm?: number;
+  lineFit?: number;
 };
 
 function figureWidthMm(fig: ExamFigure): number {
@@ -97,6 +99,8 @@ export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGUR
             size: [out.width, out.height],
             labelMm: out.labelMm,
             labelFit: out.labelFit,
+            lineMm: out.lineMm,
+            lineFit: out.lineFit,
             ...(out.warnings.length ? { warnings: out.warnings } : {}),
           });
         } catch (err) {

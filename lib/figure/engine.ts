@@ -147,7 +147,9 @@ const dirVec = (d: Dir): Vec => fromAngle(typeof d === "number" ? d : DIRS[d] ??
  * 시험지에 인쇄될 그림 글자(점 이름·각도·길이)의 크기 범위 (글자 크기, mm). AI 가 정한 base 가 그림 크기에 비해 크거나 작으면
  * 글자가 너무 크게(서술형4) 또는 작게(9번 그래프) 찍힌다 → 인쇄 크기를 알 때는 이 범위 안으로 맞춘다 (글자 자리는 옮기지 않는다)
  */
-export const LABEL_MM: [number, number] = [2.4, 4.3];
+export const LABEL_MM: [number, number] = [3.0, 4.3];
+/** 인쇄될 그림 선 굵기의 최소값(mm). AI 가 정한 base 가 그림에 비해 작으면 선이 원본(약 0.3mm)보다 가늘게(0.15mm) 찍혔다 */
+export const LINE_MIN_MM = 0.2;
 
 export type RenderOptions = {
   /** 보드 가로 크기(px, 화면 기준) */
@@ -174,6 +176,9 @@ export class FigureRenderer {
   labelFit = 1;
   /** 맞추기 전 그림 글자의 인쇄 크기(mm). 인쇄 가로를 모르면 0 */
   naturalLabelMm = 0;
+  /** 선 굵기 배율 (인쇄 굵기 맞춤. 보통 1) */
+  lineFit = 1;
+  naturalLineMm = 0;
   /** 다 그리지 못한 까닭 (없는 점, 계산되지 않는 점, 모르는 요소 등). 비어 있지 않으면 PNG 를 만들지 않는다 */
   issues: string[] = [];
   /** 점 위치 계산 (자유점은 보드를 만든 뒤 JSXGraph glider 위치를 따른다) */
@@ -220,6 +225,8 @@ export class FigureRenderer {
         // 글자가 커지면 가장자리 여백도 다시 잡는다 (글자가 잘리지 않게)
         if (!spec.bbox) [l, t, r, b] = this.bbox = this.autoBBox();
       }
+      this.naturalLineMm = (0.01 * this.base * (spec.style?.lineScale ?? 1) * opts.printWidthMm) / (r - l);
+      if (this.naturalLineMm > 0 && this.naturalLineMm < LINE_MIN_MM) this.lineFit = LINE_MIN_MM / this.naturalLineMm;
     }
     this.pxPerUnit = opts.widthPx / (r - l);
     this.heightPx = Math.round((t - b) * this.pxPerUnit);
@@ -261,7 +268,7 @@ export class FigureRenderer {
   }
   /** 본선 굵기 (px) */
   get lineWidthPx() {
-    return 0.01 * this.base * (this.spec.style?.lineScale ?? 1) * this.pxPerUnit;
+    return 0.01 * this.base * (this.spec.style?.lineScale ?? 1) * this.lineFit * this.pxPerUnit;
   }
   /** 점 이름 글자 크기 (그림 단위) */
   get labelUnits() {
@@ -1046,7 +1053,7 @@ export async function renderFigurePng(
   JXG: JXGType,
   spec: FigureSpec,
   opts: { widthPx: number; gliders?: Record<string, number>; printWidthMm?: number },
-): Promise<{ dataUrl: string; width: number; height: number; warnings: string[]; labelMm?: number; labelFit?: number }> {
+): Promise<{ dataUrl: string; width: number; height: number; warnings: string[]; labelMm?: number; labelFit?: number; lineMm?: number; lineFit?: number }> {
   if (!(opts.widthPx > 0)) throw new Error("그림의 가로 크기(width_mm)가 올바르지 않습니다");
   await loadFigureFonts();
   const holder = document.createElement("div");
@@ -1071,7 +1078,7 @@ export async function renderFigurePng(
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(src, 0, 0, out.width, out.height);
     const dataUrl = out.toDataURL("image/png");
-    return { dataUrl, width: out.width, height: out.height, warnings: r.fontWarnings(), labelMm: r.naturalLabelMm, labelFit: r.labelFit };
+    return { dataUrl, width: out.width, height: out.height, warnings: r.fontWarnings(), labelMm: r.naturalLabelMm, labelFit: r.labelFit, lineMm: r.naturalLineMm, lineFit: r.lineFit };
   } finally {
     r?.destroy();
     holder.remove();

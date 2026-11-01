@@ -122,7 +122,7 @@ export function assembleExam(
   const layout = o.layout ?? SCHOOL_A_LAYOUT;
   const exam: any = { template: o.template ?? "school-A-2026", header: {}, footer: {}, boxes: [], sections: [] };
   const unsure: string[] = [];
-  let prev: { page: number; column: number } | undefined;
+  let prev: { page: number; column: number; item: any } | undefined;
 
   const first = <T>(pick: (r: PageReading) => T | undefined) => {
     for (const { reading } of pages) {
@@ -182,13 +182,17 @@ export function assembleExam(
         //  문항 사이 빈 공간은 줄인 채로 두고, 한글 파일에서 한 문항은 한 단에 붙어 있게 한다)
         const column = it.column === 2 ? 2 : 1;
         if (prev) {
-          const brk = meta.page !== prev.page ? "page" : column !== prev.column ? "column" : undefined;
+          let brk: string | undefined = meta.page !== prev.page ? "page" : column !== prev.column ? "column" : undefined;
+          // 앞 문항이 원본에서 두 단에 걸쳐 있으면(12번의 선택지가 오른쪽 단 위에 이어짐) 이 문항은 단 맨 위가 아니다 → 단을 나누지 않는다
+          if (brk === "column" && spansIntoNextColumn(prev.item, toOriginal(reading.print_area, meta.scale))) brk = undefined;
           if (brk) {
             if (i === 0 && target.items.length === 0 && target.title) target.break_before = brk;
             else item.break_before = brk;
           }
         }
-        prev = { page: meta.page, column };
+        // 원본에서 다음 단까지 이어진 문항은 한글 파일에서도 단 사이에서 나뉘어도 된다 (원본과 같은 자리에서 이어지게)
+        if (spansIntoNextColumn(item, toOriginal(reading.print_area, meta.scale))) item.split_ok = true;
+        prev = { page: meta.page, column, item };
         target.items.push(item);
         pageItems.push({ it, item });
       });
@@ -245,6 +249,14 @@ export function tidyExam(exam: any): any {
     }
   }
   return exam;
+}
+
+/** 왼쪽 단의 문항이 원본에서 오른쪽 단까지 이어지는지 (문항 영역이 쪽 가운데를 넉넉히 넘음) */
+function spansIntoNextColumn(item: any, printArea: Region): boolean {
+  const s = item?.source;
+  if (!s || !(printArea.w > 0)) return false;
+  const mid = printArea.x + printArea.w / 2;
+  return s.x < mid && s.x + s.w > mid + printArea.w * 0.08;
 }
 
 /** 원본 사진 1픽셀이 양식에서 몇 mm 인지: 인쇄된 영역의 가로를 양식의 본문 가로에 맞춘다 */
@@ -368,6 +380,30 @@ export function normalizeLegacyExam(exam: any, layout: Layout = SCHOOL_A_LAYOUT)
         // 다시 그릴 명령이 없는 그림(사진, 원본으로 두었던 자료)은 빈 자리
         if (!fig.commands && !fig.graphic) fig.placeholder_note ??= fig.asset_kind === "photo" ? "사진 자리" : "그림 자리";
       }
+    }
+  }
+  // 원본에서 두 단에 걸친 문항 다음의 단 나눔은 지운다 (그 문항이 오른쪽 단에 이어지므로 다음 문항은 단 맨 위가 아니다)
+  const ordered: any[] = (copy.sections ?? []).flatMap((s: any) => (s.items ?? []).map((it: any) => ({ it, section: s })));
+  ordered.forEach(({ it, section }: any, k: number) => {
+    const before = ordered[k - 1]?.it;
+    const area = pages.get(it?.source?.page)?.print_area;
+    if (area && spansIntoNextColumn(it, area)) it.split_ok = true;
+    if (!before || !area || before.source?.page !== it.source?.page || !spansIntoNextColumn(before, area)) return;
+    if (it.break_before === "column") delete it.break_before;
+    if (section.items[0] === it && section.break_before === "column") delete section.break_before;
+  });
+  // GPT 판이 쪽마다 읽은 안내 상자(둘째 쪽부터, 예: "서술형 문항 풀이할 때 유의사항")를 살린다:
+  // 그 쪽에서 새 부분(서술형 등)이 시작하면 그 첫 문항 앞에, 아니면 그 쪽 마지막 문항 뒤에
+  for (const p of pages.values()) {
+    if (!(p.page > 1) || !Array.isArray(p.boxes) || !p.boxes.length) continue;
+    const onPage = ordered.filter(({ it }: any) => it?.source?.page === p.page);
+    if (!onPage.length) continue;
+    const startOfSection = onPage.find(({ it, section }: any) => section.items[0] === it && section.title);
+    for (const b of p.boxes) {
+      if (!b || !Array.isArray(b.lines) || !b.lines.length) continue;
+      const box = { kind: b.kind || "notice", lines: b.lines.map((l: any) => (l && typeof l === "object" && "text" in l ? (l.center ? { text: l.text, align: "CENTER" } : l.text) : l)) };
+      if (startOfSection) (startOfSection.it.boxes_before ??= []).push(box);
+      else (onPage[onPage.length - 1].it.boxes_after ??= []).push(box);
     }
   }
   // GPT 판이 쪽마다 따로 읽은 안내 글(저작권 안내 등) 가운데 둘째 쪽부터의 것은 그 쪽 마지막 문항 뒤 상자로 살린다
