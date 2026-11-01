@@ -176,7 +176,10 @@ class ExamBuilder:
             if not isinstance(piece, dict):  # 조각이 그냥 글로 들어온 경우
                 piece = {"t": piece}
             if "m" in piece:
-                self.add_equation(p, piece["m"], size=size, where=f"{where}[{i}]")
+                fitted = piece.get("_fit_font", size)
+                if not isinstance(fitted, (int, float)) or not 0 < fitted <= size:
+                    fitted = size
+                self.add_equation(p, piece["m"], size=fitted, where=f"{where}[{i}]")
             else:
                 text = piece.get("t")
                 # 문단 나눔은 문제 글에서만 쓴다 (build_item 이 미리 나눔). 다른 곳에 섞여 오면 빈칸으로
