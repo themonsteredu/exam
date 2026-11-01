@@ -30,4 +30,5 @@ jobs:
       - run: node scripts/run-ts.mjs scripts/check_exam_storage.ts
       - run: python scripts/check_hwpx_text.py
       - run: python scripts/check_latex.py
+      - run: python scripts/check_eq_width.py
       - run: python scripts/check_staged_hwpx.py

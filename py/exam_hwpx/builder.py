@@ -20,38 +20,103 @@ import hwpx.equation.measure as _eq_measure
 from hwpx.equation.measure import measure_equation
 from hwpx.form_fit.measure import estimate_text_width
 
-# 수식 상자 너비: python-hwpx 측정기는 한글보다 좁게 잰다. 사용자 한글 화면(2026-11-01 대자중 1·4번)에서
-# "2:3=x:6을", "0.5x-1.7의" 처럼 수식 끝이 뒤 글자와 겹쳤다 → 화면에서 잰 너비에 맞춰 숫자·소수점·기울인 x·연산자 둘레를 넓히고,
-# 비례식의 ':' 는 한글처럼 양옆을 띄운 관계 기호로 잰다. (상자가 조금 넓으면 뒤에 빈칸이 생길 뿐이지만, 좁으면 글자가 겹친다)
-_eq_measure._DIGIT = 0.51
-_eq_measure._PUNCT = 0.26
-_eq_measure._OPERATOR_SPACE = 0.27
-_eq_measure._LETTER_WIDTHS = {**_eq_measure._LETTER_WIDTHS, "x": 0.58}
+# ── 수식 상자 너비 ──
+# 한글(윈도)은 파일에 적힌 수식 상자 너비를 그대로 쓰고, 수식은 상자 왼쪽에 붙여 그린다.
+# 상자가 좁으면 수식 끝이 뒤 글자와 겹치고("MN의", "1.7의"), 넓으면 뒤에 빈칸이 생긴다("∠a ,", "∠c 의").
+# python-hwpx 측정기를 바탕으로, 사용자 한글 화면 사진 세 장(2026-11-01 대자중)에서 잰 실제 너비에 맞춘 곳만 바꾼다.
+# (사진마다 글자 크기를 '한글 글자 간격'과 '수식 상자 끝 = 다음 글자 시작' 두 가지로 따로 재서 맞는지 확인했다.
+#  잰 값과 맞춰 보는 검사: scripts/check_eq_width.py)
+_eq_measure._DIGIT = 0.5  # 0.7 · 0.3 · 0.5 · 1.7 네 수에서 숫자 하나 0.50~0.51 (측정기 0.47)
+_eq_measure._PUNCT = 0.25  # 소수점 0.23~0.27 (측정기 0.15)
+_eq_measure._OPERATOR_SPACE = 0.2  # + − = 양옆 (측정기 0.18). + − = 하나가 빈칸까지 1.05~1.15
+_eq_measure._OPERATOR_GLYPH = 0.6  # 목록에 없는 관계 기호(≤ ≥ ≠ ≡ ∥ ∽ …)의 글자
+_eq_measure._FRACTION_PAD = 0.14  # 분수 가로줄이 분자·분모보다 양쪽으로 0.12~0.16 길다 (측정기 0.25)
+_eq_measure._LETTER_WIDTHS = {**_eq_measure._LETTER_WIDTHS, "c": 0.44}  # 기울인 c ("∠c", 측정기 0.32)
+# 비례식 2:3 의 ':' 는 한글이 양옆을 띄운 관계 기호로 그린다 (빈칸까지 0.67, 측정기는 0.15)
 _eq_measure._RELATIONS = _eq_measure._RELATIONS | frozenset({":"})
-_eq_measure._OPERATOR_GLYPHS = {**_eq_measure._OPERATOR_GLYPHS, ":": 0.35}
-# 따옴표 안의 기호(△ ⊥ ∥ ≡ ① …)는 측정기가 영문 소문자 너비(0.4)로 재지만 한글은 거의 한 글자 너비로 그린다
+_eq_measure._OPERATOR_GLYPHS = {**_eq_measure._OPERATOR_GLYPHS, ":": 0.27}
+# 각도의 ° (^{circ}): 측정기는 circ 를 연산 기호로 보고 양옆 빈칸까지 넣는다 → 기호 하나만
+_eq_measure._KEYWORD_GLYPHS = {**_eq_measure._KEYWORD_GLYPHS, "circ": 0.5}
+# ∠ △ ∞ ∂ … : 측정기 안의 연산 기호 목록(OPERATORS)에도 들어 있어서, 기호 하나(1.05)가 아니라 양옆 빈칸이 붙은 연산 기호로 쟀다
+# (∠ 하나가 화면에서는 1.0~1.06 인데 1.26 으로 재져 "∠a ," 처럼 빈칸이 생김)
+_ORDINARY_SYMBOLS = frozenset(_eq_measure._SYMBOL_ORDINARY) | frozenset({"dots", "infty", "star", "ast"})
+_eq_is_operator = _eq_measure._is_operator
+
+
+def _calibrated_is_operator(token: str) -> bool:
+    return token.lower() not in _ORDINARY_SYMBOLS and _eq_is_operator(token)
+
+
+_eq_measure._is_operator = _calibrated_is_operator
+# 바로 세운 영문(점 이름 AB·MN, 단위 cm)은 측정기가 대문자를 모두 0.67 로 재서 M·N·W 처럼 넓은 글자에서 뒤 글자와 겹쳤다.
+# 화면에서 잰 너비가 Times 글꼴 너비와 맞는다 (AB 1.38, BC 1.23, MN 1.65, 8cm 1.74) → Times 너비(1/1000 em)로 글자마다
+_TIMES_UPRIGHT = {
+    **dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ", (722, 667, 667, 722, 611, 556, 722, 722, 333, 389, 722, 611, 889,
+                                             722, 722, 556, 722, 667, 556, 611, 722, 722, 944, 722, 722, 611))),
+    **dict(zip("abcdefghijklmnopqrstuvwxyz", (444, 500, 444, 500, 444, 333, 500, 500, 278, 278, 500, 278, 778,
+                                             500, 500, 500, 500, 333, 389, 278, 500, 500, 722, 500, 500, 444))),
+}
 _eq_char_width = _eq_measure._char_width
 
 
-def _symbol_aware_char_width(ch: str, upright: bool = False) -> float:
-    if ord(ch) >= 0x2000 and not ("가" <= ch <= "힣"):
+def _calibrated_char_width(ch: str, upright: bool = False) -> float:
+    if upright and ch in _TIMES_UPRIGHT:
+        return _TIMES_UPRIGHT[ch] / 1000
+    # 따옴표 안의 기호는 측정기가 영문 소문자 너비(0.4)로 잰다 → 기호 너비로.
+    # □ △ ○ ① ㉠ ★ 같은 도형·동그라미 글자는 거의 한 글자(0.95), ⊥ ∽ ≡ → 같은 수학 기호는 0.75
+    code = ord(ch)
+    if 0x2460 <= code <= 0x24FF or 0x25A0 <= code <= 0x27BF or 0x3000 <= code <= 0x33FF:
         return 0.95
+    if code >= 0x2000 and not ("가" <= ch <= "힣"):
+        return 0.75
     return _eq_char_width(ch, upright)
 
 
-_eq_measure._char_width = _symbol_aware_char_width
-# 목록에 없는 관계 기호(≡ ⊥ ∥ ∽ …)의 글자 너비
-_eq_measure._OPERATOR_GLYPH = 0.72
-# ∠ △ 같은 기호: 사용자 화면(대자중 서술형4 "∠a−∠b+2∠c")에서 ∠ 하나가 뒤 글자까지 0.87em
-_eq_measure._SYMBOL = 0.87
-# 수식 상자 오른쪽 여유. 넉넉히(0.35em+3%) 잡았더니 "∠c 의", "∠a ," 처럼 뒤 조사·쉼표가 떨어져 보였다
-# (화면에서 잰 실제 너비는 위 보정값으로 잰 너비와 거의 같다) → 기울인 글자 끝 획 정도만
-EQ_PAD_EM = 0.08
-EQ_PAD_RATIO = 0.0
+_eq_measure._char_width = _calibrated_char_width
+# 측정기가 '그 밖의 글자'(0.36)로 재는 문장 부호 중 넓은 것: 30% 의 % 는 Times 로 0.83
+_WIDE_MARKS = {"%": 0.83, "?": 0.44, "*": 0.5, "@": 0.92}
+_eq_token_width = _eq_measure._token_width
+
+
+def _calibrated_token_width(token: str, upright: bool = False, sign: bool = False) -> float:
+    if token in _WIDE_MARKS:
+        return _WIDE_MARKS[token]
+    return _eq_token_width(token, upright, sign)
+
+
+_eq_measure._token_width = _calibrated_token_width
+# 빈칸 '~' : "l ~parallel~ m" 이 화면에서 3.10 → 빈칸 하나 0.4 (측정기 0.25). 따옴표 안의 빈칸(" cm")은 그대로 0.25
+TILDE_EM = 0.4
+_eq_symbol = _eq_measure._Measurer._symbol
+
+
+def _calibrated_symbol(self, token: str, sign: bool = False):
+    if token == "~":
+        return _eq_measure._Box(TILDE_EM, 0.0, 0.0)
+    return _eq_symbol(self, token, sign)
+
+
+_eq_measure._Measurer._symbol = _calibrated_symbol
+# 상자 오른쪽 여유: 위 값으로 잰 너비와 화면 너비의 차이(-0.06~+0.06em)를 덮고 0.03em 쯤 남을 만큼만.
+# 넉넉히(0.35em+3%) 잡았을 때는 "∠c 의", "∠a ," 처럼 뒤 조사·쉼표가 떨어져 보였다
+EQ_PAD_EM = 0.06
+EQ_PAD_RATIO = 0.01
 # 수식 바로 뒤의 조사·서술어 앞 띄어쓰기는 지운다 (AI 가 "x:6 을", "m 일 때" 처럼 띄워 읽는 일이 있다)
+_PARTICLES = (
+    "을|를|의|이|가|은|는|와|과|에|에서|에게|에는|로|으로|일|인|이다|이고|이며|이면|라|라고|이라|이라고|만|도|까지|부터|보다|과의|와의"
+    "|이므로|임|임을|만큼|씩|마다|처럼|인지|인가|일까|이나|이라는|라는|이라면|라면|이란|이지만|이면서|이어야"
+    "|에서의|에서는|에서도|에도|로부터|으로부터|로의|으로의|로는|으로는|와는|과는|까지의|부터의|보다는|만을|만의"
+)
+# 조사 뒤에 오는 것: 빈칸·문장 부호·괄호("은(는)")·따옴표·줄임표, 또는 글 끝
+_PARTICLE_END = r"(?:[\s,.?!)\]·:;(’”'\"…~]|$)"
+# "이 때", "이 식" 처럼 띄어 쓴 지시어 '이' 는 붙이지 않는다
+_NOT_DEMONSTRATIVE = r"(?!이\s+(?:때|식|점|값|두|세|중|것|그래프|도형|직선|선분|수|각))"
 _PARTICLE_AFTER_EQ = re.compile(
-    r"^\s+(?=(?:을|를|의|이|가|은|는|와|과|에|에서|에게|에는|로|으로|일|인|이다|이고|이며|이면|라|라고|이라|이라고|만|도|까지|부터|보다|과의|와의)"
-    r"(?:[\s,.?!)\]·:;]|$))"
+    r"^\s+(?:(?=[,.?!)\]])|" + _NOT_DEMONSTRATIVE + r"(?=(?:" + _PARTICLES + r")" + _PARTICLE_END + r"))"
+)
+# 숫자를 글로 읽은 경우("30% 일 때", "3 과 4")도 같은 규칙으로 붙인다
+_PARTICLE_AFTER_NUMBER = re.compile(
+    r"(?<=[0-9%°])\s+" + _NOT_DEMONSTRATIVE + r"(?=(?:" + _PARTICLES + r")" + _PARTICLE_END + r")"
 )
 
 from .latex import latex_to_plain, script_for_measure, to_eqedit
@@ -219,6 +284,7 @@ class ExamBuilder:
                 prev = pieces[i - 1] if i > 0 else None
                 if isinstance(prev, dict) and "m" in prev:
                     text = _PARTICLE_AFTER_EQ.sub("", text)
+                text = _PARTICLE_AFTER_NUMBER.sub("", text)
                 self.add_rich_text(p, text, size=size)
 
     # ------------------------------------------------------------------ 부분별
