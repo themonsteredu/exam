@@ -57,6 +57,8 @@ export const PageReadingS = z.strictObject({
       lines: z.array(z.strictObject({ text: z.string(), center: z.boolean() })),
       /** 이 상자 바로 다음에 오는 문항의 번호 모양(no_text). 상자 뒤에 이 쪽 문항이 더 없으면 "" */
       before: z.string(),
+      /** 테두리 상자 안에 있으면 true, 테두리 없이 ※ 같은 안내 줄만 인쇄돼 있으면 false */
+      framed: z.boolean(),
     }),
   ),
   sections: z.array(z.strictObject({ title: z.string(), items: z.array(ItemReadingS) })),

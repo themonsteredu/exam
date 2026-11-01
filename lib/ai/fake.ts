@@ -26,6 +26,7 @@ export function fakePage(): { reading: PageReading; usage: Usage } {
       kind: b.kind,
       lines: b.lines.map((l: any) => (typeof l === "string" ? { text: l, center: false } : { text: l.text, center: l.align === "CENTER" })),
       before: "1.",
+      framed: true,
     })),
     sections: m.sections.map((s: any) => ({
       title: s.title,

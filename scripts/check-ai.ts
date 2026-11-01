@@ -101,6 +101,7 @@ console.log("4) 합치기 - 직접 넣은 데이터로 되돌아오는지");
       kind: b.kind,
       lines: b.lines.map((l: any) => (typeof l === "string" ? { text: l, center: false } : { text: l.text, center: l.align === "CENTER" })),
       before: "1.",
+      framed: true,
     })),
     sections: manual.sections.map((s: any) => ({
       title: s.title,

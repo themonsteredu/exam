@@ -137,6 +137,7 @@ export function assembleExam(
   const examBox = (b: PageReading["boxes"][number]) => ({
     kind: b.kind,
     lines: b.lines.map((l) => (l.center ? { text: l.text, align: "CENTER" } : l.text)),
+    ...(b.framed === false ? { framed: false } : {}),
   });
   // 안내 상자: 첫 문항보다 앞(머리 아래)에 있는 것은 exam.boxes, 쪽 중간·끝의 상자는 그 다음 문항 앞(boxes_before)이나
   // 그 쪽 마지막 문항 뒤(boxes_after)에 둔다 (예전 읽기 결과처럼 before 가 없으면 첫 상자 쪽의 것만 머리 아래로)

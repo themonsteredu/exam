@@ -27,6 +27,8 @@ export default function MakePage() {
   const [JXG, setJXG] = useState<any>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [title, setTitle] = useState("");
+  /** 제목을 직접 고쳤는지 (안 고쳤으면 새 파일을 고를 때 그 파일 이름으로 바꾼다) */
+  const [titleTyped, setTitleTyped] = useState(false);
   const [over, setOver] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [result, setResult] = useState<MakeResult | null>(null);
@@ -90,7 +92,8 @@ export default function MakePage() {
     setError("");
     setErrorDetail("");
     setRecovery(null);
-    if (!title) setTitle(picked[0].name.replace(/\.[^.]+$/, ""));
+    // 전에 고른 파일 이름이 제목으로 남아 다른 시험지에 붙지 않게 (2026-11-01 대자중이 금호중 제목으로 저장됨)
+    if (!title || !titleTyped) setTitle(picked[0].name.replace(/\.[^.]+$/, ""));
   }
 
   function onDrop(e: DragEvent) {
@@ -184,7 +187,7 @@ export default function MakePage() {
       <section className="card">
         <label className="field">
           시험지 제목
-          <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="예: 2학년 2학기 중간고사" disabled={busy} />
+          <input type="text" value={title} onChange={(e) => { setTitle(e.target.value); setTitleTyped(true); }} placeholder="예: 2학년 2학기 중간고사" disabled={busy} />
         </label>
         <div
           className={`drop${over ? " over" : ""}`}

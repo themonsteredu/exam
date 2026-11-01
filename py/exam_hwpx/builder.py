@@ -284,16 +284,20 @@ class ExamBuilder:
         return p
 
     def build_box(self, box: dict, anchor=None):
-        """안내 상자 (유의 사항 / 문항 배점 안내)."""
+        """안내 상자 (유의 사항 / 문항 배점 안내). framed 가 False 면 테두리 없이 안내 줄만 (원본에 테두리가 없던 ※ 줄)."""
         t = self.tpl
         size = t["sizes"]["box"]
         p_anchor = anchor or self.doc.add_paragraph("")
-        table = p_anchor.add_table(1, 1, width=self.column_width(), border_fill_id_ref=self.border("0.12 mm", "0.12 mm", "0.12 mm", "0.12 mm"))
-        cell = table.cell(0, 0)
         lines = box.get("lines", [])
-        paragraphs = [cell.paragraphs[0]]
-        for _ in lines[1:]:
-            paragraphs.append(cell.add_paragraph(""))
+        table = None
+        if box.get("framed") is False:
+            paragraphs = [p_anchor] + [self.doc.add_paragraph("") for _ in lines[1:]]
+        else:
+            table = p_anchor.add_table(1, 1, width=self.column_width(), border_fill_id_ref=self.border("0.12 mm", "0.12 mm", "0.12 mm", "0.12 mm"))
+            cell = table.cell(0, 0)
+            paragraphs = [cell.paragraphs[0]]
+            for _ in lines[1:]:
+                paragraphs.append(cell.add_paragraph(""))
         for p, line in zip(paragraphs, lines):
             if isinstance(line, str):
                 line = {"text": line}
@@ -307,7 +311,10 @@ class ExamBuilder:
                 indent_left_mm=0,
                 first_line_indent_mm=-3.5 if hanging else 0,
             )
-        self.para_format(p_anchor, line_spacing_percent=100, spacing_after_pt=3)
+        if table is not None:
+            self.para_format(p_anchor, line_spacing_percent=100, spacing_after_pt=3)
+        else:
+            self.para_format(paragraphs[-1], spacing_after_pt=6)
         return table
 
     def build_section_title(self, title: str, break_before: str | None = None):
@@ -648,8 +655,10 @@ class ExamBuilder:
                 mark = CHOICE_MARKS[i] if i < len(CHOICE_MARKS) else f"({i + 1})"
                 cp.add_run(f"{mark}  ", char_pr_id_ref=self.run_style(size=size))
                 self.add_pieces(cp, choice, size=size, where=f"{no}번 선택지 {i + 1}")
+                # 긴 선택지의 둘째 줄은 번호 뒤 글자에 맞춘다 (내어쓰기: 한글은 왼쪽 여백 0 에서 첫 줄을 시작하고 나머지 줄을 이만큼 민다)
+                hang = round(estimate_text_width(f"{mark}  ", size) / MM, 1)
                 self.para_format(cp, alignment="LEFT", line_spacing_percent=t["line_spacing"]["choice"],
-                                 indent_left_mm=0, spacing_before_pt=4 if i == 0 else 0)
+                                 indent_left_mm=0, first_line_indent_mm=-hang, spacing_before_pt=4 if i == 0 else 0)
             return
         # 테두리 없는 표에 나란히 (칸마다 번호와 내용. 한글에서 고칠 수 있는 글자·수식 그대로)
         rows = (len(choices) + cols - 1) // cols
@@ -784,6 +793,10 @@ class ExamBuilder:
         t, f = self.tpl, self.exam.get("footer", {})
         footer = self.doc.page.set_footer(text="")
         anchor = footer.paragraphs[0]
+        notice = str(f.get("notice") or "").strip()
+        if notice and len(notice) <= 40 and not f.get("right_top") and not re.search(r"저작권|복제|무단|전재", notice):
+            # 왼쪽 시험 이름 · 가운데 쪽 번호 · 오른쪽 학교 이름이 한 줄인 꼬리말 (대자중 등)
+            return self.build_line_footer(footer, anchor, notice, str(f.get("right_bottom") or ""))
         table = anchor.add_table(2, 3, width=self.text_width(), border_fill_id_ref=self.border(None, None, None, None))
         table.set_column_widths([30, 40, 30])
         table.merge_cells("A2:C2")
@@ -818,6 +831,33 @@ class ExamBuilder:
         np_ = table.cell(1, 0).paragraphs[0]
         self.add_rich_text(np_, f.get("notice", ""), size=t["sizes"]["footer_notice"])
         self.para_format(np_, alignment="LEFT", line_spacing_percent=110)
+        self.para_format(anchor, line_spacing_percent=100)
+        self._footer_table = table
+
+    def build_line_footer(self, footer, anchor, left: str, right: str):
+        """한 줄 꼬리말: 위쪽 선 아래에 왼쪽 글, 가운데 '쪽/전체 쪽', 오른쪽 글."""
+        t = self.tpl
+        table = anchor.add_table(1, 3, width=self.text_width(), border_fill_id_ref=self.border(None, None, None, None))
+        table.set_column_widths([40, 20, 40])
+        top_line = self.border(None, None, "0.4 mm", None)
+        for c in range(3):
+            table.set_cell_border_fill(0, c, top_line)
+        size = t["sizes"]["footer_right"]
+        heading = t["fonts"]["heading"]
+        lp = table.cell(0, 0).paragraphs[0]
+        self.add_rich_text(lp, left, size=size, font=heading, bold=True)
+        self.para_format(lp, alignment="LEFT", line_spacing_percent=130)
+        cid = self.run_style(size=size, font=heading)
+        pp = table.cell(0, 1).paragraphs[0]
+        footer.add_page_number_field(paragraph=pp.element, format="page")
+        pp.add_run("/", char_pr_id_ref=cid)
+        footer._add_total_page_counter(pp.element, "DIGIT")
+        for run in pp.element.findall(f"{_HP}run"):
+            run.set("charPrIDRef", str(cid))
+        self.para_format(pp, alignment="CENTER", line_spacing_percent=130)
+        rp = table.cell(0, 2).paragraphs[0]
+        self.add_rich_text(rp, right, size=size, font=heading, bold=True)
+        self.para_format(rp, alignment="RIGHT", line_spacing_percent=130)
         self.para_format(anchor, line_spacing_percent=100)
         self._footer_table = table
 
