@@ -384,7 +384,7 @@ class SourceLayout:
                     self.place(rule.element, x, y)
             entries = []
             page_blocks = self.page_text(page, on_page, i)
-            deferred_footers = []
+            deferred_footers = set()
             # Reserve a page's footer on that page before laying out questions.
             # Otherwise a question that continues to another page carries the
             # original page number and school footer along with it.
@@ -396,12 +396,12 @@ class SourceLayout:
                     except FooterPlacementOverflow:
                         # Preserve every footer even when its reading is too
                         # large to reserve with the other footer blocks.
-                        deferred_footers.append(block)
+                        deferred_footers.add(id(block))
                         self.b.warnings.append(f"{page['page']}쪽: 꼬리말 위치를 확인해 주세요.")
                     finally:
                         self.preparing_footer = False
             for block in page_blocks:
-                if block.get("artifact_kind") == "footer" and block not in deferred_footers:
+                if block.get("artifact_kind") == "footer" and id(block) not in deferred_footers:
                     continue
                 entries.append((block["box"]["y"], block["box"]["x"], "text", block, f"{page['page']}쪽"))
             for item in on_page:
