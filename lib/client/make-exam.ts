@@ -219,7 +219,8 @@ async function run(
     }
     tell({ usd: progress.usd + sumUsd(res.usage), reused: (progress.reused ?? 0) + (res.cached ? 1 : 0) });
     const page = i + 1;
-    pages.push({ meta: { page, original: { width: canvas.width, height: canvas.height }, scale }, reading: res.reading });
+    const paper = sources[i].paperMm;
+    pages.push({ meta: { page, original: { width: canvas.width, height: canvas.height }, scale, ...(paper ? { paper_mm: paper } : {}) }, reading: res.reading });
     for (const s of res.reading.sections) {
       if (s.title) lastSection = s.title;
       if (s.items.length) lastNo = s.items[s.items.length - 1].no;

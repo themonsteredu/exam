@@ -14,7 +14,12 @@ export type PageSource = {
   problem?: string;
   /** 쪽 그림 (원본 해상도). 다 쓰면 release */
   render(): Promise<HTMLCanvasElement>;
+  /** 원본 종이 크기(mm). PDF 쪽은 render() 뒤에 알 수 있다 (사진은 모른다) */
+  paperMm?: { width_mm: number; height_mm: number };
 };
+
+/** PDF 쪽 크기(1/72 인치 단위)를 mm 로 */
+const PT_TO_MM = 25.4 / 72;
 
 /** PDF 를 그릴 때의 긴 변 (픽셀). A4 에서 약 260dpi: 작은 그림 글자도 잘라서 읽을 수 있게 */
 const PDF_LONG_EDGE = 3000;
@@ -136,6 +141,22 @@ function canvasOf(width: number, height: number): HTMLCanvasElement {
 }
 
 /** 올린 파일들 → 쪽 목록 (PDF 는 쪽마다, 사진은 한 장마다) */
+/** PDF 첫 쪽의 종이 크기(mm). 열지 못하면 undefined (보관함 '다시 만들기'에서 원본이 B4 인지 알아볼 때 쓴다) */
+export async function pdfPaperMm(bytes: ArrayBuffer): Promise<{ width_mm: number; height_mm: number } | undefined> {
+  try {
+    const pdfjs = await loadPdfjs();
+    const doc = await pdfjs.getDocument({ data: new Uint8Array(bytes), ...pdfOptions(false) }).promise;
+    try {
+      const base = (await doc.getPage(1)).getViewport({ scale: 1 });
+      return { width_mm: base.width * PT_TO_MM, height_mm: base.height * PT_TO_MM };
+    } finally {
+      await doc.destroy?.();
+    }
+  } catch {
+    return undefined;
+  }
+}
+
 export async function openSources(files: File[]): Promise<PageSource[]> {
   const out: PageSource[] = [];
   for (const file of files) {
@@ -156,12 +177,14 @@ export async function openSources(files: File[]): Promise<PageSource[]> {
       }
       const broken = await brokenPages(pdfjs, bytes, doc);
       for (let n = 1; n <= doc.numPages; n++) {
-        out.push({
+        const source: PageSource = {
           label: `${file.name} ${n}쪽`,
           problem: broken.has(n) ? "프로그램이 그리지 못하는 부분이 있어 글이나 그림이 빠질 수 있습니다" : undefined,
           async render() {
             const page = await doc.getPage(n);
             const base = page.getViewport({ scale: 1 });
+            // 원본 종이 크기 (B4 원본이면 한글 파일도 B4 로 만든다)
+            source.paperMm = { width_mm: base.width * PT_TO_MM, height_mm: base.height * PT_TO_MM };
             const scale = PDF_LONG_EDGE / Math.max(base.width, base.height);
             const viewport = page.getViewport({ scale });
             const canvas = canvasOf(viewport.width, viewport.height);
@@ -172,7 +195,8 @@ export async function openSources(files: File[]): Promise<PageSource[]> {
             page.cleanup();
             return canvas;
           },
-        });
+        };
+        out.push(source);
       }
     } else if (isImageFile(file)) {
       out.push({

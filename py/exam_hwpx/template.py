@@ -50,3 +50,25 @@ TEMPLATES = {SCHOOL_A_2026["id"]: SCHOOL_A_2026}
 
 def get_template(template_id: str | None) -> dict:
     return TEMPLATES.get(template_id or "", SCHOOL_A_2026)
+
+
+def with_paper(template: dict, paper: dict | None) -> dict:
+    """원본 용지가 양식 용지와 다르면(예: B4 원본) 용지·여백·단 사이를 용지 너비 비율로 늘린 양식.
+    글자 크기·줄 간격은 그대로 둔다 (B4 시험지도 글자 크기는 A4 와 비슷하다).
+    2026-11-01 호남삼육중: B4 4쪽 원본을 A4 4쪽에 맞추느라 글자 9.5pt·그림 0.8배까지 줄어 품질이 떨어졌다.
+    lib/ai/assemble.ts 의 layoutFor 와 같은 비율을 쓴다 (그림 크기를 같은 본문 너비로 정하도록)."""
+    if not isinstance(paper, dict):
+        return template
+    try:
+        width, height = float(paper.get("width_mm") or 0), float(paper.get("height_mm") or 0)
+    except (TypeError, ValueError):
+        return template
+    base = template["paper"]["width_mm"]
+    if not (150 <= width <= 450 and 200 <= height <= 650) or abs(width - base) < 1:
+        return template
+    ratio = width / base
+    tpl = dict(template)
+    tpl["paper"] = {"width_mm": width, "height_mm": height}
+    tpl["margins_mm"] = {key: round(value * ratio, 2) for key, value in template["margins_mm"].items()}
+    tpl["columns"] = {**template["columns"], "gap_mm": round(template["columns"]["gap_mm"] * ratio, 2)}
+    return tpl

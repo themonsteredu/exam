@@ -76,6 +76,15 @@ console.log("2) 그림 명령 검사기 - 지금까지 만든 그림");
     { base: 10, elements: [{ type: "arc2" }] },
   ];
   broken.forEach((b, i) => ok(checkFigureSpec(b).errors.length > 0, `틀린 그림 명령 ${i + 1} 을 잡아냄`));
+  // 숫자 각 글자와 그린 각이 다르면 잡는다 (2026-11-01 호남삼육중 2번: C 를 지나는 방향각 102° 를 써서 ∠BAC 가 35° 가 아니라 59°)
+  const triangle = (dirAtC: number, label: string) => ({
+    base: 6,
+    points: [{ id: "B", at: [0, 0] }, { id: "C", at: [5.42, 0] }, { id: "A", intersect: [{ through: ["B"], angle: 43 }, { through: ["C"], angle: dirAtC }] }],
+    elements: [{ type: "angle", points: ["B", "A", "C"], label }, { type: "angle", points: ["C", "B", "A"], label: "43°" }],
+  });
+  ok(checkFigureSpec(triangle(102, "35°")).errors.some((e) => e.includes("35°") && e.includes("59.0°")), "각 글자 35° 와 그린 각 59° 가 다른 것을 잡아냄");
+  ok(checkFigureSpec(triangle(78, "35°")).errors.length === 0, "각 글자와 그린 각이 맞으면 통과");
+  ok(checkFigureSpec(triangle(102, "x")).errors.length === 0, "문자 각 글자(x)는 각 크기를 따지지 않음");
 }
 
 console.log("3) 그림 읽기 지시문 속 예시");

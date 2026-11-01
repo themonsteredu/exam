@@ -2,7 +2,7 @@ import { postJson } from "./api";
 import type { Usage } from "@/lib/ai/claude";
 
 // Changing OCR instructions or the result format must change this revision.
-export const READ_CACHE_REVISION = "two-column-v5-lines";
+export const READ_CACHE_REVISION = "two-column-v6-angles";
 const DB_NAME = "exam-reading-cache";
 const MAX_AGE = 30 * 24 * 60 * 60 * 1000;
 type Entry = { key: string; at: number; value: any };

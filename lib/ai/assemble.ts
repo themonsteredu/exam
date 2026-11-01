@@ -15,7 +15,58 @@ export type PageMeta = {
   original: { width: number; height: number };
   /** AI 에게 보낸 사진 픽셀 = 원본 픽셀 × scale */
   scale: number;
+  /** 원본 종이 크기(mm). PDF 쪽에서만 안다 (사진은 모른다) */
+  paper_mm?: { width_mm: number; height_mm: number };
 };
+
+/** 용지 (mm) */
+export type Paper = { name: string; width_mm: number; height_mm: number };
+export const A4: Paper = { name: "A4", width_mm: 210, height_mm: 297 };
+export const B4: Paper = { name: "B4", width_mm: 257, height_mm: 364 };
+
+/**
+ * 원본 종이 크기를 표준 용지로: B4(257×364, 250×353 도)에 가까우면 B4, 나머지(A4, 모르는 크기, 가로 쪽, 사진)는 A4.
+ * 2026-11-01 호남삼육중: B4 4쪽 원본을 A4 4쪽에 맞추느라 글자 9.5pt·그림 0.65배까지 줄어 품질이 떨어졌다 → 원본이 B4 면 B4 로 만든다.
+ */
+export function paperOf(size?: { width_mm?: number; height_mm?: number }): Paper {
+  const w = Number(size?.width_mm), h = Number(size?.height_mm);
+  if (!(w > 0) || !(h > 0)) return A4;
+  const near = (pw: number, ph: number) => Math.abs(w / pw - 1) < 0.04 && Math.abs(h / ph - 1) < 0.04;
+  return near(257, 364) || near(250, 353) ? B4 : A4;
+}
+
+/** 용지에 맞춘 양식 값: A4 양식의 여백·단 사이를 용지 너비 비율로 늘린다 (py/exam_hwpx/template.py 의 with_paper 와 같게) */
+export function layoutFor(paper?: { width_mm?: number }): Layout {
+  const r = paper?.width_mm && paper.width_mm > 0 ? paper.width_mm / A4.width_mm : 1;
+  return { textWidthMm: SCHOOL_A_LAYOUT.textWidthMm * r, columnWidthMm: SCHOOL_A_LAYOUT.columnWidthMm * r, rightMaxRatio: SCHOOL_A_LAYOUT.rightMaxRatio };
+}
+
+/**
+ * A4 양식 크기로 만든 읽기 결과를 다른 용지(B4)로 옮긴다: exam.paper 를 적고 그림 크기를 용지 너비 비율로 늘린다.
+ * 이미 용지가 적혀 있거나 A4 면 그대로 둔다 (보관함 '다시 만들기'에서 원본 PDF 크기로 용지를 알아냈을 때 쓴다).
+ */
+export function applyPaper(exam: any, paper: Paper): any {
+  if (!exam || exam.paper || paper.name === "A4") return exam;
+  const copy = JSON.parse(JSON.stringify(exam));
+  copy.paper = { ...paper };
+  const r = paper.width_mm / A4.width_mm;
+  const layout = layoutFor(paper);
+  for (const s of copy.sections ?? []) {
+    for (const it of s.items ?? []) {
+      for (const fig of [it.figure, ...(Array.isArray(it.extra_figures) ? it.extra_figures : [])]) {
+        if (!fig || !(Number(fig.width_mm) > 0)) continue;
+        const maxW = layout.columnWidthMm * (fig.place === "right" ? layout.rightMaxRatio : 0.95);
+        const width = Math.min(maxW, fig.width_mm * r);
+        if (Array.isArray(fig.size_mm) && fig.size_mm[0] > 0) fig.size_mm = [round1(width), round1((fig.size_mm[1] / fig.size_mm[0]) * width)];
+        fig.width_mm = round1(width);
+        // 크기가 바뀌었으니 예전 PNG 는 쓰지 않는다 (다시 그린다)
+        delete fig.png;
+        delete fig.png_size;
+      }
+    }
+  }
+  return copy;
+}
 
 /** 그림 하나를 읽은 결과 */
 export type FigureResult = {
@@ -119,8 +170,11 @@ export function assembleExam(
   figures: Map<string, FigureResult>,
   o: { template?: string; layout?: Layout } = {},
 ): any {
-  const layout = o.layout ?? SCHOOL_A_LAYOUT;
+  // 원본 PDF 가 B4 면 B4 용지로 (그림 크기도 B4 본문 너비로 정한다)
+  const paper = paperOf(pages.find(({ meta }) => meta.paper_mm)?.meta.paper_mm);
+  const layout = o.layout ?? layoutFor(paper);
   const exam: any = { template: o.template ?? "school-A-2026", header: {}, footer: {}, boxes: [], sections: [] };
+  if (paper.name !== "A4") exam.paper = { ...paper };
   const unsure: string[] = [];
   let prev: { page: number; column: number; item: any } | undefined;
 
@@ -217,7 +271,12 @@ export function assembleExam(
   // 쪽 끝 안내는 마지막 쪽 것만 (한글 파일에서는 쪽 나눔이 원본과 다를 수 있어 문서 끝에 하나만 둔다)
   const note = pages[pages.length - 1]?.reading.page_end_note;
   if (note) exam.page_end_note = note;
-  exam.source_pages = pages.map(({ meta }) => ({ page: meta.page, width: meta.original.width, height: meta.original.height }));
+  exam.source_pages = pages.map(({ meta }) => ({
+    page: meta.page,
+    width: meta.original.width,
+    height: meta.original.height,
+    ...(meta.paper_mm ? { width_mm: round1(meta.paper_mm.width_mm), height_mm: round1(meta.paper_mm.height_mm) } : {}),
+  }));
   if (unsure.length) exam.unsure = unsure;
   return exam;
 }
@@ -358,7 +417,7 @@ export function joinPrintedLines(lines: any[][]): any[][] {
  * - 그림 크기를 원본 종이 크기 대신, 인쇄된 영역을 양식의 본문 가로에 맞춘 비율로 다시 정한다 (assembleExam 과 같게)
  * 이미 지금 모양이면 그대로 돌려준다.
  */
-export function normalizeLegacyExam(exam: any, layout: Layout = SCHOOL_A_LAYOUT): any {
+export function normalizeLegacyExam(exam: any, layout: Layout = layoutFor(exam?.paper)): any {
   if (!exam || exam.layout_mode !== "source") return exam;
   const copy = JSON.parse(JSON.stringify(exam));
   delete copy.layout_mode;

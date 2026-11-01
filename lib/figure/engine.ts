@@ -754,10 +754,14 @@ export class FigureRenderer {
         }
         if (el.label) {
           const dl = el.labelDist ?? r * 1.9;
-          this.text(() => {
+          const at = () => {
             const [a, o, b] = el.points.map((p) => this.pt(p));
             return add(o, mul(bisectorDir(a, o, b), dl));
-          }, el.label, { sizePx: this.labelPx * (el.labelSize ?? 0.8), family: FONT_SERIF });
+          };
+          const sizePx = this.labelPx * (el.labelSize ?? 0.8);
+          // 각 글자의 영문(x, 3x°, a)은 시험지 수식처럼 기울여 쓴다 (숫자와 ° 는 바로). 2026-11-01 호남삼육중 2번 x 가 바로 선 글자로 나옴
+          if (/[A-Za-z]/.test(el.label)) this.mathLabel(at, el.label, sizePx);
+          else this.text(at, el.label, { sizePx, family: FONT_SERIF });
         }
         return;
       }

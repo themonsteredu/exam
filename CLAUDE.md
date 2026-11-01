@@ -216,3 +216,13 @@
       엔진(lib/figure/engine.ts textFont): 명조 기울인 글자는 'Exam Math Italic' 다음 Liberation Serif (숫자는 세움, italic 은 걸지 않음).
       기울인 글자가 없는 그림은 PNG 가 바이트까지 같음을 확인. 예전 조사: 한글 수식 글꼴 x 와 0.987, Liberation Serif Italic 은 0.089,
     보관함에서 '한글 파일 다시 만들기'(exam_json 은 이미 보관됨), 보관함을 사람마다 나눌지 사용자에게 물을 것
+- 호남삼육중 (2026-11-01, 사용자 "얘는 퀄리티가 왜 나가", 문서 3b64a0b4): 원본이 B4(728×1031pt) 스캔 PDF 인 첫 시험지.
+  원인: 그림 크기는 A4 본문 너비로 정하고(0.81배), 쪽 맞추기가 원본 4쪽(B4)을 A4 4쪽에 넣으려고 끝 단계까지 감 → 글자 9.5pt·줄 간격 130~140%·그림 0.8배(원본의 0.65배), 단 아래는 비어 있음.
+  고침: 원본 용지를 따른다. pages.ts 가 PDF 쪽 크기(paperMm)를 재고, assemble.paperOf 가 B4(257×364, ISO 250×353 도)면 exam.paper=B4,
+    layoutFor(paper) 로 그림 크기를 B4 본문 너비로. template.with_paper 가 용지·여백·단 사이를 너비 비율(257/210)로 늘림(글자 크기는 그대로 11pt). 사진·가로 쪽·모르는 크기는 A4.
+    보관함 '다시 만들기'(/?resume=)는 exam.paper 가 없고 원본이 PDF 면 원본을 받아 첫 쪽 크기를 보고 applyPaper(그림 크기 늘리고 PNG 지움). 결과: 원본과 같은 4쪽·배열, 11pt
+  그림: 각 글자에 영문이 있으면(x, 3x°) 수식처럼 기울여 그림(engine mathLabel). validate: 숫자 각 글자(35°)와 그린 각이 2° 넘게 다르면 오류 → 그림 읽기가 한 번 고쳐 받음.
+    지시문 1번: 문자로 적힌 값(3x°)은 풀어서 그리지 말고 원본 모양대로, 숫자 각은 angle 의 label 로. 읽기 기억 판 two-column-v6-angles
+  수식: 쉼표로 나열한 조건(∠A=70°, ∠C=30° …)은 builder.split_condition_list 가 수식 하나씩으로 나눔 (한글 수식은 줄을 못 바꿔 21번 첫 줄 뒤가 비었음). 괄호 안·관계식 아닌 나열은 그대로
+  보낸 파일(삼육중_B4원본크기_그림고침_1101.hwpx)은 2번(C 를 지나는 방향 102→78°), 8번(점 크게), 서답형 2(63°/27° 원본 모양) 그림을 손으로 고친 것 (그림 notes 에 적음).
+    작업 폴더: /home/user/exam-work/samyuk (to_b4.py, fix_figs.py)

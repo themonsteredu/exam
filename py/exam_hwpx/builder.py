@@ -185,7 +185,70 @@ _PARTICLE_AFTER_NUMBER = re.compile(
 )
 
 from .latex import latex_to_plain, script_for_measure, to_eqedit
-from .template import MM, get_template, mm
+from .template import MM, get_template, mm, with_paper
+
+# 쉼표로 나열한 조건을 수식 하나씩으로 나눌 때, 조각마다 있어야 하는 관계 기호
+_RELATION = re.compile(r"=|<|>|≤|≥|≠|∥|⊥|≡|\\(?:le|leq|ge|geq|ne|neq|equiv|parallel|perp|sim|cong|approx)(?![A-Za-z])")
+_SPACING = re.compile(r"^(?:\s|~|\\[,;:! ]|\\q?quad(?![A-Za-z]))+|(?:\s|~|\\[,;:! ]|\\q?quad(?![A-Za-z]))+$")
+
+
+def split_condition_list(latex: str) -> list[str]:
+    """'\\angle A=70^{\\circ}, \\angle C=30^{\\circ}' 처럼 쉼표로 나열한 조건을 수식 하나씩으로 나눈다.
+    한글 수식은 줄을 바꾸지 못해, 긴 수식 하나는 통째로 다음 줄로 넘어가 앞 줄 끝이 빈다
+    (2026-11-01 호남삼육중 21번: 조건 다섯 개가 수식 하나라 "21. 다음 그림에서" 뒤가 비었다).
+    괄호·중괄호 안의 쉼표(순서쌍, 집합, 구간)와 \\, (좁은 빈칸)는 나누지 않고, 조각이 모두 관계식(=, <, ∥ …)일 때만 나눈다."""
+    if not isinstance(latex, str) or "," not in latex:
+        return [latex]
+    parts, depth, start, i = [], 0, 0, 0
+    while i < len(latex):
+        ch = latex[i]
+        if ch == "\\":
+            nxt = latex[i + 1 : i + 2]
+            if nxt in ("{", "["):
+                depth += 1
+            elif nxt in ("}", "]"):
+                depth -= 1
+            if nxt.isalpha():
+                i += 1
+                while i < len(latex) and latex[i].isalpha():
+                    i += 1
+                continue
+            i += 2
+            continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(latex[start:i])
+            start = i + 1
+        i += 1
+    parts.append(latex[start:])
+    parts = [_SPACING.sub("", part) for part in parts]
+    if len(parts) < 2 or not all(part and _RELATION.search(part) for part in parts):
+        return [latex]
+    return parts
+
+
+def split_condition_pieces(value):
+    """시험지 데이터 속 글 조각 목록마다 쉼표로 나열한 조건 수식을 나눈다 (그림 데이터는 건드리지 않는다)."""
+    if isinstance(value, list):
+        if any(isinstance(piece, dict) and "m" in piece for piece in value):
+            out = []
+            for piece in value:
+                parts = split_condition_list(piece["m"]) if isinstance(piece, dict) and "m" in piece else [None]
+                if len(parts) < 2:
+                    out.append(piece)
+                    continue
+                for k, part in enumerate(parts):
+                    if k:
+                        out.append({"t": ", "})
+                    out.append({**piece, "m": part})
+            return out
+        return [split_condition_pieces(v) for v in value]
+    if isinstance(value, dict):
+        return {k: (v if k in ("figure", "extra_figures", "png", "commands", "graphic") else split_condition_pieces(v)) for k, v in value.items()}
+    return value
 
 CHOICE_MARKS = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧"]
 _HH = "{http://www.hancom.co.kr/hwpml/2011/head}"
@@ -246,8 +309,8 @@ def png_with_dpi(data: bytes, dpi: float) -> bytes:
 
 class ExamBuilder:
     def __init__(self, exam: dict, template: dict | None = None):
-        self.exam = exam
-        self.tpl = template or get_template(exam.get("template"))
+        self.exam = split_condition_pieces(exam)
+        self.tpl = template or with_paper(get_template(exam.get("template")), exam.get("paper"))
         self.doc = HwpxDocument.new()
         self.warnings: list[str] = []  # 글자로 대신 넣은 수식 등
         self._run_cache: dict[tuple, str] = {}
@@ -1161,7 +1224,8 @@ def _without_breaks(exam: dict, kinds: set[str]) -> dict:
 
 
 def build_exam(exam: dict, template: dict | None = None) -> tuple[bytes, list[str]]:
-    base = template or get_template(exam.get("template"))
+    # 원본이 B4 면 B4 로 (원본과 같은 쪽 수·배열을 글자·그림을 줄이지 않고 맞춘다)
+    base = template or with_paper(get_template(exam.get("template")), exam.get("paper"))
     target = len(exam.get("source_pages") or [])
     has_breaks = any(s.get("break_before") or any(i.get("break_before") for i in s.get("items", []))
                      for s in exam.get("sections", []))

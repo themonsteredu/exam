@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { assembleExam, figureJobs, joinPrintedLines } from "@/lib/ai/assemble";
+import { applyPaper, assembleExam, figureJobs, joinPrintedLines, layoutFor, paperOf } from "@/lib/ai/assemble";
 import { itemFigures } from "@/lib/figure/item-figures";
 import { attachFigurePngs } from "@/lib/figure/render-exam";
 import { readCached, readingCacheKey } from "@/lib/client/read-cache";
@@ -72,4 +72,31 @@ try {
     "(다) 새 항목",
   ]);
 }
-console.log("그림 모두 넣기·머리 글자·모델별 재사용·같은 요청 한 번만·실패 요금·상자 글 줄 잇기 검사 통과 (AI 요금 없음)");
+// 원본 용지: B4 PDF(728×1031pt = 257×364mm) 면 B4 로, 나머지는 A4 (2026-11-01 호남삼육중: B4 를 A4 4쪽에 맞추느라 글자·그림이 줄어듦)
+{
+  assert.equal(paperOf({width_mm:256.9,height_mm:363.9}).name,"B4");
+  assert.equal(paperOf({width_mm:250,height_mm:353}).name,"B4","ISO B4 도 B4");
+  assert.equal(paperOf({width_mm:209.9,height_mm:296.9}).name,"A4");
+  assert.equal(paperOf(undefined).name,"A4","사진(크기 모름)은 A4");
+  assert.equal(paperOf({width_mm:364,height_mm:257}).name,"A4","가로 쪽은 A4");
+  // 그림이 충분히 커야 최소 크기(12mm)에 걸리지 않는다
+  const big:any={...reading,sections:[{title:"선택형",items:[{...item,figures:[{...region,w:300,h:200}]}]}]};
+  const bigFound=new Map(figureJobs(1,big).map((j)=>[j.key,{crop:j.region,scale:1,reading:{commands:{base:10,points:[],elements:[]},
+    anchors:[],errors:[],warnings:[],unsure:[],notes:"",attempts:1}}]));
+  const a4=assembleExam([{meta:{page:1,original:{width:1000,height:1414},scale:1},reading:big}],bigFound);
+  const b4=assembleExam([{meta:{page:1,original:{width:1000,height:1414},scale:1,paper_mm:{width_mm:256.9,height_mm:363.9}},reading:big}],bigFound);
+  assert.equal(b4.paper?.name,"B4","B4 원본이면 exam.paper");
+  assert.equal(a4.paper,undefined,"A4 원본은 용지를 적지 않음");
+  const w4=itemFigures(a4.sections[0].items[0])[0].width_mm, wb=itemFigures(b4.sections[0].items[0])[0].width_mm;
+  assert.ok(Math.abs(wb/w4-257/210)<0.02,`그림 크기는 용지 너비 비율로 (${w4} → ${wb})`);
+  assert.equal(b4.source_pages[0].width_mm,256.9);
+  // 보관함 '다시 만들기': A4 크기로 읽은 결과를 B4 로 옮김 (그림 크기 늘림, PNG 지움, 한 번만)
+  const withPng=attachFigurePngs(a4,[{section:0,index:0,figureIndex:0,no:14,png:"old",size:[100,80]}]);
+  const moved=applyPaper(withPng,paperOf({width_mm:257,height_mm:364}));
+  const f0=itemFigures(moved.sections[0].items[0])[0];
+  assert.ok(Math.abs(f0.width_mm/w4-257/210)<0.02 && f0.png===undefined,"applyPaper 가 그림을 늘리고 PNG 를 지움");
+  assert.equal(applyPaper(moved,paperOf({width_mm:257,height_mm:364})),moved,"이미 용지가 있으면 그대로");
+  assert.equal(applyPaper(withPng,paperOf({width_mm:210,height_mm:297})),withPng,"A4 면 그대로");
+  assert.ok(Math.abs(layoutFor({width_mm:257}).columnWidthMm-89*257/210)<1e-9);
+}
+console.log("그림 모두 넣기·머리 글자·모델별 재사용·같은 요청 한 번만·실패 요금·상자 글 줄 잇기·원본 용지(B4) 검사 통과 (AI 요금 없음)");

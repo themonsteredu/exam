@@ -4,6 +4,8 @@ import { DragEvent, useEffect, useRef, useState } from "react";
 import { api, ApiError, downloadStored, patchJson, postJson, won } from "@/lib/client/api";
 import { makeExam, resumeExam, type MakeResult, type Progress, type Recovery, type Step } from "@/lib/client/make-exam";
 import { loadExamCheckpoint } from "@/lib/client/exam-storage";
+import { pdfPaperMm } from "@/lib/client/pages";
+import { applyPaper, paperOf } from "@/lib/ai/assemble";
 import { isStale, STALE_MESSAGE } from "@/lib/client/version";
 import { loadFigureFonts } from "@/lib/figure/engine";
 import { piecesToHtml } from "@/lib/ai/latex-view";
@@ -68,8 +70,19 @@ export default function MakePage() {
     const controller = new AbortController();
     (async () => {
       try {
-        const { doc } = await api<{ doc: { title: string; exam_json?: any; cost_usd: number } }>(`/api/documents/${docId}`, { signal: controller.signal });
-        const exam = await loadExamCheckpoint(docId, doc.exam_json, controller.signal);
+        const { doc } = await api<{ doc: { title: string; exam_json?: any; cost_usd: number; original_files?: { path: string; type?: string; name?: string }[] } }>(`/api/documents/${docId}`, { signal: controller.signal });
+        let exam = await loadExamCheckpoint(docId, doc.exam_json, controller.signal);
+        // 용지를 적어 두기 전에 읽은 문서: 원본 PDF 크기를 보고 B4 원본이면 B4 로 다시 만든다 (요금 없음)
+        const pdf = doc.original_files?.find((f) => /pdf/i.test(f.type ?? "") || /\.pdf$/i.test(f.name ?? f.path));
+        if (exam && !exam.paper && pdf) {
+          try {
+            const { url } = await postJson<{ url: string }>("/api/files/download-url", { path: pdf.path }, controller.signal);
+            const size = await pdfPaperMm(await (await fetch(url, { signal: controller.signal })).arrayBuffer());
+            exam = applyPaper(exam, paperOf(size));
+          } catch {
+            // 원본을 못 받으면 예전처럼 A4 로 만든다
+          }
+        }
         const pageProblems = Array.isArray(doc.exam_json?.pageProblems) ? doc.exam_json.pageProblems.filter((v: unknown): v is string => typeof v === "string") : [];
         if (!controller.signal.aborted) {
           setTitle(doc.title);
