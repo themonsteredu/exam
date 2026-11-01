@@ -40,6 +40,8 @@ math_parts = _split_math_at_operators(equation)
 assert math_parts == [r"\frac{12+3}{45}", "=x", "+12"]
 assert _split_math_at_operators(r"\(x+y\)=3") == [r"\(x+y\)", "=3"]
 assert _split_math_at_operators("x<=-2") == ["x", "<=-2"]
+assert _split_math_at_operators(r"\begin{cases}x+y=3\\2x-y=0\end{cases}") == [r"\begin{cases}x+y=3\\2x-y=0\end{cases}"]
+assert _split_math_at_operators(r"\lvert x-1\rvert<2") == [r"\lvert x-1\rvert<2"]
 assert "".join(math_parts) == equation
 adjusted = set()
 wrapped = wrap_lines([[{"m": "ABCDEFGHIJ"}]], 10, 9, proportional, adjusted.add)

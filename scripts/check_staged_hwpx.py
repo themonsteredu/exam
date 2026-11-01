@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import runpy
 import sys
 import threading
 import urllib.parse
@@ -97,6 +98,23 @@ with HTTPServer(("127.0.0.1", 0), QuietHandler) as server:
         assert [m for m, _ in operations] == ["GET", "GET", "PUT"]
         assert zipfile.is_zipfile(io.BytesIO(objects[result["path"]]))
         assert len(json.dumps(result)) < 2000
+
+        # 사용자 흐름과 같은 저장된 읽기 결과 → 운영 handler → 완성 파일.
+        # AI는 부르지 않고, 페이지 넘침이 있는 24문항·20그림을 검사한다.
+        dense = runpy.run_path(str(ROOT / "scripts" / "check_page_overflow_hwpx.py"))["exam"]
+        objects[a] = json.dumps(dense, ensure_ascii=False).encode()
+        operations.clear()
+        req = urllib.request.Request(url, data=json.dumps({"input_paths": [a]}).encode(), headers={"content-type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=20) as res:
+            continued = json.load(res)
+        assert [m for m, _ in operations] == ["GET", "PUT"]
+        assert any("이어" in w for w in continued["warnings"])
+        with zipfile.ZipFile(io.BytesIO(objects[continued["path"]])) as result_zip:
+            sections = [p for p in result_zip.namelist() if p.startswith("Contents/section") and p.endswith(".xml")]
+            assert len(sections) > 6
+            bodies = [result_zip.read(p).decode("utf-8") for p in sections]
+            assert all(sum(s.count(f"QUESTION{n:02d}") for s in bodies) == 1 for n in range(1, 25))
+            assert sum(s.count("<hp:pic ") for s in bodies) == 20
     finally:
         server.shutdown()
         worker.join()

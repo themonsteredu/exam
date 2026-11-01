@@ -43,4 +43,16 @@ z,s,w=run(bad,png=png,original_png=png)
 assert any('원본 이미지' in x for x in w)
 assert not s.findall('.//hp:polygon',hp)
 assert len(s.findall('.//hp:pic',hp))==1
+# 재작성 지도가 페이지 아래에서 밀리면 이어지는 쪽에 선과 글자를 함께 넣는다.
+late_box={"page":1,"x":40,"y":1320,"w":800,"h":180}
+late={**base,"sections":[{"items":[{"no":10,"source":late_box,
+    "layout_blocks":[{"role":"text","box":{"x":40,"y":1280,"w":800,"h":100},"lines":[[{"t":"자료 검사"}]]}],
+    "figure":{"box":late_box,"graphic":sample,"render_mode":"redraw"}}]}]}
+data,w=build_exam(late)
+with zipfile.ZipFile(io.BytesIO(data)) as z:
+    paths=sorted(p for p in z.namelist() if p.startswith('Contents/section') and p.endswith('.xml'))
+    assert len(paths)>=2 and any('이어' in x for x in w)
+    after=ET.fromstring(z.read(paths[1]))
+    assert len(after.findall('.//hp:line',hp))+len(after.findall('.//hp:polygon',hp))>=4
+    assert 'A' in ''.join(after.itertext()) and 'B' in ''.join(after.itertext())
 print('편집 가능한 지도 선·글자·병합 표 및 실패 시 원본 복구 검사 통과')
