@@ -13,7 +13,7 @@ from hwpx.form_fit.measure import estimate_text_width
 
 from .latex import script_for_measure, to_eqedit
 from .template import mm
-from .layout_safety import reserve, wrap_lines, numbered_lines
+from .layout_safety import LayoutOverflow, _split_math_at_operators, reserve, wrap_lines, numbered_lines
 
 HP = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
 
@@ -68,14 +68,15 @@ class SourceLayout:
     def line_width(self, pieces, font):
         width = 0
         for p in pieces:
+            piece_font = p.get("_fit_font", font)
             if "m" in p:
                 try:
                     script = to_eqedit(p["m"])
-                    width += measure_equation(script_for_measure(script), base_unit=round(font * 100)).width + font * 22
+                    width += measure_equation(script_for_measure(script), base_unit=round(piece_font * 100)).width + piece_font * 22
                 except Exception:
-                    width += estimate_text_width(p["m"], font)
+                    width += estimate_text_width(p["m"], piece_font)
             else:
-                width += estimate_text_width(re.sub(r"\*\*|__", "", str(p.get("t", ""))), font)
+                width += estimate_text_width(re.sub(r"\*\*|__", "", str(p.get("t", ""))), piece_font)
         return width
 
     def text(self, anchor, block, sx, sy, no):
@@ -105,16 +106,34 @@ class SourceLayout:
         if required_w > mm(available_w):
             font = max(minimum_font, font * mm(available_w) / required_w * .98)
         font = max(minimum_font, min(font, available_h * 72 / 25.4 / len(lines) / 1.12))
+        adjusted = set()
+        # An atomic equation cannot wrap without changing its meaning. If the
+        # original item has free space to the right, use it before shrinking.
+        right_limit = block.get("_right_limit")
+        if not boxed and isinstance(right_limit, (int, float)) and math.isfinite(right_limit):
+            max_w = max(w, (right_limit - box["x"]) * sx)
+            atomic = [p for line in lines for p in line if "m" in p and len(_split_math_at_operators(str(p["m"]))) == 1]
+            widest = max((self.line_width([p], font) for p in atomic), default=0)
+            if widest > mm(available_w) * .97 and max_w > w:
+                w = min(max_w, max(w, widest / mm(1) / .97 + pad * 2))
+                available_w = max(1, w - pad * 2)
+                adjusted.add("math_width")
         # Include the number and equation widths before wrapping, then reserve the
         # real height. A fixed source rectangle must not silently grow over its neighbour.
-        lines = wrap_lines(lines, font, mm(available_w) * .97, self.line_width)
+        location = f"{no}번" if isinstance(no, int) else str(no)
+        try:
+            lines = wrap_lines(lines, font, mm(available_w) * .97, self.line_width, adjusted.add)
+        except LayoutOverflow as exc:
+            raise LayoutOverflow(f"{location}: {exc}") from exc
+        if adjusted:
+            self.b.warnings.append(f"{location}: 긴 글 또는 수식의 줄바꿈·크기를 조정했습니다. 해당 부분을 확인해 주세요.")
         heights = []
         for line in lines:
             units = font * 100
             for piece in line:
                 if "m" in piece:
                     try:
-                        measured = measure_equation(script_for_measure(to_eqedit(piece["m"])), base_unit=round(font * 100))
+                        measured = measure_equation(script_for_measure(to_eqedit(piece["m"])), base_unit=round(piece.get("_fit_font", font) * 100))
                         units = max(units, measured.height)
                     except Exception:
                         pass
@@ -225,7 +244,7 @@ class SourceLayout:
                 for original in item.get("layout_blocks") or self.fallback(item):
                     if not valid_box(original.get("box")):
                         continue
-                    block = {**original, "label": item.get("label") or ""}
+                    block = {**original, "label": item.get("label") or "", "_right_limit": min(page["width"], item["source"]["x"] + item["source"]["w"])}
                     signature = (repr(block.get("lines")), tuple(block["box"].get(k) for k in ("x", "y", "w", "h")))
                     if signature in seen:
                         continue
@@ -244,6 +263,18 @@ class SourceLayout:
                             raise ValueError(f"{item['no']}번: 그림의 위치가 없습니다. 읽은 결과를 확인해 주세요.")
             for _, _, kind, value, no in sorted(entries, key=lambda e: (e[0], e[1])):
                 if kind == "text":
+                    # Do not expand across a neighbouring choice, picture, or
+                    # text block that occupies the same original vertical band.
+                    box = value["box"]
+                    limit = value.get("_right_limit")
+                    if isinstance(limit, (int, float)):
+                        for _, _, other_kind, other, _ in entries:
+                            if other is value:
+                                continue
+                            neighbour = other.get("box") if other_kind == "text" else (other.get("layout_box") or other.get("box"))
+                            if valid_box(neighbour) and neighbour["x"] >= box["x"] + box["w"] - .5 and neighbour["y"] < box["y"] + box["h"] and neighbour["y"] + neighbour["h"] > box["y"]:
+                                limit = min(limit, neighbour["x"] - 1)
+                        value["_right_limit"] = max(box["x"] + box["w"], limit)
                     self.text(anchor, value, sx, sy, no)
                 else:
                     self.figure(anchor, value, sx, sy, no)

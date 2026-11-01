@@ -1,6 +1,7 @@
 """Text wrapping and collision checks; no network or HWP dependencies."""
 import math
 import re
+import unicodedata
 
 
 class LayoutOverflow(ValueError):
@@ -36,18 +37,123 @@ def text_tokens(text):
             yield from re.findall(r"\s+|\S+", part)
 
 
-def wrap_lines(lines, font, width, measure):
-    """Wrap at spaces, keeping math expressions and Korean words intact."""
+def _split_long_text(token, font, width, measure):
+    """Split only an individual word that cannot fit in an empty line.
+
+    Ordinary Korean wrapping is still by word. Preserve emphasis delimiters on
+    each fragment so formatting remains intact when a word spans paragraphs.
+    """
+    text = str(token.get("t", ""))
+    markers = []
+    while len(text) > 4 and text[:2] in ("**", "__") and text.endswith(text[:2]):
+        markers.append(text[:2])
+        text = text[2:-2]
+    prefix, suffix = "".join(markers), "".join(reversed(markers))
+    # Keep combining marks with their preceding character.
+    chars = []
+    for char in text:
+        if chars and unicodedata.combining(char):
+            chars[-1] += char
+        else:
+            chars.append(char)
+    parts, chunk = [], ""
+    for char in chars:
+        candidate = chunk + char
+        if measure([{"t": prefix + candidate + suffix}], font) > width * 1.02:
+            if not chunk:
+                raise LayoutOverflow("글 영역이 너무 좁아 한 글자도 넣을 수 없습니다. 읽은 결과는 보관되어 있습니다.")
+            parts.append({"t": prefix + chunk + suffix})
+            chunk = char
+            if measure([{"t": prefix + chunk + suffix}], font) > width * 1.02:
+                raise LayoutOverflow("글 영역이 너무 좁아 한 글자도 넣을 수 없습니다. 읽은 결과는 보관되어 있습니다.")
+        else:
+            chunk = candidate
+    if chunk:
+        parts.append({"t": prefix + chunk + suffix})
+    return parts
+
+
+def _split_math_at_operators(latex):
+    """Split only at top-level operators, never inside a fraction or group."""
+    positions, stack = [], []
+    pairs = {")": "(", "]": "[", "}": "{"}
+    operators = re.compile(r"\\(?:leq|geq|neq|times|div|cdot|pm|mp|le|ge|ne)(?![A-Za-z])")
+    i = 0
+    while i < len(latex):
+        char = latex[i]
+        if char == "\\":
+            command = re.match(r"\\[A-Za-z]+|\\.", latex[i:])
+            if command:
+                if command.group() == r"\(":
+                    stack.append("(")
+                elif command.group() == r"\)" and stack and stack[-1] == "(":
+                    stack.pop()
+                if not stack and i and operators.fullmatch(command.group()):
+                    positions.append(i)
+                i += len(command.group())
+                continue
+        if char in "([{":
+            stack.append(char)
+        elif char in ")]}" and stack and stack[-1] == pairs[char]:
+            stack.pop()
+        elif not stack and i and char in "+-=<>±×÷≥≤≠":
+            # Keep <=, >=, and an adjacent unary sign with the preceding operator.
+            if latex[i - 1] not in "+-=<>±×÷≥≤≠":
+                positions.append(i)
+        i += 1
+    if stack or not positions:
+        return [latex]
+    return [latex[a:b] for a, b in zip([0, *positions], [*positions, len(latex)]) if a < b]
+
+
+def _fit_math(piece, font, width, measure):
+    """Fit an indivisible equation without changing its mathematical content."""
+    low, high = min(font, 8.0), font
+    smallest = {**piece, "_fit_font": low}
+    if measure([smallest], font) > width * 1.02:
+        raise LayoutOverflow("수식이 글 영역보다 너무 넓습니다. 읽은 결과는 보관되어 있습니다.")
+    for _ in range(18):
+        mid = (low + high) / 2
+        if measure([{**piece, "_fit_font": mid}], font) <= width * .99:
+            low = mid
+        else:
+            high = mid
+    return {**piece, "_fit_font": round(low, 3)}
+
+
+def wrap_lines(lines, font, width, measure, on_adjustment=None):
+    """Wrap at spaces; safely handle an overlong word or equation."""
     output = []
     for source in lines:
         line = []
         for piece in source:
             tokens = [piece] if "m" in piece else [{"t": t} for t in text_tokens(str(piece.get("t", "")))]
-            for token in tokens:
+            pending = list(tokens)
+            while pending:
+                token = pending.pop(0)
                 if not line and token.get("t", "").isspace():
                     continue
                 if measure([token], font) > width * 1.02:
-                    raise LayoutOverflow("한 줄에 들어가지 않는 수식 또는 글이 있습니다. AI를 다시 부르지 말고 글 영역의 너비를 확인해 주세요.")
+                    if "m" not in token:
+                        if token.get("t", "").isspace():
+                            if line:
+                                output.append(line)
+                                line = []
+                            continue
+                        parts = _split_long_text(token, font, width, measure)
+                        if on_adjustment:
+                            on_adjustment("text")
+                        pending = parts + pending
+                        continue
+                    parts = _split_math_at_operators(str(token["m"]))
+                    if len(parts) > 1:
+                        if on_adjustment:
+                            on_adjustment("math_wrap")
+                        pending = [{**token, "m": part} for part in parts] + pending
+                        continue
+                    token = _fit_math(token, font, width, measure)
+                    if on_adjustment:
+                        on_adjustment("math_size")
                 if line and measure(line + [token], font) > width:
                     output.append(line)
                     line = []
