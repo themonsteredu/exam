@@ -7,7 +7,7 @@ import { ApiError } from "@/lib/client/api";
 import { PageReadingS } from "@/lib/ai/page-schema";
 
 const region = { x: 50, y: 200, w: 50, h: 40, kind: "diagram", place: "below" };
-const item = { no: 14, no_text: "14.", points: 4, column: 1,
+const item = { no: 14, no_text: "14.", points: 4, column: 1, choice_layout: "column",
   stem: [{ kind: "t", text: "다음 그림 중 옳은 것은?" }], choices: [[], [], [], [], []], bogi: [],
   figures: Array.from({length:5}, (_,i)=>({...region,x:50+i*60})),
   source: {x:40,y:130,w:400,h:300}, unsure: [] };

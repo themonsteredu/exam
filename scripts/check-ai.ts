@@ -100,12 +100,14 @@ console.log("4) 합치기 - 직접 넣은 데이터로 되돌아오는지");
     boxes: manual.boxes.map((b: any) => ({
       kind: b.kind,
       lines: b.lines.map((l: any) => (typeof l === "string" ? { text: l, center: false } : { text: l.text, center: l.align === "CENTER" })),
+      before: "1.",
     })),
     sections: manual.sections.map((s: any) => ({
       title: s.title,
       items: s.items.map((it: any) => ({
         no: it.no,
         no_text: `${it.no}.`,
+        choice_layout: "column" as const,
         points: it.points,
         column: columns[it.no],
         // AI 는 앞뒤에 빈칸을 붙이거나 줄바꿈 조각을 섞어 줄 수 있다

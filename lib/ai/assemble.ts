@@ -135,15 +135,18 @@ export function assembleExam(
   if (header) exam.header = { title: header.title, target_label: header.target_label || "응시대상", target: header.target, date: header.date };
   const footer = first((r) => (r.footer.present ? r.footer : undefined));
   if (footer) exam.footer = { right_top: footer.right_top, right_bottom: footer.right_bottom, notice: footer.notice };
-  const boxes = first((r) => (r.boxes.length ? r.boxes : undefined)) ?? [];
-  exam.boxes = boxes.map((b) => ({
+  const examBox = (b: PageReading["boxes"][number]) => ({
     kind: b.kind,
     lines: b.lines.map((l) => (l.center ? { text: l.text, align: "CENTER" } : l.text)),
-  }));
+  });
+  // 안내 상자: 첫 문항보다 앞(머리 아래)에 있는 것은 exam.boxes, 쪽 중간·끝의 상자는 그 다음 문항 앞(boxes_before)이나
+  // 그 쪽 마지막 문항 뒤(boxes_after)에 둔다 (예전 읽기 결과처럼 before 가 없으면 첫 상자 쪽의 것만 머리 아래로)
+  let topBoxesTaken = false;
 
   for (const { meta, reading } of pages) {
     const mmPerPx = mmPerOriginalPx(reading, meta, layout);
     for (const u of reading.unsure) unsure.push(`${meta.page}쪽: ${u}`);
+    const pageItems: { it: ItemReading; item: any }[] = [];
     reading.sections.forEach((section, s) => {
       let target: any;
       if (s === 0 && !section.title && exam.sections.length) target = exam.sections[exam.sections.length - 1];
@@ -168,6 +171,8 @@ export function assembleExam(
         if (all.length) item.figure = all[0];
         if (all.length > 1) item.extra_figures = all.slice(1);
         item.choices = it.choices.map(toExamPieces);
+        // 선택지 배치(한 줄에 나란히 등)는 원본대로. 한 줄에 하나씩(column)이 기본이라 적지 않는다
+        if (item.choices.length && (it.choice_layout === "row" || it.choice_layout === "grid")) item.choice_layout = it.choice_layout;
         item.source = { page: meta.page, ...toOriginal(it.source, meta.scale) };
         if (itemUnsure.length) item.unsure = itemUnsure;
 
@@ -182,14 +187,60 @@ export function assembleExam(
         }
         prev = { page: meta.page, column };
         target.items.push(item);
+        pageItems.push({ it, item });
       });
     });
+    // 이 쪽의 안내 상자 자리 정하기
+    const norm = (t: string) => t.replace(/\s+/g, "");
+    const examStarted = exam.sections.some((s: any) => s.items.some((x: any) => !pageItems.some((p) => p.item === x)));
+    for (const b of reading.boxes) {
+      const before = typeof b.before === "string" ? norm(b.before) : undefined;
+      const hit = before ? pageItems.find((p) => norm(p.it.no_text || `${p.it.no}.`) === before) : undefined;
+      const atTop = !topBoxesTaken && !examStarted && (before === undefined || (hit ? hit === pageItems[0] : !pageItems.length));
+      if (atTop) exam.boxes.push(examBox(b));
+      else if (hit) (hit.item.boxes_before ??= []).push(examBox(b));
+      else {
+        const last = pageItems[pageItems.length - 1]?.item ?? exam.sections.at(-1)?.items.at(-1);
+        if (last) (last.boxes_after ??= []).push(examBox(b));
+      }
+    }
+    if (exam.boxes.length) topBoxesTaken = true;
   }
+  tidyExam(exam);
   // 쪽 끝 안내는 마지막 쪽 것만 (한글 파일에서는 쪽 나눔이 원본과 다를 수 있어 문서 끝에 하나만 둔다)
   const note = pages[pages.length - 1]?.reading.page_end_note;
   if (note) exam.page_end_note = note;
   exam.source_pages = pages.map(({ meta }) => ({ page: meta.page, width: meta.original.width, height: meta.original.height }));
   if (unsure.length) exam.unsure = unsure;
+  return exam;
+}
+
+/**
+ * 읽은 결과의 뻔한 실수를 고친다 (요금 없이, 만들 때마다):
+ * - 문항 번호: 앞뒤 번호 사이에 하나만 어긋난 번호(14 → 5 → 16)는 사이 번호(15)로 고치고 확인할 곳에 남긴다
+ *   (빨간 펜 표시 등에 가려 앞자리를 못 읽은 경우). 서술형처럼 label 이 붙은 번호는 따로 센다.
+ */
+export function tidyExam(exam: any): any {
+  const groups = new Map<string, any[]>();
+  for (const s of exam?.sections ?? []) {
+    for (const it of s.items ?? []) {
+      if (typeof it.no !== "number") continue;
+      const key = it.label ? String(it.label).replace(/[\d\s.)\]]+$/g, "") : "";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(it);
+    }
+  }
+  for (const list of groups.values()) {
+    for (let i = 1; i < list.length - 1; i++) {
+      const prev = list[i - 1].no, next = list[i + 1].no, cur = list[i];
+      if (next === prev + 2 && cur.no !== prev + 1) {
+        const was = cur.no;
+        cur.no = prev + 1;
+        if (cur.label) cur.label = String(cur.label).replace(String(was), String(cur.no));
+        (cur.unsure ??= []).push(`번호를 ${was} 로 읽어 앞뒤 번호에 맞춰 ${cur.no} 로 고쳤습니다`);
+      }
+    }
+  }
   return exam;
 }
 
@@ -283,6 +334,14 @@ export function normalizeLegacyExam(exam: any, layout: Layout = SCHOOL_A_LAYOUT)
     for (const it of s.items ?? []) {
       // GPT 판 지시문 때문에 조건 상자·<보기> 가 layout_blocks 에만 들어간 문항이 있다 → 문제 글에 없으면 상자로 살린다
       const stemText = plain(it.stem);
+      // 선택지 배치: GPT 판이 적어 둔 선택지 자리(layout_blocks 의 choice)로 원본처럼 한 줄·여러 줄을 알아낸다
+      const spots = (Array.isArray(it.layout_blocks) ? it.layout_blocks : []).filter((b: any) => b?.role === "choice" && b.box);
+      if (!it.choice_layout && Array.isArray(it.choices) && it.choices.length >= 2 && spots.length === it.choices.length) {
+        const ys: number[] = spots.map((b: any) => Number(b.box.y)).sort((a: number, b: number) => a - b);
+        const rows = ys.reduce((n: number, y: number, k: number) => (k && y - ys[k - 1] > 20 ? n + 1 : n), 1);
+        if (rows === 1) it.choice_layout = "row";
+        else if (rows < spots.length) it.choice_layout = "grid";
+      }
       for (const b of Array.isArray(it.layout_blocks) ? it.layout_blocks : []) {
         if (b?.role !== "box" || !Array.isArray(b.lines) || !b.lines.length) continue;
         const lines = b.lines.filter((line: any) => Array.isArray(line) && plain(line));
@@ -308,6 +367,19 @@ export function normalizeLegacyExam(exam: any, layout: Layout = SCHOOL_A_LAYOUT)
       }
     }
   }
+  // GPT 판이 쪽마다 따로 읽은 안내 글(저작권 안내 등) 가운데 둘째 쪽부터의 것은 그 쪽 마지막 문항 뒤 상자로 살린다
+  for (const p of pages.values()) {
+    if (!(p.page > 1)) continue;
+    for (const b of Array.isArray(p.text_blocks) ? p.text_blocks : []) {
+      if (b?.artifact_kind !== "notice" || !Array.isArray(b.lines)) continue;
+      const lines = b.lines.map((line: any) => (Array.isArray(line) ? line.map((x: any) => (typeof x?.t === "string" ? x.t : typeof x?.m === "string" ? x.m : "")).join("") : "")).filter((t: string) => t.trim());
+      if (!lines.length) continue;
+      const items = (copy.sections ?? []).flatMap((s: any) => s.items ?? []).filter((it: any) => it?.source?.page === p.page);
+      const last = items[items.length - 1];
+      // 줄바꿈으로 끊긴 글은 이어 붙인다 (한국어 낱말 중간에서 끊긴 줄은 띄어 쓰지 않는다)
+      if (last) (last.boxes_after ??= []).push({ kind: "notice", lines: [lines.reduce((a: string, t: string) => a + (/[가-힣]$/.test(a) && /^[가-힣]/.test(t) ? "" : " ") + t.trim(), "").trim()] });
+    }
+  }
   copy.source_pages = [...pages.values()].map((p) => ({ page: p.page, width: p.width, height: p.height }));
-  return copy;
+  return tidyExam(copy);
 }

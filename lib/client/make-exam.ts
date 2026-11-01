@@ -3,7 +3,7 @@
 //  → 합치기 → 그림 PNG → 한글 파일 → 내려받기·보관
 //  요금이 드는 AI 읽기 전에 파일을 먼저 열어 보고, 도중에 크게 실패하면 남은 그림 읽기도 멈춘다 (쓰지 못할 결과에 요금이 들지 않게).
 
-import { assembleExam, figureJobs, normalizeLegacyExam, toExamPieces, type FigureResult, type PageMeta } from "@/lib/ai/assemble";
+import { assembleExam, figureJobs, normalizeLegacyExam, tidyExam, toExamPieces, type FigureResult, type PageMeta } from "@/lib/ai/assemble";
 import type { Usage } from "@/lib/ai/claude";
 import type { PageReading } from "@/lib/ai/page-schema";
 import type { FigureReading } from "@/lib/ai/read-figure";
@@ -297,7 +297,7 @@ async function run(
 export async function resumeExam(o: FinishOptions, saved: Recovery): Promise<MakeResult> {
   await assertFresh();
   // GPT 판으로 읽은 결과도 지금의 2단 본문 모양으로 바꿔서 만든다
-  const work: Recovery = { ...saved, exam: normalizeLegacyExam(saved.exam) };
+  const work: Recovery = { ...saved, exam: tidyExam(normalizeLegacyExam(saved.exam)) };
   const figures = (work.exam.sections ?? []).reduce((n: number, s: any) => n + (s.items ?? []).reduce((count: number, it: any) => count + itemFigures(it).length, 0), 0);
   const pages = Array.isArray(work.exam.source_pages) ? work.exam.source_pages.length : 0;
   const progress: Progress = { step: "draw", message: "저장된 읽기 결과를 준비하는 중입니다.", pagesDone: pages, pagesTotal: pages, figuresDone: figures, figuresTotal: figures, usd: work.usd };

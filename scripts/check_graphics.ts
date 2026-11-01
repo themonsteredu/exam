@@ -22,7 +22,7 @@ assert.equal(tableCells(table)[0].w,1000);
 assert.ok(checkGraphic({...sample,tables:[{...table,cells:[...table.cells,{row:0,col:1,row_span:1,col_span:1,text:"중복"}]}]}).errors.some(e=>e.includes("겹칩니다")));
 const reading: PageReading = {
   header:{present:false,title:"",target_label:"",target:"",date:""}, boxes:[], footer:{present:false,right_top:"",right_bottom:"",notice:""},print_area:{x:0,y:0,w:1000,h:1500}, page_end_note:"",unsure:[],
-  sections:[{title:"",items:[{no:10,no_text:"10.",points:4,column:1,stem:[],choices:[],bogi:[],figures:[{x:50,y:100,w:400,h:240,kind:"map",place:"below"}],source:{x:0,y:0,w:500,h:700},unsure:[]}]}],
+  sections:[{title:"",items:[{no:10,no_text:"10.",points:4,column:1,choice_layout:"column",stem:[],choices:[],bogi:[],figures:[{x:50,y:100,w:400,h:240,kind:"map",place:"below"}],source:{x:0,y:0,w:500,h:700},unsure:[]}]}],
 };
 const args = [{ meta:{page:1,original:{width:1000,height:1500},scale:1},reading }];
 const figures = new Map([[figureKey(1,0,0,0),{crop:{x:50,y:100,w:400,h:240},scale:1,reading:r}]]);

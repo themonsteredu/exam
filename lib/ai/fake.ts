@@ -25,12 +25,14 @@ export function fakePage(): { reading: PageReading; usage: Usage } {
     boxes: m.boxes.map((b: any) => ({
       kind: b.kind,
       lines: b.lines.map((l: any) => (typeof l === "string" ? { text: l, center: false } : { text: l.text, center: l.align === "CENTER" })),
+      before: "1.",
     })),
     sections: m.sections.map((s: any) => ({
       title: s.title,
       items: s.items.map((it: any) => ({
         no: it.no,
         no_text: `${it.no}.`,
+        choice_layout: "column" as const,
         points: it.points ?? 0,
         column: columns[it.no] ?? 1,
         stem: toPieces(it.stem),

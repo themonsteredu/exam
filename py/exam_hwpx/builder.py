@@ -17,6 +17,7 @@ import zlib
 
 from hwpx import HwpxDocument
 from hwpx.equation.measure import measure_equation
+from hwpx.form_fit.measure import estimate_text_width
 
 from .latex import latex_to_plain, script_for_measure, to_eqedit
 from .template import MM, get_template, mm
@@ -127,21 +128,17 @@ class ExamBuilder:
         self.doc.styles.apply_paragraph_format(paragraphs=[p], **kw)
 
     # ------------------------------------------------------------------ 글 넣기
-    def add_rich_text(self, p, text: str, *, size: float, font: str | None = None, bold=False):
-        """**굵게**, __밑줄__ 표시가 들어간 글을 넣는다."""
+    def add_rich_text(self, p, text: str, *, size: float, font: str | None = None, bold=False, underline=False):
+        """**굵게**, __밑줄__ 표시가 들어간 글을 넣는다. 둘이 겹친 것(__**옳지 않은**__)도 푼다."""
         for token in re.split(r"(\*\*.+?\*\*|__.+?__)", text):
             if not token:
                 continue
-            b, u, t = bold, False, token
-            if token.startswith("**") and token.endswith("**"):
-                b, t = True, token[2:-2]
-                # 굵은 글 안의 밑줄
-                if "__" in t:
-                    self.add_rich_text(p, t, size=size, font=font, bold=True)
-                    continue
-            elif token.startswith("__") and token.endswith("__"):
-                u, t = True, token[2:-2]
-            p.add_run(t, char_pr_id_ref=self.run_style(size=size, font=font, bold=b, underline=u))
+            if len(token) > 4 and token.startswith("**") and token.endswith("**"):
+                self.add_rich_text(p, token[2:-2], size=size, font=font, bold=True, underline=underline)
+            elif len(token) > 4 and token.startswith("__") and token.endswith("__"):
+                self.add_rich_text(p, token[2:-2], size=size, font=font, bold=bold, underline=True)
+            else:
+                p.add_run(token, char_pr_id_ref=self.run_style(size=size, font=font, bold=bold, underline=underline))
 
     def add_equation(self, p, latex: str, *, size: float, where: str):
         if not isinstance(latex, str):  # 수식 자리에 글이 아닌 값(null, 숫자 등)이 온 경우
@@ -209,6 +206,8 @@ class ExamBuilder:
         t, h = self.tpl, self.exam.get("header") or {}
         thick, thin = t["border"]["thick"], t["border"]["thin"]
         first = self.doc.paragraphs[0]
+        if not str(h.get("target") or "").strip():
+            return self.build_simple_header(first, h)
         table = first.add_table(2, 3, width=self.text_width(), border_fill_id_ref=self.border(thick, thick, thick, thick))
         table.set_column_widths([14, 34, 52])
         table.merge_cells("A1:C1")
@@ -232,6 +231,24 @@ class ExamBuilder:
             self.para_format(p, alignment="CENTER", line_spacing_percent=130)
         self._set_row_height(table, 0, mm(t["heights_mm"]["title_row"]))
         self._set_row_height(table, 1, mm(t["heights_mm"]["info_row"]))
+        return table
+
+    def build_simple_header(self, first, h: dict):
+        """응시대상 칸이 없는 시험지의 머리: 굵은 테두리 상자 하나에 제목 줄과 날짜 줄."""
+        t = self.tpl
+        thick = t["border"]["thick"]
+        heading = t["fonts"]["heading"]
+        table = first.add_table(1, 1, width=self.text_width(), border_fill_id_ref=self.border(thick, thick, thick, thick))
+        cell = table.cell(0, 0)
+        title = h.get("title") or self.exam.get("title") or ""
+        p = cell.paragraphs[0]
+        self.add_rich_text(p, title, size=t["sizes"]["title"], font=heading, bold=True)
+        self.para_format(p, alignment="CENTER", line_spacing_percent=130, spacing_before_pt=4)
+        date = str(h.get("date") or "").strip()
+        if date:
+            dp = cell.add_paragraph("")
+            self.add_rich_text(dp, date, size=t["sizes"]["header_row"], font=heading)
+            self.para_format(dp, alignment="CENTER", line_spacing_percent=130, spacing_after_pt=4)
         return table
 
     @staticmethod
@@ -413,6 +430,9 @@ class ExamBuilder:
         if "choice_figures" in item:
             return bool(item["choice_figures"]) and len(figures) >= 2
         choices = item.get("choices") or []
+        # 선택지마다 그림이 하나씩 (그림 수 = 선택지 수, 4개 이상): 선택지 글이 있어도 그림과 같이 둔다
+        if len(choices) >= 4 and len(figures) == len(choices):
+            return True
         def empty(choice) -> bool:
             return not any(
                 (isinstance(p, dict) and (str(p.get("t", "")).strip() or str(p.get("m", "")).strip())) or (isinstance(p, str) and p.strip())
@@ -427,8 +447,9 @@ class ExamBuilder:
         stem = "".join(str(p.get("t", "")) for p in item.get("stem") or [] if isinstance(p, dict))
         return n in (4, 5) and "?" in stem and not item.get("label")
 
-    def build_choice_figures(self, figures: list, no):
-        """선택지 그림 ①~⑤ 를 테두리 없는 2열 표에 차례로 넣는다. 칸마다 번호 줄, 그 아래 그림."""
+    def build_choice_figures(self, figures: list, no, choices: list | None = None):
+        """선택지 그림 ①~⑤ 를 테두리 없는 2열 표에 차례로 넣는다. 칸마다 번호 줄, 그 아래 그림,
+        선택지 글이 있으면 그 아래 가운데에 (원본의 그림 밑 설명처럼)."""
         t = self.tpl
         cols = 2
         rows = (len(figures) + cols - 1) // cols
@@ -454,14 +475,21 @@ class ExamBuilder:
                 p.add_run(str(fig.get("placeholder_note") or "(그림 자리)"), char_pr_id_ref=self.run_style(size=t["sizes"]["box"]))
                 self.para_format(p, alignment="CENTER", line_spacing_percent=100, indent_left_mm=0, first_line_indent_mm=0,
                                  spacing_after_pt=4)
-                continue
-            px_w, px_h = png_size(png)
-            w_mm = min(float(fig.get("width_mm") or (fig.get("size_mm") or [cell_mm])[0]), cell_mm - 4)
-            h_mm = w_mm * px_h / px_w
-            pic = p.add_picture(self.add_image(png), width=mm(w_mm), height=mm(h_mm), treat_as_char=True, align="CENTER")
-            hancom_picture_sizes(pic.element, png)
-            self.para_format(p, alignment="CENTER", line_spacing_percent=100, indent_left_mm=0, first_line_indent_mm=0,
-                             spacing_after_pt=4)
+            else:
+                px_w, px_h = png_size(png)
+                w_mm = min(float(fig.get("width_mm") or (fig.get("size_mm") or [cell_mm])[0]), cell_mm - 4)
+                h_mm = w_mm * px_h / px_w
+                pic = p.add_picture(self.add_image(png), width=mm(w_mm), height=mm(h_mm), treat_as_char=True, align="CENTER")
+                hancom_picture_sizes(pic.element, png)
+                self.para_format(p, alignment="CENTER", line_spacing_percent=100, indent_left_mm=0, first_line_indent_mm=0,
+                                 spacing_after_pt=2)
+            caption = (choices or [])[i] if i < len(choices or []) else []
+            if caption:
+                for j, part in enumerate(self.split_paragraphs(caption)):
+                    cp = cell.add_paragraph("")
+                    self.add_pieces(cp, part, size=size, where=f"{no}번 선택지 {i + 1}")
+                    self.para_format(cp, alignment="CENTER", line_spacing_percent=t["line_spacing"]["choice"],
+                                     indent_left_mm=0, first_line_indent_mm=0, spacing_after_pt=4 if j == len(self.split_paragraphs(caption)) - 1 else 0)
         self.para_format(p_anchor, alignment="LEFT", line_spacing_percent=100, indent_left_mm=0, first_line_indent_mm=0,
                          spacing_before_pt=4, spacing_after_pt=2)
 
@@ -499,14 +527,23 @@ class ExamBuilder:
             r"[\[(]\s*(?:총\s*)?" + re.escape(str(points)) + r"\s*점(?:\s*[-–−]\s*부분\s*점수)?\s*[\])]", stem_text
         ))
         first = None
+        brk = item.get("break_before")
+        # 문항 앞의 안내 상자 (쪽 중간의 "서술형 유의사항" 같은 것). 단·쪽 나눔은 상자 앞에서 한다
+        for b, box in enumerate(item.get("boxes_before") or []):
+            pa = self.doc.add_paragraph("")
+            if b == 0:
+                self.set_break(pa, brk)
+                brk = None
+            self.build_box(box, anchor=pa)
         for k, pieces in enumerate(paragraphs):
             p = self.doc.add_paragraph("")
             if k == 0:
                 first = p
-                self.set_break(p, item.get("break_before"))
+                self.set_break(p, brk)
                 p.add_run(f"{label} ", char_pr_id_ref=self.run_style(size=size))
             self.add_pieces(p, pieces, size=size, where=f"{no}번 문제 글")
-            if k == 0 and points and not score_present:
+            # 배점은 문제 글 끝에 (3단계에서 확인받은 자리). 읽은 글에 이미 있으면 다시 붙이지 않는다
+            if k == len(paragraphs) - 1 and points and not score_present:
                 p.add_run(f" [{points}점]", char_pr_id_ref=self.run_style(size=size))
             if k == 0:
                 self.para_format(
@@ -521,9 +558,19 @@ class ExamBuilder:
                 self.para_format(p, alignment="JUSTIFY", line_spacing_percent=t["line_spacing"]["body"],
                                  indent_left_mm=5.5, first_line_indent_mm=0, spacing_before_pt=2)
         figures = [f for f in [item.get("figure"), *(item.get("extra_figures") or [])] if f]
+        # 선택지를 표로 인쇄한 문항(번호 ①~⑤ 가 든 표): 그 표가 곧 선택지라 선택지 자리에 한글 표로 넣는다
+        dup = [f for f in figures if self.is_choice_table(f, item)]
+        choice_table = None
+        if dup:
+            figures = [f for f in figures if not any(f is d for d in dup)]
+            choice_table = self.native_table_of(dup[0])
         picture_choices = self.picture_choices(item, figures)
         if not picture_choices:
             for figure in figures:
+                # 선·글자 없이 표 하나뿐인 자료는 고칠 수 있는 한글 표로 (안 되면 그림으로)
+                spec = self.native_table_of(figure)
+                if spec and self.build_native_table(spec, self.figure_width_mm(figure), no):
+                    continue
                 self.build_figure({**item, "figure": figure}, first)
         if item.get("cond_box"):
             # 예전(GPT 판) 읽기 결과에서 옮긴 조건 상자 (지금 읽기는 조건을 문제 글 문단으로 넣는다)
@@ -531,15 +578,167 @@ class ExamBuilder:
         if item.get("bogi"):
             self.build_bogi(item["bogi"], no)
         if picture_choices:
-            self.build_choice_figures(figures, no)
+            self.build_choice_figures(figures, no, item.get("choices") or [])
+        elif choice_table and self.build_native_table(choice_table, self.column_width() / MM - 4, no):
+            pass  # 선택지 표 (원본처럼)
+        else:
+            if dup:
+                self.warnings.append(f"{no}번: 선택지를 담은 표를 한글 표로 넣지 못해 선택지 글로 넣었습니다")
+            self.build_choices(item.get("choices") or [], no, item.get("choice_layout"))
+        # 문항 뒤의 안내 상자 (마지막 쪽의 저작권 안내 같은 것)
+        for box in item.get("boxes_after") or []:
+            pa = self.doc.add_paragraph("")
+            self.para_format(pa, spacing_before_pt=8)
+            self.build_box(box, anchor=pa)
+
+    # ------------------------------------------------------------------ 선택지
+    def piece_width_mm(self, pieces: list, size: float) -> float:
+        """선택지 글·수식 조각이 한 줄로 차지하는 너비(mm, 넉넉하게 어림)."""
+        total = 0.0
+        for piece in pieces or []:
+            if not isinstance(piece, dict):
+                piece = {"t": str(piece)}
+            if "m" in piece:
+                try:
+                    script = to_eqedit(str(piece["m"]), upright_uppercase=self.tpl.get("upright_point_names", True))
+                    base_unit = int(round(size * 100))
+                    total += (measure_equation(script_for_measure(script), base_unit=base_unit).width + base_unit * .22) / MM
+                except Exception:  # noqa: BLE001 - 재지 못하면 길게 본다
+                    total += len(str(piece["m"])) * size * 0.25
+            else:
+                text = re.sub(r"\*\*|__", "", str(piece.get("t") or ""))
+                total += estimate_text_width(text, size) / MM if text else 0
+        return total
+
+    def choice_columns(self, choices: list, layout: str | None = None) -> int:
+        """선택지를 한 줄에 몇 개씩 둘지. 원본 배치(layout: row 한 줄에 모두, grid 여러 줄에 나눠, column 한 줄에 하나)를 따르되
+        단 너비에 들어가지 않으면 한 줄에 넣는 개수를 줄인다. 배치를 모르면 한 줄에 하나씩(3단계에서 확인받은 모양)."""
+        n = len(choices)
+        if n < 2 or layout not in ("row", "grid"):
+            return 1
+        size = self.tpl["sizes"]["choice"]
+        widest = max(self.piece_width_mm(c, size) for c in choices)
+        col_mm = self.column_width() / MM
+        mark_mm = 6.5  # "①  " 와 칸 사이 여백
+        tries = (n, 3, 2) if layout == "row" else (3, 2)
+        for cols in tries:
+            if 2 <= cols <= n and widest + mark_mm <= col_mm / cols - 1.5:
+                return cols
+        return 1
+
+    def build_choices(self, choices: list, no, layout: str | None = None):
+        """선택지: 원본에서 나란히 있던 것은 나란히(한 줄 또는 여러 줄), 아니면 한 줄에 하나씩."""
+        t = self.tpl
+        size = t["sizes"]["choice"]
+        cols = self.choice_columns(choices, layout)
+        if cols == 1:
+            for i, choice in enumerate(choices):
+                cp = self.doc.add_paragraph("")
+                mark = CHOICE_MARKS[i] if i < len(CHOICE_MARKS) else f"({i + 1})"
+                cp.add_run(f"{mark}  ", char_pr_id_ref=self.run_style(size=size))
+                self.add_pieces(cp, choice, size=size, where=f"{no}번 선택지 {i + 1}")
+                self.para_format(cp, alignment="LEFT", line_spacing_percent=t["line_spacing"]["choice"],
+                                 indent_left_mm=0, spacing_before_pt=4 if i == 0 else 0)
             return
-        for i, choice in enumerate(item.get("choices", [])):
-            cp = self.doc.add_paragraph("")
+        # 테두리 없는 표에 나란히 (칸마다 번호와 내용. 한글에서 고칠 수 있는 글자·수식 그대로)
+        rows = (len(choices) + cols - 1) // cols
+        p_anchor = self.doc.add_paragraph("")
+        none = self.border(None, None, None, None)
+        table = p_anchor.add_table(rows, cols, width=self.column_width(), border_fill_id_ref=none)
+        for r in range(rows):
+            for c in range(cols):
+                table.set_cell_border_fill(r, c, none)
+        for i, choice in enumerate(choices):
+            cp = table.cell(i // cols, i % cols).paragraphs[0]
             mark = CHOICE_MARKS[i] if i < len(CHOICE_MARKS) else f"({i + 1})"
-            cp.add_run(f"{mark}  ", char_pr_id_ref=self.run_style(size=t["sizes"]["choice"]))
-            self.add_pieces(cp, choice, size=t["sizes"]["choice"], where=f"{no}번 선택지 {i + 1}")
+            cp.add_run(f"{mark}  ", char_pr_id_ref=self.run_style(size=size))
+            self.add_pieces(cp, choice, size=size, where=f"{no}번 선택지 {i + 1}")
             self.para_format(cp, alignment="LEFT", line_spacing_percent=t["line_spacing"]["choice"],
-                             indent_left_mm=0, spacing_before_pt=4 if i == 0 else 0)
+                             indent_left_mm=0, first_line_indent_mm=0)
+        self.para_format(p_anchor, alignment="LEFT", line_spacing_percent=100, indent_left_mm=0, first_line_indent_mm=0,
+                         spacing_before_pt=4, spacing_after_pt=0)
+
+    @staticmethod
+    def native_table_of(fig: dict) -> dict | None:
+        """그림으로 읽은 표 가운데 선·글자 없이 표 하나뿐인 것의 표 명령 (한글 표로 넣을 수 있는 것)."""
+        g = fig.get("graphic") if isinstance(fig, dict) else None
+        if not isinstance(g, dict) or g.get("kind") != "table" or g.get("paths") or g.get("ellipses") or g.get("texts"):
+            return None
+        tables = g.get("tables") or []
+        if len(tables) != 1 or not isinstance(tables[0], dict):
+            return None
+        t = tables[0]
+        try:
+            rows, cols = int(t.get("rows", 0)), int(t.get("cols", 0))
+        except (TypeError, ValueError):
+            return None
+        if not (1 <= rows <= 30 and 1 <= cols <= 12):
+            return None
+        for cell in t.get("cells") or []:
+            try:
+                r, c, rs, cs = int(cell["row"]), int(cell["col"]), int(cell.get("row_span", 1)), int(cell.get("col_span", 1))
+            except (KeyError, TypeError, ValueError):
+                return None
+            if r < 0 or c < 0 or rs < 1 or cs < 1 or r + rs > rows or c + cs > cols:
+                return None
+        return t
+
+    def build_native_table(self, spec: dict, width_mm: float, no) -> bool:
+        """표 명령을 고칠 수 있는 한글 표로 넣는다 (가는 테두리, 칸 글은 가운데). 넣지 못하면 False (그 문단은 비워 둔다)."""
+        t = self.tpl
+        size = t["sizes"]["choice"]
+        thin = t["border"]["thin"]
+        rows, cols = int(spec["rows"]), int(spec["cols"])
+        width_mm = max(20.0, min(float(width_mm), self.column_width() / MM - 1))
+        p_anchor = self.doc.add_paragraph("")
+        before = list(p_anchor.element)
+        try:
+            table = p_anchor.add_table(rows, cols, width=mm(width_mm), border_fill_id_ref=self.border(thin, thin, thin, thin))
+            weights = [float(w) for w in spec.get("col_widths") or []]
+            if len(weights) == cols and all(w > 0 for w in weights):
+                total = sum(weights)
+                table.set_column_widths([w * 100 / total for w in weights])
+            merges = []
+            for cell in spec.get("cells") or []:
+                r, c = int(cell["row"]), int(cell["col"])
+                rs, cs = int(cell.get("row_span", 1)), int(cell.get("col_span", 1))
+                text = str(cell.get("text") or "")
+                if text:
+                    lines = text.split("\n")
+                    first_p = table.cell(r, c).paragraphs[0]
+                    for k, line in enumerate(lines):
+                        cp = first_p if k == 0 else table.cell(r, c).add_paragraph("")
+                        self.add_rich_text(cp, line, size=size)
+                        self.para_format(cp, alignment="CENTER", line_spacing_percent=130, indent_left_mm=0, first_line_indent_mm=0)
+                if rs > 1 or cs > 1:
+                    merges.append((r, c, r + rs - 1, c + cs - 1))
+            for r in range(rows):
+                for c in range(cols):
+                    p = table.cell(r, c).paragraphs[0]
+                    self.para_format(p, alignment="CENTER", line_spacing_percent=130, indent_left_mm=0, first_line_indent_mm=0)
+            # 아래·오른쪽 것부터 합쳐 앞 칸의 자리가 바뀌지 않게 한다
+            for r0, c0, r1, c1 in sorted(merges, reverse=True):
+                table.merge_cells(r0, c0, r1, c1)
+        except Exception as exc:  # noqa: BLE001 - 표로 못 넣으면 그림으로
+            for child in list(p_anchor.element):
+                if not any(child is old for old in before):
+                    p_anchor.element.remove(child)
+            self.warnings.append(f"{no}번 표를 한글 표로 넣지 못해 그림으로 넣었습니다 - {exc}")
+            return False
+        self.para_format(p_anchor, alignment="CENTER", line_spacing_percent=100, indent_left_mm=0, first_line_indent_mm=0,
+                         spacing_before_pt=4, spacing_after_pt=4)
+        return True
+
+    @staticmethod
+    def is_choice_table(fig: dict, item: dict) -> bool:
+        """그림으로 읽은 표가 사실은 선택지 표인지 (칸에 ①②③… 번호가 들어 있고 선택지 글도 따로 있음)."""
+        graphic = fig.get("graphic") if isinstance(fig, dict) else None
+        if not isinstance(graphic, dict) or not graphic.get("tables"):
+            return False
+        if not any(any((isinstance(p, dict) and (p.get("t") or p.get("m"))) for p in (c or [])) for c in item.get("choices") or []):
+            return False
+        cells = " ".join(str(cell.get("text", "")) for table in graphic["tables"] for cell in table.get("cells", []) if isinstance(cell, dict))
+        return sum(mark in cells for mark in CHOICE_MARKS[:5]) >= 3
 
     def build_bogi(self, lines: list, no, title: str | None = "<보기>"):
         """<보기> 상자: 문제 글과 같은 들여쓰기로, 가는 테두리 안에 항목(ㄱ, ㄴ, ㄷ …)을 한 줄씩.

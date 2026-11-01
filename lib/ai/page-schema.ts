@@ -36,6 +36,8 @@ export const ItemReadingS = z.strictObject({
   stem: z.array(PieceS),
   bogi: z.array(z.array(PieceS)),
   choices: z.array(z.array(PieceS)),
+  /** 선택지 배치: 한 줄에 하나씩 column, 한 줄에 모두 나란히 row, 두세 줄에 나눠 나란히 grid */
+  choice_layout: z.enum(["column", "row", "grid"]),
   figures: z.array(FigureRegionS),
   source: RegionS,
   unsure: z.array(z.string()),
@@ -53,6 +55,8 @@ export const PageReadingS = z.strictObject({
     z.strictObject({
       kind: z.enum(["notice", "score", "other"]),
       lines: z.array(z.strictObject({ text: z.string(), center: z.boolean() })),
+      /** 이 상자 바로 다음에 오는 문항의 번호 모양(no_text). 상자 뒤에 이 쪽 문항이 더 없으면 "" */
+      before: z.string(),
     }),
   ),
   sections: z.array(z.strictObject({ title: z.string(), items: z.array(ItemReadingS) })),

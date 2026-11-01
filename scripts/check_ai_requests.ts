@@ -14,7 +14,7 @@ function inspect(node: any): void {
   for (const child of Object.values(node)) inspect(child);
 }
 inspect(schema);
-const item = { no:1,no_text:"1.",points:4,column:1,stem:[{kind:"t",text:"조건을 읽으시오."}],bogi:[],choices:[],figures:[],source:{x:10,y:20,w:300,h:200},unsure:[] };
+const item = { no:1,no_text:"1.",points:4,column:1,choice_layout:"column",stem:[{kind:"t",text:"조건을 읽으시오."}],bogi:[],choices:[],figures:[],source:{x:10,y:20,w:300,h:200},unsure:[] };
 const page = { header:{present:false,title:"",target_label:"",target:"",date:""},boxes:[],sections:[{title:"",items:[item]}],
   footer:{present:false,right_top:"",right_bottom:"",notice:""},page_end_note:"",print_area:{x:0,y:0,w:1000,h:1500},unsure:[] };
 // 모양이 틀린 답 (문항의 문제 글이 빠짐)
