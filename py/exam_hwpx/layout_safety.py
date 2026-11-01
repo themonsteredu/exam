@@ -8,6 +8,10 @@ class LayoutOverflow(ValueError):
     pass
 
 
+class PageOverflow(LayoutOverflow):
+    """An otherwise valid block needs more vertical room on this page."""
+
+
 def reserve(box, occupied, page_height):
     """Keep horizontal positions; move a colliding block below earlier blocks."""
     x, y, w, h = (float(box[k]) for k in ("x", "y", "w", "h"))
@@ -20,7 +24,7 @@ def reserve(box, occupied, page_height):
             break
         y = max(b["y"] + b["h"] + .7 for b in collisions)
     if y + h > page_height - 3:
-        raise LayoutOverflow("읽은 내용이 쪽 아래로 넘쳐 한글 파일 생성을 멈췄습니다. AI 읽기 결과는 보관되어 있으므로 다시 읽지 말고 배치를 확인해 주세요.")
+        raise PageOverflow("읽은 내용이 쪽 아래로 넘쳐 한글 파일 생성을 멈췄습니다. AI 읽기 결과는 보관되어 있으므로 다시 읽지 말고 배치를 확인해 주세요.")
     placed = {"x": x, "y": y, "w": w, "h": h}
     occupied.append(placed)
     return placed
@@ -75,6 +79,10 @@ def _split_long_text(token, font, width, measure):
 
 def _split_math_at_operators(latex):
     """Split only at top-level operators, never inside a fraction or group."""
+    # Environments and paired delimiters can span several top-level tokens.
+    # Treat them as one equation so a line break cannot change their meaning.
+    if re.search(r"\\(?:begin|end|left|right|lvert|rvert|lVert|rVert)\b|\|", latex):
+        return [latex]
     positions, stack = [], []
     pairs = {")": "(", "]": "[", "}": "{"}
     operators = re.compile(r"\\(?:leq|geq|neq|times|div|cdot|pm|mp|le|ge|ne)(?![A-Za-z])")

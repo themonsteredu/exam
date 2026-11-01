@@ -27,6 +27,7 @@ jobs:
       - run: node scripts/run-ts.mjs scripts/check_ai_requests.ts
       - run: node scripts/run-ts.mjs scripts/check_exam_storage.ts
       - run: python scripts/check_layout_safety.py
+      - run: python scripts/check_page_overflow_hwpx.py
       - run: python scripts/check_long_layout_hwpx.py
       - run: python scripts/check_source_hwpx.py
       - run: python scripts/check_cost_layout_hwpx.py
