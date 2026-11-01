@@ -14,6 +14,7 @@ import {
   shapeDeviation,
   shapeDeviationNote,
   shapeDeviationText,
+  worthReporting,
 } from "@/lib/figure/review";
 import type { FigureSpec, PointRef } from "@/lib/figure/types";
 import { addUsage, assistantTurn, callClaude, extractJson, modelFor, ReadError, type Effort, type Usage } from "./claude";
@@ -102,6 +103,8 @@ export async function readFigure(
   ];
   let usage: Usage | undefined;
   let result: FigureReading | undefined;
+  /** 그릴 수 있었던 마지막 답 (고쳐 받은 답이 오히려 망가지면 이것을 돌려준다) */
+  let lastDrawable: FigureReading | undefined;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     let call;
     try {
@@ -122,11 +125,14 @@ export async function readFigure(
     }
     usage = addUsage(usage, call.usage);
     result = judge(call.text, image, attempt);
+    if (result.commands && !result.errors.length) lastDrawable = result;
     if ((!result.errors.length && !result.advice?.length) || attempt === maxAttempts) break;
     // 고쳐 받을 시간이 모자라면 그대로 돌려준다 (서버 함수 시간 한도를 넘겨 이미 받은 답까지 잃지 않게)
     if (o.deadline && o.deadline - Date.now() < 120_000) break;
     messages.push(assistantTurn(call.message), { role: "user", content: figureRepairText(result.errors, result.advice ?? []) });
   }
+  // 살펴 달라고 다시 물었는데 고친 답에 고칠 곳(오류)이 생겼으면, 그릴 수 있었던 앞 답을 쓴다 (그려지던 그림이 빈 자리가 되지 않게)
+  if (result!.errors.length && lastDrawable) result = { ...lastDrawable, attempts: result!.attempts };
   // 끝까지 남은 살필 곳은 확인할 곳에 짧게 남긴다 (그림은 그대로 쓴다)
   if (result!.adviceNotes?.length) result!.unsure = [...result!.unsure, ...result!.adviceNotes];
   return { figure: result!, usage: usage! };
@@ -174,11 +180,13 @@ export function judge(text: string, image: { width: number; height: number }, at
       spec = fixed.spec;
       fixes.push(...fixed.changes);
     }
+    const shape = anchors.length ? shapeDeviation(spec, anchors) : undefined;
     for (const m of degreeMismatches(spec)) {
+      // 원본 그림 자체가 조건과 맞지 않는 시험지(AI 가 notes 에 까닭을 적음, 그림은 원본과 같음)는 다시 묻지 않는다
+      if (!worthReporting(m, a.notes, shape)) continue;
       advice.push(degreeMismatchText(m));
       adviceNotes.push(`그림: ${degreeMismatchNote(m)}`);
     }
-    const shape = anchors.length ? shapeDeviation(spec, anchors) : undefined;
     if (shape && shape.worst > SHAPE_DEVIATION_LIMIT) {
       advice.push(shapeDeviationText(shape));
       adviceNotes.push(`그림: ${shapeDeviationNote(shape)}`);

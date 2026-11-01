@@ -12,8 +12,10 @@ import {
   SHAPE_DEVIATION_LIMIT,
   shapeDeviation,
   shapeDeviationNote,
+  worthReporting,
   type Anchor,
 } from "@/lib/figure/review";
+import { checkFigureSpec } from "@/lib/figure/validate";
 import type { FigureSpec } from "@/lib/figure/types";
 
 /** 시험지 JSON 의 글 조각: 글 {t} 또는 수식 {m}. {t: "\n"} 은 문단 나눔 */
@@ -347,23 +349,16 @@ export function reviewFigures(exam: any): FigureSuspect[] {
   (exam?.sections ?? []).forEach((s: any, section: number) => {
     (s?.items ?? []).forEach((it: any, index: number) => {
       itemFigures(it).forEach((fig: any, figureIndex: number) => {
-        const reasons: string[] = [];
-        if (isSpec(fig.commands)) {
-          const anchors: Anchor[] = Array.isArray(fig.anchors) ? fig.anchors.filter((a: any) => a && Array.isArray(a.px) && a.px.length === 2) : [];
-          const fixed = repairDegrees(fig.commands, anchors);
-          if (fixed) {
-            fig.commands = fixed.spec;
-            fig.auto_fixes = [...(Array.isArray(fig.auto_fixes) ? fig.auto_fixes : []), ...fixed.changes];
-            // 예전 PNG 는 쓰지 않는다 (고친 명령으로 다시 그린다)
-            delete fig.png;
-            delete fig.png_size;
-          }
-          for (const m of degreeMismatches(fig.commands)) reasons.push(degreeMismatchNote(m));
-          const shape = anchors.length ? shapeDeviation(fig.commands, anchors) : undefined;
-          if (shape && shape.worst > SHAPE_DEVIATION_LIMIT) reasons.push(shapeDeviationNote(shape));
-        } else if (!fig.graphic && fig.asset_kind !== "photo" && fig.placeholder_note !== "사진 자리" && fig.box) {
-          reasons.push("그림을 읽지 못해 빈 자리로 두었습니다");
+        let reasons: string[] = [];
+        try {
+          reasons = reviewOne(fig);
+        } catch (err) {
+          // 살피다 생긴 문제로 시험지 만들기가 멈추지 않게 (그 그림은 그대로 둔다)
+          reasons = [];
+          void err;
         }
+        // 같은 문제로 이미 다시 읽었는데 그대로면 또 권하지 않는다 (원본 그림 자체가 그렇게 생긴 경우. 또 읽어도 같은 답이 나온다)
+        if (reasons.length && fig.reread?.hint && fig.reread.hint === reasons.join(" / ")) reasons = [];
         if (reasons.length) {
           const name = it.label ? String(it.label).trim() : `${it.no}번`;
           suspects.push({ section, index, figureIndex, name: figureIndex ? `${name} (그림 ${figureIndex + 1})` : name, reasons });
@@ -374,41 +369,63 @@ export function reviewFigures(exam: any): FigureSuspect[] {
   return suspects;
 }
 
-/**
- * 그림 하나를 다시 읽은 결과로 바꾼다 (보관함·결과 화면의 '그림 다시 읽기'). 지난 읽기의 명령·표시·확인할 곳(그림)은 지운다.
- * 그림 크기(width_mm·size_mm)와 원본 자리(box)는 그대로 둔다.
- */
-export function replaceFigureReading(item: any, figureIndex: number, result: FigureResult): void {
-  const fig: any = itemFigures(item)[figureIndex];
-  if (!fig) return;
-  for (const key of ["commands", "graphic", "anchors", "notes", "check_warnings", "auto_fixes", "png", "png_size", "render_error", "render_warnings", "placeholder_note"]) delete fig[key];
-  const unsure: string[] = (Array.isArray(item.unsure) ? item.unsure : []).filter((u: unknown) => typeof u === "string" && !/^(그림|자료를 다시 그리지)/.test(u));
-  const r = result.reading;
-  if (result.error || !r) {
-    fig.placeholder_note = "그림 자리";
-    unsure.push(`그림을 다시 읽지 못해 자리만 비워 두었습니다: ${result.error ?? "결과 없음"}`);
-  } else if (fig.asset_kind && fig.asset_kind !== "diagram") {
-    if (r.graphic) fig.graphic = r.graphic;
-    else {
-      fig.placeholder_note = "그림 자리";
-      unsure.push(`자료를 다시 그리지 못해 자리만 비워 두었습니다: ${r.errors.slice(0, 3).join(" / ")}`);
+/** 그림 하나 살피기 (고칠 수 있으면 고치고, 남은 문제를 돌려준다) */
+function reviewOne(fig: any): string[] {
+  const reasons: string[] = [];
+  if (fig.commands && typeof fig.commands === "object") {
+    const check = checkFigureSpec(fig.commands);
+    if (!check.spec) {
+      // AI 의 마지막 답이 검사를 통과하지 못한 그림 (그리지 못하거나 일부만 그려진다)
+      if (fig.box) reasons.push("그림 명령에 고칠 곳이 남아 그리지 못했을 수 있습니다");
+      return reasons;
     }
-    if (r.notes) fig.notes = r.notes;
-  } else {
-    if (r.commands) fig.commands = r.commands;
-    else {
-      fig.commands = r.rawCommands;
-      unsure.push(`그림 명령에 고칠 곳이 남아 있습니다: ${r.errors.slice(0, 3).join(" / ")}`);
+    const anchors: Anchor[] = Array.isArray(fig.anchors) ? fig.anchors.filter((a: any) => a && Array.isArray(a.px) && a.px.length === 2) : [];
+    const fixed = repairDegrees(check.spec, anchors);
+    if (fixed) {
+      fig.commands = fixed.spec;
+      fig.auto_fixes = [...(Array.isArray(fig.auto_fixes) ? fig.auto_fixes : []), ...fixed.changes];
+      // 예전 PNG 는 쓰지 않는다 (고친 명령으로 다시 그린다)
+      delete fig.png;
+      delete fig.png_size;
     }
-    fig.anchors = r.anchors.map((a) => ({
-      at: a.at,
-      px: [Math.round(result.crop.x + a.px[0] / result.scale), Math.round(result.crop.y + a.px[1] / result.scale)],
-    }));
-    if (r.notes) fig.notes = r.notes;
-    if (r.warnings.length) fig.check_warnings = r.warnings;
-    if (r.fixes?.length) fig.auto_fixes = r.fixes;
+    const shape = anchors.length ? shapeDeviation(fig.commands, anchors) : undefined;
+    for (const m of degreeMismatches(fig.commands)) if (worthReporting(m, fig.notes, shape)) reasons.push(degreeMismatchNote(m));
+    if (shape && shape.worst > SHAPE_DEVIATION_LIMIT) reasons.push(shapeDeviationNote(shape));
+    if (fig.render_error) reasons.push(`그림을 그리지 못했습니다: ${String(fig.render_error).slice(0, 80)}`);
+  } else if (!fig.graphic && fig.asset_kind !== "photo" && fig.placeholder_note !== "사진 자리" && fig.box) {
+    reasons.push("그림을 읽지 못해 빈 자리로 두었습니다");
   }
-  if (r) for (const u of r.unsure) unsure.push(u.startsWith("그림") ? u : `그림: ${u}`);
+  return reasons;
+}
+
+/** 다시 읽은 결과가 쓸 만한지: 그릴 수 있는 명령(검사 통과)이나 자료 그리기 명령이 있어야 한다 */
+export function usableReading(result: FigureResult, kind: string): boolean {
+  const r = result.reading;
+  if (result.error || !r) return false;
+  return kind !== "diagram" ? !!r.graphic : !!r.commands && !r.errors.length;
+}
+
+/** 지난 읽기의 '그림' 확인할 곳 문장인지 (문항 전체의 알림 '그림이 5개 있어 …' 같은 것은 아니다) */
+const FIGURE_NOTE = /^(그림:|그림을 읽지 못해|그림을 다시 읽지 못해|그림 명령에 고칠 곳|자료를 다시 그리지|각 표시에 맞게)/;
+
+/**
+ * 그림 하나를 다시 읽은 결과로 바꾼다 (보관함·결과 화면의 '그림 다시 읽기'). 쓸 만한 결과일 때만 부른다 (usableReading).
+ * 그 그림의 지난 명령·표시·확인할 곳은 지운다 (그림마다 남긴 unsure_notes 가 있으면 그것만, 없으면 그림이 하나뿐인 문항의 그림 문장만).
+ * 그림 크기(width_mm·size_mm)와 원본 자리(box)는 그대로 둔다. 다시 읽은 횟수와 그때 알린 문제는 reread 에 남긴다 (같은 문제로 또 권하지 않게).
+ */
+export function replaceFigureReading(item: any, figureIndex: number, result: FigureResult, hint = ""): void {
+  const figs = itemFigures(item);
+  const fig: any = figs[figureIndex];
+  if (!fig) return;
+  const old = new Set<string>(Array.isArray(fig.unsure_notes) ? fig.unsure_notes : []);
+  const keep = (u: unknown) => typeof u === "string" && (old.size ? !old.has(u) : figs.length > 1 || !FIGURE_NOTE.test(u));
+  const unsure: string[] = (Array.isArray(item.unsure) ? item.unsure : []).filter(keep);
+  const count = Number(fig.reread?.count ?? 0) + 1;
+  for (const key of ["commands", "graphic", "anchors", "notes", "check_warnings", "auto_fixes", "png", "png_size", "render_error", "render_warnings", "placeholder_note", "unsure_notes"]) delete fig[key];
+  const notes = figureNotes(fig, result, fig.asset_kind && fig.asset_kind !== "diagram" ? fig.asset_kind : "diagram");
+  unsure.push(...notes);
+  if (notes.length) fig.unsure_notes = notes;
+  fig.reread = { count, hint };
   if (unsure.length) item.unsure = unsure;
   else delete item.unsure;
 }
@@ -459,34 +476,48 @@ function makeFigure(
 
   if (result?.error) {
     fig.placeholder_note = "그림 자리";
-    itemUnsure.push(`그림을 읽지 못해 자리만 비워 두었습니다: ${result.error}`);
   }
-  if (result && r && region.kind !== "diagram") {
+  const notes = result ? figureNotes(fig, result, region.kind) : [];
+  for (const n of notes) itemUnsure.push(n);
+  if (notes.length) fig.unsure_notes = notes;
+  return fig;
+}
+
+/** 그림 읽기 결과를 그림에 넣고, 그 그림의 확인할 곳 문장들을 돌려준다 (만들 때와 다시 읽을 때 같이 쓴다) */
+function figureNotes(fig: any, result: FigureResult, kind: string): string[] {
+  const notes: string[] = [];
+  const r = result.reading;
+  const tag = (u: string) => (u.startsWith("그림") ? u : `그림: ${u}`);
+  if (result.error || !r) {
+    notes.push(`그림을 읽지 못해 자리만 비워 두었습니다: ${result.error ?? "결과 없음"}`);
+    return notes;
+  }
+  if (kind !== "diagram") {
     // 표·지도·통계 그래프·삽화: 그리기 명령(graphic)으로 다시 그린다. 검사를 통과하지 못했으면 빈 자리
     if (r.graphic) fig.graphic = r.graphic;
     else {
       fig.placeholder_note = "그림 자리";
-      itemUnsure.push(`자료를 다시 그리지 못해 자리만 비워 두었습니다: ${r.errors.slice(0, 3).join(" / ")}`);
+      notes.push(`자료를 다시 그리지 못해 자리만 비워 두었습니다: ${r.errors.slice(0, 3).join(" / ")}`);
     }
-    for (const u of r.unsure) itemUnsure.push(`그림: ${u}`);
+    for (const u of r.unsure) notes.push(tag(u));
     if (r.notes) fig.notes = r.notes;
-  } else if (result && r) {
-    if (r.commands) fig.commands = r.commands;
-    else {
-      fig.commands = r.rawCommands;
-      itemUnsure.push(`그림 명령에 고칠 곳이 남아 있습니다: ${r.errors.slice(0, 3).join(" / ")}`);
-    }
-    // 겹쳐 보기 기준점: 원본 사진 픽셀로
-    fig.anchors = r.anchors.map((a) => ({
-      at: a.at,
-      px: [Math.round(result.crop.x + a.px[0] / result.scale), Math.round(result.crop.y + a.px[1] / result.scale)],
-    }));
-    for (const u of r.unsure) itemUnsure.push(`그림: ${u}`);
-    if (r.notes) fig.notes = r.notes;
-    if (r.warnings.length) fig.check_warnings = r.warnings;
-    if (r.fixes?.length) fig.auto_fixes = r.fixes;
+    return notes;
   }
-  return fig;
+  if (r.commands) fig.commands = r.commands;
+  else {
+    fig.commands = r.rawCommands;
+    notes.push(`그림 명령에 고칠 곳이 남아 있습니다: ${r.errors.slice(0, 3).join(" / ")}`);
+  }
+  // 겹쳐 보기 기준점: 원본 사진 픽셀로
+  fig.anchors = r.anchors.map((a) => ({
+    at: a.at,
+    px: [Math.round(result.crop.x + a.px[0] / result.scale), Math.round(result.crop.y + a.px[1] / result.scale)],
+  }));
+  for (const u of r.unsure) notes.push(tag(u));
+  if (r.notes) fig.notes = r.notes;
+  if (r.warnings.length) fig.check_warnings = r.warnings;
+  if (r.fixes?.length) fig.auto_fixes = r.fixes;
+  return notes;
 }
 
 // 상자 안 한 항목의 첫머리: (가) ㄱ. ① ㉠ ※ - • (1) 1. 같은 것

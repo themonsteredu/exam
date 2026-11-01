@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { applyPaper, assembleExam, figureJobs, joinPrintedLines, layoutFor, paperOf } from "@/lib/ai/assemble";
+import { applyPaper, assembleExam, figureJobs, joinPrintedLines, layoutFor, paperOf, replaceFigureReading, reviewFigures, usableReading } from "@/lib/ai/assemble";
 import { itemFigures } from "@/lib/figure/item-figures";
 import { attachFigurePngs } from "@/lib/figure/render-exam";
 import { readCached, readingCacheKey } from "@/lib/client/read-cache";
@@ -99,4 +99,23 @@ try {
   assert.equal(applyPaper(withPng,paperOf({width_mm:210,height_mm:297})),withPng,"A4 면 그대로");
   assert.ok(Math.abs(layoutFor({width_mm:257}).columnWidthMm-89*257/210)<1e-9);
 }
-console.log("그림 모두 넣기·머리 글자·모델별 재사용·같은 요청 한 번만·실패 요금·상자 글 줄 잇기·원본 용지(B4) 검사 통과 (AI 요금 없음)");
+// 그림 다시 읽기: 그 그림의 확인할 곳만 바꾸고, 쓸 만한 결과일 때만 바꾸며, 같은 문제로 또 권하지 않는다
+{
+  const good = { commands: { base: 10, points: [{ id: "A", at: [0, 0] }, { id: "B", at: [5, 0] }, { id: "C", at: [0, 4] }], elements: [{ type: "segment", points: ["A", "B"] }] },
+    anchors: [], errors: [], warnings: [], unsure: ["새 그림의 확인할 곳"], notes: "", attempts: 1 } as any;
+  const item: any = { no: 3, unsure: ["그림이 2개 있습니다", "그림: 첫 그림 문장", "그림: 둘째 그림 문장"],
+    figure: { box: { page: 1, x: 0, y: 0, w: 100, h: 80 }, commands: { base: 1, elements: [] }, unsure_notes: ["그림: 첫 그림 문장"] },
+    extra_figures: [{ box: { page: 1, x: 0, y: 100, w: 100, h: 80 }, commands: { base: 1, elements: [] }, unsure_notes: ["그림: 둘째 그림 문장"] }] };
+  assert.equal(usableReading({ crop: { x: 0, y: 0, w: 10, h: 10 }, scale: 1, reading: { ...good, commands: undefined, rawCommands: {}, errors: ["x"] } }, "diagram"), false, "망가진 결과는 쓰지 않음");
+  assert.equal(usableReading({ crop: { x: 0, y: 0, w: 10, h: 10 }, scale: 1, error: "502" }, "diagram"), false);
+  replaceFigureReading(item, 0, { crop: { x: 0, y: 0, w: 10, h: 10 }, scale: 1, reading: good }, "점 E 가 원본 자리와 많이 다릅니다");
+  assert.deepEqual(item.unsure, ["그림이 2개 있습니다", "그림: 둘째 그림 문장", "그림: 새 그림의 확인할 곳"], "다른 그림과 문항 전체 알림은 그대로");
+  assert.equal(item.figure.reread.count, 1);
+  // 같은 문제(hint)로 이미 다시 읽은 그림은 또 권하지 않는다
+  const exam: any = { sections: [{ items: [{ no: 1, figure: { box: { page: 1, x: 0, y: 0, w: 10, h: 10 }, placeholder_note: "그림 자리", reread: { count: 1, hint: "그림을 읽지 못해 빈 자리로 두었습니다" } } }, { no: 2, figure: { box: { page: 1, x: 0, y: 0, w: 10, h: 10 }, placeholder_note: "그림 자리" } }] }] };
+  assert.deepEqual(reviewFigures(exam).map((t) => t.name), ["2번"], "같은 문제로 다시 읽은 그림은 다시 권하지 않음");
+  // 검사를 통과하지 못한 명령도 멈추지 않고 다시 읽기를 권한다
+  const broken: any = { sections: [{ items: [{ no: 7, figure: { box: { page: 1, x: 0, y: 0, w: 10, h: 10 }, commands: { base: 6, points: [{ id: "B", polar: { length: 3, angle: 90 } }], elements: [{ type: "angle", points: ["B", "A", "C"], label: "50°" }] } } }] }] };
+  assert.equal(reviewFigures(broken)[0]?.name, "7번");
+}
+console.log("그림 모두 넣기·머리 글자·모델별 재사용·같은 요청 한 번만·실패 요금·상자 글 줄 잇기·원본 용지(B4)·그림 다시 읽기 검사 통과 (AI 요금 없음)");

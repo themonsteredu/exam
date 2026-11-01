@@ -3,7 +3,7 @@
 //  → 합치기 → 그림 PNG → 한글 파일 → 내려받기·보관
 //  요금이 드는 AI 읽기 전에 파일을 먼저 열어 보고, 도중에 크게 실패하면 남은 그림 읽기도 멈춘다 (쓰지 못할 결과에 요금이 들지 않게).
 
-import { assembleExam, figureJobs, normalizeLegacyExam, replaceFigureReading, reviewFigures, tidyExam, toExamPieces, type FigureResult, type FigureSuspect, type PageMeta } from "@/lib/ai/assemble";
+import { assembleExam, figureJobs, normalizeLegacyExam, replaceFigureReading, reviewFigures, tidyExam, toExamPieces, usableReading, type FigureResult, type FigureSuspect, type PageMeta } from "@/lib/ai/assemble";
 import type { Usage } from "@/lib/ai/claude";
 import type { PageReading } from "@/lib/ai/page-schema";
 import type { FigureReading } from "@/lib/ai/read-figure";
@@ -45,6 +45,11 @@ export type MakeResult = {
   saved: boolean;
   /** 보관하지 못한 것 (한글 파일 또는 원본) */
   saveProblem?: string;
+  /** 제목과 PDF 쪽 문제 (결과 화면에서 그림을 다시 읽을 때 그대로 쓴다) */
+  title: string;
+  pageProblems: string[];
+  /** 그림 다시 읽기로 만든 경우: 고른 그림 수, 바꾼 그림 수, 다시 읽지 못한 그림과 까닭 */
+  reread?: { asked: number; replaced: number; failed: string[] };
 };
 
 export type Recovery = { docId: string; title: string; exam: any; usd: number; pageProblems: string[] };
@@ -309,11 +314,15 @@ export async function resumeExam(o: FinishOptions, saved: Recovery): Promise<Mak
   return finishExam(o, work, o.signal, progress);
 }
 
-/** 그림 하나에 드는 AI 요금의 많은 쪽 어림 (달러). 2026-11 기록: Opus 평균 0.06·많을 때 0.14, Sonnet 평균 0.03·많을 때 0.08 */
-export function figureRereadUsd(model?: string): number {
-  if (!model || /opus/i.test(model)) return 0.15;
-  if (/sonnet/i.test(model)) return 0.08;
-  return 0.04;
+/**
+ * 그림 하나를 다시 읽는 AI 요금 어림 (달러): 보통과 많을 때.
+ * 2026-11 기록: 그림 읽기 한 번에 Opus 평균 0.06·많을 때 0.14, Sonnet 평균 0.03·많을 때 0.08.
+ * 다시 읽기를 권하는 그림은 검사에 걸린 그림이라 AI 에게 한 번 더 살피게 하는 일이 잦다 → 많을 때는 두 번으로 어림한다
+ */
+export function figureRereadUsd(model?: string): { usual: number; most: number } {
+  if (!model || /opus/i.test(model)) return { usual: 0.08, most: 0.3 };
+  if (/sonnet/i.test(model)) return { usual: 0.04, most: 0.16 };
+  return { usual: 0.02, most: 0.08 };
 }
 
 /**
@@ -335,17 +344,33 @@ export async function rereadFigures(
   const tell = (patch: Partial<Progress>) => { Object.assign(progress, patch); o.onProgress({ ...progress }); };
   tell({});
   if (!o.originals.length) throw new ApiError("보관함에 원본 파일이 없어 그림을 다시 읽을 수 없습니다.", 400);
+  // 1) 원본 받기 (요금이 들기 전에 열 수 있는 파일인지까지 본다)
   const files: File[] = [];
   for (const ref of o.originals) {
     check();
-    const { url } = await postJson<{ url: string }>("/api/files/download-url", { path: ref.path }, signal);
-    const res = await fetch(url, { signal });
-    if (!res.ok) throw new ApiError("원본 파일을 받지 못했습니다. 잠시 뒤 다시 해 주세요.", res.status);
-    const blob = await res.blob();
+    let blob: Blob;
+    try {
+      const { url } = await postJson<{ url: string }>("/api/files/download-url", { path: ref.path }, signal);
+      const res = await fetch(url, { signal });
+      if (!res.ok) throw new Error(String(res.status));
+      blob = await res.blob();
+    } catch (err) {
+      if (signal.aborted) throw new ApiError("멈췄습니다.", 0);
+      throw new ApiError(`보관함에서 원본 파일(${ref.name || "원본"})을 받지 못했습니다. 인터넷 연결을 확인하고 다시 해 주세요.`, 0, err instanceof Error ? err.message : String(err));
+    }
     files.push(new File([blob], ref.name || "원본", { type: ref.type || blob.type }));
   }
-  const sources = await openSources(files);
+  let sources: Awaited<ReturnType<typeof openSources>>;
+  try {
+    await precheckFiles(files);
+    sources = await openSources(files);
+  } catch (err) {
+    throw new ApiError(`원본 파일을 이 기기에서 열지 못했습니다: ${err instanceof Error ? err.message : String(err)}`, 0);
+  }
+  // 2) 그림마다: 그 쪽 그림 → 처음과 같은 자리 잘라 → 다시 읽기 (잠깐의 실패는 두 번 더, 열쇠·크레딧처럼 다시 해도 같은 실패는 바로 멈춤)
   const canvases = new Map<number, HTMLCanvasElement>();
+  let replaced = 0;
+  const failed: string[] = [];
   try {
     for (const t of targets) {
       check();
@@ -353,6 +378,7 @@ export async function rereadFigures(
       const fig: any = itemFigures(item)[t.figureIndex];
       const page = Number(fig?.box?.page);
       if (!item || !fig?.box || !(page >= 1 && page <= sources.length)) {
+        failed.push(`${t.name}: 원본에서 그림 자리를 찾지 못했습니다`);
         tell({ figuresDone: progress.figuresDone + 1 });
         continue;
       }
@@ -365,28 +391,43 @@ export async function rereadFigures(
       // 처음 읽을 때와 같은 자리 (box 는 원본 쪽 그림의 픽셀)
       const kind = fig.asset_kind ?? "diagram";
       const cut = figureImage(canvas, { x: fig.box.x, y: fig.box.y, w: fig.box.w, h: fig.box.h, kind, place: fig.place ?? "below" } as any, 1);
-      let result: FigureResult;
-      try {
-        const r = await readCached<{ figure: FigureReading; usage: Usage }>("figure", {
-          image: `data:${cut.image.mediaType};base64,${cut.image.data}`,
-          item: { no: item.no, stem: item.stem ?? [], choices: item.choices ?? [], bogi: item.bogi ?? [] },
-          kind,
-          model: o.models?.figure,
-          docId: work.docId,
-          hint: t.reasons.join(" / ").slice(0, 600),
-        }, o.cacheScope ?? "", signal);
-        tell({ usd: progress.usd + sumUsd(r.usage), reused: (progress.reused ?? 0) + (r.cached ? 1 : 0) });
-        result = { crop: cut.crop, scale: cut.scale, reading: r.figure };
-      } catch (err) {
-        if (err instanceof ApiError && err.usage) tell({ usd: progress.usd + err.usage.usd });
-        if (signal.aborted) throw err;
-        const detail = err instanceof ApiError && err.detail ? ` (${err.detail})` : "";
-        // 열쇠가 없거나 틀린 것처럼 다시 해도 같은 실패는 바로 알린다 (지난 그림은 그대로 둔다)
-        if (err instanceof ApiError && [400, 401, 402, 403].includes(err.status)) throw err;
-        result = { crop: cut.crop, scale: cut.scale, error: `${err instanceof Error ? err.message : String(err)}${detail}` };
+      const hint = t.reasons.join(" / ").slice(0, 600);
+      let result: FigureResult | undefined;
+      for (let attempt = 1; ; attempt++) {
+        try {
+          const r = await readCached<{ figure: FigureReading; usage: Usage }>("figure", {
+            image: `data:${cut.image.mediaType};base64,${cut.image.data}`,
+            item: { no: item.no, stem: item.stem ?? [], choices: item.choices ?? [], bogi: item.bogi ?? [] },
+            kind,
+            model: o.models?.figure,
+            docId: work.docId,
+            hint,
+            // 같은 그림을 또 다시 읽을 때 읽기 기억(같은 요청의 지난 답)이 아니라 새로 읽게
+            attempt: Number(fig.reread?.count ?? 0) + 1,
+          }, o.cacheScope ?? "", signal);
+          tell({ usd: progress.usd + sumUsd(r.usage), reused: (progress.reused ?? 0) + (r.cached ? 1 : 0) });
+          result = { crop: cut.crop, scale: cut.scale, reading: r.figure };
+          break;
+        } catch (err) {
+          if (err instanceof ApiError && err.usage) tell({ usd: progress.usd + err.usage.usd });
+          if (signal.aborted) throw err;
+          if (!transient(err)) throw err; // 열쇠가 틀림, 크레딧 부족 등: 남은 그림도 같으니 멈추고 알린다
+          if (attempt < 3) {
+            await wait(attempt === 1 ? 4_000 : 15_000, signal);
+            continue;
+          }
+          const detail = err instanceof ApiError && err.detail ? ` (${err.detail})` : "";
+          failed.push(`${t.name}: ${err instanceof Error ? err.message : String(err)}${detail}`);
+          break;
+        }
       }
-      // 다시 읽기에 실패하면 지난 그림을 그대로 둔다 (빈 자리로 바꾸지 않는다)
-      if (!result.error) replaceFigureReading(item, t.figureIndex, result);
+      // 쓸 만한 결과일 때만 바꾼다 (다시 읽은 답이 망가졌으면 지난 그림을 그대로 둔다)
+      if (result && usableReading(result, kind)) {
+        replaceFigureReading(item, t.figureIndex, result, hint);
+        replaced++;
+      } else if (result) {
+        failed.push(`${t.name}: 다시 읽은 그림 명령에 고칠 곳이 남아 지난 그림을 그대로 두었습니다 (${(result.reading?.errors ?? []).slice(0, 2).join(" / ")})`);
+      }
       tell({ figuresDone: progress.figuresDone + 1 });
     }
   } finally {
@@ -397,7 +438,8 @@ export async function rereadFigures(
   }
   reviewFigures(work.exam);
   work.usd = progress.usd;
-  return finishExam(o, work, signal, progress);
+  const out = await finishExam(o, work, signal, progress);
+  return { ...out, reread: { asked: targets.length, replaced, failed } };
 }
 
 async function finishExam(o: FinishOptions, work: Recovery, signal: AbortSignal, progress: Progress, uploads?: Promise<FileRef[]>): Promise<MakeResult> {
@@ -455,6 +497,8 @@ async function finishExam(o: FinishOptions, work: Recovery, signal: AbortSignal,
   }
   return {
     docId,
+    title: work.title,
+    pageProblems,
     exam: withPng,
     hwpxPath: res.path,
     fileName,

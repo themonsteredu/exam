@@ -173,11 +173,13 @@ export default function MakePage() {
   /** 고른 그림만 AI 로 다시 읽고 다시 만든다 (요금을 먼저 알리고 묻는다) */
   function askReread(work: Recovery, targets: FigureSuspect[]) {
     if (!ready?.keySaved || !targets.length) return;
-    const most = won(targets.length * figureRereadUsd(ready.models?.figure), ready.krwPerUsd);
+    const cost = figureRereadUsd(ready.models?.figure);
+    const usual = won(targets.length * cost.usual, ready.krwPerUsd);
+    const most = won(targets.length * cost.most, ready.krwPerUsd);
     const ok = window.confirm(
       `그림 ${targets.length}개를 AI 로 다시 읽고 한글 파일을 다시 만듭니다.\n` +
         `${targets.map((t) => `- ${t.name}`).join("\n")}\n\n` +
-        `AI 요금은 많아도 약 ${most}입니다 (보통 그 절반쯤). 다시 읽을까요?`,
+        `AI 요금은 보통 약 ${usual}, 많으면 약 ${most}입니다. 다시 읽을까요?`,
     );
     if (ok) start(work, targets);
   }
@@ -190,6 +192,8 @@ export default function MakePage() {
     setProgress(null);
     setError("");
     setErrorDetail("");
+    // 결과 화면에서 그림을 다시 읽다가 멈추거나 실패하면 앞의 결과를 되살린다
+    const previous = result;
     setResult(null);
     const controller = new AbortController();
     abort.current = controller;
@@ -231,7 +235,15 @@ export default function MakePage() {
       const detail = err instanceof ApiError ? err.detail ?? "" : "";
       setError(msg);
       setErrorDetail(detail);
-      if (docId) await patchJson(`/api/documents/${docId}`, { status: "failed", cost_usd: currentCost, note: `${msg}${detail ? `\n${detail}` : ""}`.slice(0, 500) }).catch(() => undefined);
+      if (savedWork) {
+        // 다 만든 문서를 다시 만들거나 그림을 다시 읽다가 멈추거나 실패해도 보관함의 문서는 그대로 둔다 ('실패'로 바꾸지 않는다).
+        // 그림을 다시 읽느라 든 요금만 기록하고, 화면은 앞의 결과나 다시 만들기 칸으로 되돌린다
+        if (docId && currentCost > (savedWork.usd ?? 0)) await patchJson(`/api/documents/${docId}`, { cost_usd: currentCost }).catch(() => undefined);
+        if (previous) setResult(previous);
+        else setRecovery(savedWork);
+      } else if (docId) {
+        await patchJson(`/api/documents/${docId}`, { status: "failed", cost_usd: currentCost, note: `${msg}${detail ? `\n${detail}` : ""}`.slice(0, 500) }).catch(() => undefined);
+      }
     } finally {
       setBusy(false);
       abort.current = null;
@@ -391,7 +403,7 @@ export default function MakePage() {
           resumed={resuming}
           reread={rereading}
           canReread={!!JXG && !!ready?.keySaved && !busy}
-          onReread={(targets) => askReread({ docId: result.docId, title: title.trim() || "시험지", exam: stripPngs(result.exam), usd: result.usd, pageProblems: [] }, targets)}
+          onReread={(targets) => askReread({ docId: result.docId, title: result.title, exam: stripPngs(result.exam), usd: result.usd, pageProblems: result.pageProblems }, targets)}
         />
       )}
     </main>
@@ -406,12 +418,22 @@ function ResultView({ result, rate, resumed, reread, canReread, onReread }: { re
       <h2>다 만들었습니다</h2>
       <p>
         문항 {items.length}개를 옮겼습니다. 한글 파일을 만들었{result.saved ? "고 보관함에도 저장했" : ""}습니다.{" "}
-        {reread
-          ? `그림 ${reread}개를 AI 로 다시 읽었습니다. 이 시험지의 AI 요금은 지금까지 모두 약 ${won(result.usd, rate)}입니다.`
+        {reread && result.reread
+          ? `그림 ${result.reread.asked}개 가운데 ${result.reread.replaced}개를 AI 로 다시 읽어 바꿨습니다. 이 시험지의 AI 요금은 지금까지 모두 약 ${won(result.usd, rate)}입니다.`
           : resumed
             ? `이전 읽기의 AI 요금은 약 ${won(result.usd, rate)}이며, 다시 만들기에 추가 AI 요금은 없습니다.`
             : `이번 AI 요금은 약 ${won(result.usd, rate)}입니다.`}
       </p>
+      {!!result.reread?.failed.length && (
+        <div className="notice error small" role="alert">
+          <p>다시 읽지 못한 그림은 지난 그림을 그대로 두었습니다.</p>
+          <ul>
+            {result.reread.failed.map((f, i) => (
+              <li key={i}>{f}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       {result.saveProblem && (
         <p className="notice error" role="alert">
           {result.saveProblem}. {result.saved ? "" : "내려받은 한글 파일을 잘 보관해 주세요."}

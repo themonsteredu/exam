@@ -39,9 +39,14 @@ export type DegreeMismatch = {
   free: boolean;
 };
 
-function refName(ref: PointRef): string {
-  return typeof ref === "string" ? ref : `(${ref[0]}, ${ref[1]})`;
+function refName(ref: PointRef | undefined): string {
+  if (typeof ref === "string") return ref;
+  if (Array.isArray(ref)) return `(${ref[0]}, ${ref[1]})`;
+  return String(ref ?? "?");
 }
+
+/** 각을 나타내는 문자 글자(x, y, a, 3x°, θ)인지: 점 이름(대문자)·숫자 각은 아니다 */
+const LETTER_ANGLE = /^\d*(?:[a-z]|[α-ω])(?:°)?$/;
 
 /** 따로 둔 글자의 가운데 자리 (엔진과 같은 계산: 점에서 dir 쪽으로 글자 크기 × offset) */
 function labelCenter(el: LabelSpec, book: PointBook, spec: FigureSpec): Vec {
@@ -79,18 +84,29 @@ export function degreeMismatches(spec: FigureSpec, book?: PointBook): DegreeMism
     const bare = angles.filter(({ el }) => !el.label);
     if (!bare.length) return out;
     const named = book.ids().map((id) => ({ id, p: book!.pt(id) })).filter(({ p }) => Number.isFinite(p.x) && Number.isFinite(p.y));
-    spec.elements.forEach((el, i) => {
-      if (el?.type !== "label" || (el.font ?? "serif") !== "serif") return;
-      const want = degreeLabel(el.text);
-      if (want === undefined) return;
+    const nearestOf = (el: LabelSpec) => {
       const c = labelCenter(el, book!, spec);
       let nearest: { id: string; d: number } | undefined;
       for (const { id, p } of named) {
         const d = Math.hypot(p.x - c.x, p.y - c.y);
         if (!nearest || d < nearest.d) nearest = { id, d };
       }
-      if (!nearest || nearest.d > spec.base * FREE_LABEL_REACH) return;
-      const at = bare.filter(({ el: a }) => a.points[1] === nearest!.id);
+      return nearest && nearest.d <= spec.base * FREE_LABEL_REACH ? nearest.id : undefined;
+    };
+    // 문자 각 글자(x 등)를 따로 둔 꼭짓점: 그 각 표시는 그 글자의 것이다
+    const claimed = new Set<string>();
+    for (const el of spec.elements) {
+      if (el?.type !== "label" || !LETTER_ANGLE.test(el.text.replace(/\s+/g, "")) || book.has(el.text)) continue;
+      const id = nearestOf(el);
+      if (id) claimed.add(id);
+    }
+    spec.elements.forEach((el, i) => {
+      if (el?.type !== "label" || (el.font ?? "serif") !== "serif") return;
+      const want = degreeLabel(el.text);
+      if (want === undefined) return;
+      const vertex = nearestOf(el);
+      if (!vertex || claimed.has(vertex)) return;
+      const at = bare.filter(({ el: a }) => a.points[1] === vertex);
       if (at.length !== 1) return; // 그 꼭짓점에 글자 없는 각 표시가 없거나 여럿이면 짝짓지 않는다
       const got = measure(at[0].el.points);
       if (Math.abs(got - want) > DEGREE_TOLERANCE) out.push({ where: `elements[${i}]`, label: el.text, want, got, points: at[0].el.points, free: true });
@@ -198,6 +214,15 @@ export function repairDegrees(spec: FigureSpec, anchors?: Anchor[]): DegreeRepai
     for (const e of chosen) e.apply(copy);
     const book = computable(copy);
     if (!book || degreeMismatches(copy, book).length) return undefined;
+    // 따로 둔 글자는 자리가 그대로라, 꼭짓점이 멀어져 짝이 풀린 것만으로 '맞음'이 되면 안 된다 → 처음 틀린 각을 같은 세 점으로 다시 잰다
+    for (const m of before) {
+      try {
+        const [a, o, b] = m.points.map((r) => book.pt(r));
+        if (!(Math.abs(angleAt(a, o, b) - m.want) <= DEGREE_TOLERANCE)) return undefined;
+      } catch {
+        return undefined;
+      }
+    }
     return copy;
   };
   const found: { spec: FigureSpec; edits: Edit[] }[] = [];
@@ -227,26 +252,49 @@ export function repairDegrees(spec: FigureSpec, anchors?: Anchor[]): DegreeRepai
     }
     return sum / Math.max(1e-9, spec.base);
   };
-  const scored = found.map((f) => ({
-    ...f,
-    shape: anchors?.length ? Math.round((shapeDeviation(f.spec, anchors)?.worst ?? 0) * 20) / 20 : 0,
-    moved: moved(f),
-  }));
-  scored.sort((x, y) => x.shape - y.shape || x.moved - y.moved || x.edits.length - y.edits.length);
+  // 원본 사진 속 점 자리(이름 있는 기준점 3개 이상)가 있으면: 고친 그림이 고치기 전보다 원본과 더 달라지면 버린다
+  const shape0 = anchors?.length ? shapeDeviation(spec, anchors)?.worst : undefined;
+  const scored = found
+    .map((f) => ({ ...f, shape: shape0 === undefined ? 0 : shapeDeviation(f.spec, anchors!)?.worst ?? Infinity, moved: moved(f) }))
+    .filter((f) => shape0 === undefined || f.shape <= shape0 + 0.05);
+  if (!scored.length) return undefined;
+  const bucket = (x: number) => Math.round(x * 20) / 20;
+  scored.sort((x, y) => bucket(x.shape) - bucket(y.shape) || x.moved - y.moved || x.edits.length - y.edits.length);
+  // 고를 길이 여럿이고 점 자리가 서로 다르면(같은 직선의 반대쪽 끝, 뒤집힌 그림 등) 어느 것이 맞는지 모른다 → 고치지 않고 AI 에게 맡긴다.
+  // 원본 기준점이 있으면 가장 닮은 무리 안에서만, 없으면 모든 후보 사이에서 따진다
   const best = scored[0];
+  const rivals = scored.filter((f) => f !== best && (shape0 === undefined || bucket(f.shape) === bucket(best.shape)));
+  if (rivals.some((f) => !samePoints(f.spec, best.spec))) return undefined;
   return { spec: best.spec, changes: best.edits.map((e) => e.describe) };
+}
+
+/** 두 그림 명령의 이름 있는 점 자리가 모두 같은지 */
+function samePoints(a: FigureSpec, b: FigureSpec): boolean {
+  const ba = computable(a), bb = computable(b);
+  if (!ba || !bb) return false;
+  const scale = Math.max(1e-9, a.base);
+  return ba.ids().every((id) => {
+    if (!bb.has(id)) return false;
+    const p = ba.pt(id), q = bb.pt(id);
+    return Math.hypot(p.x - q.x, p.y - q.y) / scale < 1e-6;
+  });
 }
 
 /** 원본 사진 속 점 자리 (픽셀, 왼쪽 위가 0,0) */
 export type Anchor = { at: PointRef; px: [number, number] };
 
 export type ShapeDeviation = {
-  /** 가장 많이 어긋난 점과 그 정도 (원본 기준점이 퍼진 크기에 대한 비율) */
+  /** 가장 많이 어긋난 점과 그 정도 (원본 기준점이 퍼진 크기에 대한 비율). 그림이 원본보다 45° 넘게 돌아가 있으면 1 이상 */
   worst: number;
   worstPoint: string;
   /** 점마다 어긋난 정도 */
   points: { id: string; ratio: number }[];
+  /** 모든 점으로 맞췄을 때 그림을 돌린 각(도). 원본과 같은 방향이면 0 가까이 */
+  rotation: number;
 };
+
+/** 원본보다 이만큼(도) 넘게 돌아간 그림은 크게 다른 것으로 본다 (보관된 그림 88개는 모두 13.5° 안) */
+const ROTATION_LIMIT = 45;
 
 /**
  * 그린 점 자리와 원본 사진 속 점 자리(AI 가 적어 준 기준점)를 닮은꼴로 맞춰 보고(돌리기·키우기·옮기기),
@@ -290,10 +338,11 @@ export function shapeDeviation(spec: FigureSpec, anchors: Anchor[], book?: Point
     }
     if (!(zz > 1e-12)) return undefined;
     const ar = re / zz, ai = im / zz;
-    return (p: Vec) => {
+    const map = (p: Vec) => {
       const zx = p.x - p0.x, zy = p.y - p0.y;
       return v(q0.x + ar * zx - ai * zy, q0.y + ai * zx + ar * zy);
     };
+    return Object.assign(map, { rotation: (Math.atan2(ai, ar) * 180) / Math.PI });
   };
   const points: { id: string; ratio: number }[] = [];
   for (const x of pairs) {
@@ -303,16 +352,43 @@ export function shapeDeviation(spec: FigureSpec, anchors: Anchor[], book?: Point
     points.push({ id: x.id, ratio: Math.hypot(m.x - x.q.x, m.y - x.q.y) / spread });
   }
   if (!points.length) return undefined;
+  const all = fit(pairs);
+  const rotation = all ? all.rotation : 0;
   const worst = points.reduce((a, b) => (b.ratio > a.ratio ? b : a));
-  return { worst: worst.ratio, worstPoint: worst.id, points };
+  return { worst: Math.abs(rotation) > ROTATION_LIMIT ? Math.max(worst.ratio, 1) : worst.ratio, worstPoint: worst.id, points, rotation };
+}
+
+/** 원본과 많이 다른 점들 (여럿이면 모두) */
+function offPoints(d: ShapeDeviation): string[] {
+  const off = d.points.filter((p) => p.ratio > SHAPE_DEVIATION_LIMIT).sort((a, b) => b.ratio - a.ratio).map((p) => p.id);
+  return off.length ? off : [d.worstPoint];
 }
 
 /** 확인할 곳에 적을 짧은 문장 */
 export function shapeDeviationNote(d: ShapeDeviation): string {
-  return `점 ${d.worstPoint} 가 원본 자리와 많이 다릅니다 (그림 크기의 ${Math.round(d.worst * 100)}%)`;
+  if (Math.abs(d.rotation) > ROTATION_LIMIT) return `그림이 원본과 다른 방향으로 돌아가 있습니다 (약 ${Math.round(Math.abs(d.rotation))}°)`;
+  const off = offPoints(d);
+  return off.length > 1
+    ? `그림 모양이 원본과 많이 다릅니다 (점 ${off.join(", ")})`
+    : `점 ${off[0]} 가 원본 자리와 많이 다릅니다 (그림 크기의 ${Math.round(d.worst * 100)}%)`;
 }
 
 /** 원본과 모양이 많이 다를 때 알리는 문장 */
 export function shapeDeviationText(d: ShapeDeviation): string {
-  return `점 ${d.worstPoint} 가 원본 사진 속 자리와 많이 다릅니다 (그림 크기의 ${Math.round(d.worst * 100)}%). 문자로 적힌 값(3x° 등)을 풀어서 그리지 않았는지, 원본 모양대로 그릴 부분을 조건으로 정하지 않았는지 확인하고 원본처럼 고치세요. 숫자로 주어진 조건 때문에 어쩔 수 없으면 그대로 두고 notes 에 까닭을 적으세요.`;
+  const what = Math.abs(d.rotation) > ROTATION_LIMIT
+    ? `그림 전체가 원본 사진과 다른 방향으로 약 ${Math.round(Math.abs(d.rotation))}° 돌아가(뒤집혀) 있습니다`
+    : offPoints(d).length > 1
+      ? `점 ${offPoints(d).join(", ")} 가 원본 사진 속 자리와 많이 달라 그림 모양이 원본과 다릅니다`
+      : `점 ${d.worstPoint} 가 원본 사진 속 자리와 많이 다릅니다 (그림 크기의 ${Math.round(d.worst * 100)}%)`;
+  return `${what}. 문자로 적힌 값(3x° 등)을 풀어서 그리지 않았는지, 원본 모양대로 그릴 부분을 조건으로 정하지 않았는지 확인하고 원본처럼 고치세요. 숫자로 주어진 조건 때문에 어쩔 수 없으면 그대로 두고 notes 에 까닭을 적으세요.`;
+}
+
+/**
+ * 숫자 각 불일치를 알릴지: AI 가 notes 에 그 값(45°)을 들어 까닭을 적었거나, 그림이 원본 사진과 거의 같으면(원본 자체가 축척이 맞지 않음) 알리지 않는다.
+ * 2026-11-01 조대부중 4번(4cm·6cm·70° 면 45° 가 아니라 39°), 대자중 서술형5(100° 와 107°)는 AI 가 이미 notes 에 까닭을 적었고 그림은 원본과 같았다.
+ */
+export function worthReporting(m: DegreeMismatch, notes: string | undefined, shape: ShapeDeviation | undefined): boolean {
+  if (typeof notes === "string" && notes.includes(`${m.want}°`)) return false;
+  if (shape && shape.worst < 0.1) return false;
+  return true;
 }
