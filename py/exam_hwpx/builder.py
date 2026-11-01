@@ -42,9 +42,17 @@ def _symbol_aware_char_width(ch: str, upright: bool = False) -> float:
 _eq_measure._char_width = _symbol_aware_char_width
 # 목록에 없는 관계 기호(≡ ⊥ ∥ ∽ …)의 글자 너비
 _eq_measure._OPERATOR_GLYPH = 0.72
-# 수식 상자 오른쪽 여유: 글자 크기의 0.35배 + 너비의 3% (기울인 글자 끝 획, 측정 오차)
-EQ_PAD_EM = 0.35
-EQ_PAD_RATIO = 0.03
+# ∠ △ 같은 기호: 사용자 화면(대자중 서술형4 "∠a−∠b+2∠c")에서 ∠ 하나가 뒤 글자까지 0.87em
+_eq_measure._SYMBOL = 0.87
+# 수식 상자 오른쪽 여유. 넉넉히(0.35em+3%) 잡았더니 "∠c 의", "∠a ," 처럼 뒤 조사·쉼표가 떨어져 보였다
+# (화면에서 잰 실제 너비는 위 보정값으로 잰 너비와 거의 같다) → 기울인 글자 끝 획 정도만
+EQ_PAD_EM = 0.08
+EQ_PAD_RATIO = 0.0
+# 수식 바로 뒤의 조사·서술어 앞 띄어쓰기는 지운다 (AI 가 "x:6 을", "m 일 때" 처럼 띄워 읽는 일이 있다)
+_PARTICLE_AFTER_EQ = re.compile(
+    r"^\s+(?=(?:을|를|의|이|가|은|는|와|과|에|에서|에게|에는|로|으로|일|인|이다|이고|이며|이면|라|라고|이라|이라고|만|도|까지|부터|보다|과의|와의)"
+    r"(?:[\s,.?!)\]·:;]|$))"
+)
 
 from .latex import latex_to_plain, script_for_measure, to_eqedit
 from .template import MM, get_template, mm
@@ -208,6 +216,9 @@ class ExamBuilder:
                 text = piece.get("t")
                 # 문단 나눔은 문제 글에서만 쓴다 (build_item 이 미리 나눔). 다른 곳에 섞여 오면 빈칸으로
                 text = "" if text is None else str(text).replace("\n", " ")
+                prev = pieces[i - 1] if i > 0 else None
+                if isinstance(prev, dict) and "m" in prev:
+                    text = _PARTICLE_AFTER_EQ.sub("", text)
                 self.add_rich_text(p, text, size=size)
 
     # ------------------------------------------------------------------ 부분별
@@ -322,7 +333,7 @@ class ExamBuilder:
             hanging = box.get("kind") == "notice" and text.startswith("※")
             self.para_format(
                 p,
-                alignment=line.get("align", "JUSTIFY"),
+                alignment=line.get("align", "LEFT"),
                 line_spacing_percent=t["line_spacing"]["box"],
                 indent_left_mm=0,
                 first_line_indent_mm=-3.5 if hanging else 0,
@@ -591,6 +602,8 @@ class ExamBuilder:
             figures = [f for f in figures if not any(f is d for d in dup)]
             choice_table = self.native_table_of(dup[0])
         picture_choices = self.picture_choices(item, figures)
+        # 문제 글은 왼쪽 정렬 (2026-11-01 사용자 요청). 양쪽 정렬이면 수식이 든 줄·그림 옆 좁은 줄에서 낱말 사이가 크게 벌어졌다
+        align = "LEFT"
 
         def put_figures():
             if picture_choices:
@@ -616,7 +629,7 @@ class ExamBuilder:
                 p.add_run(f" [{points}점]", char_pr_id_ref=self.run_style(size=size))
             if k == 0:
                 self.para_format(
-                    p, alignment="JUSTIFY", line_spacing_percent=t["line_spacing"]["body"],
+                    p, alignment=align, line_spacing_percent=t["line_spacing"]["body"],
                     # 내어쓰기: 첫 줄(문제 번호)은 단 왼쪽 끝에서, 다음 줄부터 5.5mm 들여 시작한다.
                     # 한글은 왼쪽 여백에서 첫 줄을 시작하고 내어쓰기 값만큼 나머지 줄을 민다 (왼쪽 여백 0 이어야 번호가 선택지 번호와 같은 세로줄에 선다)
                     indent_left_mm=0, first_line_indent_mm=-5.5,
@@ -624,7 +637,7 @@ class ExamBuilder:
                 )
             else:
                 # 둘째 문단부터는 번호 다음 글자와 같은 세로줄에서 시작한다
-                self.para_format(p, alignment="JUSTIFY", line_spacing_percent=t["line_spacing"]["body"],
+                self.para_format(p, alignment=align, line_spacing_percent=t["line_spacing"]["body"],
                                  indent_left_mm=5.5, first_line_indent_mm=0, spacing_before_pt=2)
         if sub_at is None:
             put_figures()
@@ -821,7 +834,7 @@ class ExamBuilder:
             # 제목 없는 조건 상자는 인쇄된 줄 그대로 들어온다: (가)·(1) 로 시작하지 않는 줄은 앞 항목의 이어지는 줄이라 기호 뒤에 맞춘다
             continued = (not title and i > 0 and not first_text.strip().startswith(("(", "[", "※", "-", "*"))
                          and not re.match(r"^\s*[ㄱ-ㅎ①-⑳]", first_text))
-            self.para_format(lp, alignment="JUSTIFY", line_spacing_percent=t["line_spacing"]["body"],
+            self.para_format(lp, alignment="LEFT", line_spacing_percent=t["line_spacing"]["body"],
                              indent_left_mm=6 if continued else 0, first_line_indent_mm=-4.5 if hanging else 0)
         self.para_format(p_anchor, line_spacing_percent=100, indent_left_mm=indent, first_line_indent_mm=0,
                          spacing_before_pt=4, spacing_after_pt=4)
