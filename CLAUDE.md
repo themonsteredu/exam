@@ -285,3 +285,4 @@
   - 18번(왼쪽·오른쪽 시력) 그래프에 학생 연필 체크(✓)의 한 획이 선으로 들어가 있었다 (첫 읽기의 실수). 보낸 파일(숭의중_B4_그림바로세움_1102.hwpx)은 그 선을 손으로 뺐다
     (그림 notes 에 적음, 작업 폴더 /home/user/exam-work/sungui-3tKG: sideways.ts → fixed.json → make_hwpx.py).
     자료 읽기 지시문(read-graphic GRAPHIC_SYSTEM)에 연필 체크·빗금·밑줄·화살표 등 손글씨 선을 넣지 말라고 자세히 적음. 읽기 기억 판 two-column-v7-pencil
+    배포 dpl_B34ULEfiq5RsMgazRtbcHQYzF5v6 (커밋 55b96ae, 두 줄기 같음)
