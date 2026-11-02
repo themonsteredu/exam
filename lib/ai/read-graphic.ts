@@ -5,7 +5,7 @@ import type { FigureContext, FigureReading } from "./read-figure";
 import type { ImageInput } from "./read-page";
 import { piecesToText } from "./prompts";
 
-export const GRAPHIC_SYSTEM = `너는 시험지의 지도·표·그래프·안내도·삽화를 원본과 같은 구성의 편집 가능한 자료로 재작성한다. 손글씨/답 표시/낙서는 제외한다. 문제를 풀거나 보이지 않는 글자, 사물, 도로 연결을 지어내지 않는다. 불명확한 사항은 unsure에 적는다.
+export const GRAPHIC_SYSTEM = `너는 시험지의 지도·표·그래프·안내도·삽화를 원본과 같은 구성의 편집 가능한 자료로 재작성한다. 학생이 연필·펜으로 쓰거나 그은 것(체크 ✓·빗금·밑줄·화살표·동그라미, 자료 위에 쓴 숫자·계산·답, 채점 표시, 낙서)은 선 하나도 넣지 않는다. 손글씨 선은 획 굵기와 기울기가 들쭉날쭉하고 회색(연필)이나 색 펜이며, 축·눈금·표 칸과 맞지 않게 자료 밖으로 삐져나오는 경우가 많다. 인쇄된 선·점·글자만 옮긴다. 문제를 풀거나 보이지 않는 글자, 사물, 도로 연결을 지어내지 않는다. 불명확한 사항은 unsure에 적는다.
 답은 {"graphic": 아래 명령, "unsure": [확인이 필요한 내용], "notes": "짧은 설명"} JSON 하나다.
 graphic={"kind":"map|table|chart|illustration|photo", "width":1000, "height":원본종횡비에맞는수,
 "paths":[{"points":[[x,y],...],"closed":false,"stroke":"#000000","fill":"none","width":2,"dash":false}],
