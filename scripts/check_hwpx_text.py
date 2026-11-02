@@ -51,4 +51,25 @@ for bad in ({'width_mm': 'x'}, {'width_mm': 5000, 'height_mm': 9000}, 'B4'):
 listed, _ = build_exam({'sections': [{'items': [{'no': 1, 'stem': [{'t': '다음 그림에서 '}, {'m': r'\angle A=70^{\circ}, \angle C=30^{\circ}'}, {'t': '일 때'}]}]}]})
 with zipfile.ZipFile(io.BytesIO(listed)) as z:
     assert z.read('Contents/section0.xml').decode().count('<hp:equation') == 2, '조건 두 개는 수식 두 개'
-print('한글 문항 강조, 배점, 삼각형 수식, B4 용지, 조건 수식 나누기 확인 완료')
+# 원본 자리에서 단을 나눴는데 우리 글이 짧아 단 아래가 크게 비면, 그 빈 곳을 단의 문항 사이에 나눠 준다 (원본처럼 풀이 공간)
+def q(no, brk=None):
+    item = {'no': no, 'stem': [{'t': f'{no}번 문제 글입니다. 다음 중 옳은 것은?'}], 'choices': [[{'t': '가'}], [{'t': '나'}], [{'t': '다'}]]}
+    if brk:
+        item['break_before'] = brk
+    return item
+short = {'source_pages': [{'page': 1, 'width': 1000, 'height': 1414}, {'page': 2, 'width': 1000, 'height': 1414}],
+         'sections': [{'items': [q(1), q(2), q(3, 'column'), q(4), q(5, 'page'), q(6)]}]}
+spaced_data, _ = build_exam(short)
+with zipfile.ZipFile(io.BytesIO(spaced_data)) as z:
+    sec = ET.fromstring(z.read('Contents/section0.xml'))
+    head = ET.fromstring(z.read('Contents/header.xml'))
+hc = '{http://www.hancom.co.kr/hwpml/2011/core}'
+pp = {e.get('id'): e for e in head.iter(hh + 'paraPr')}
+def prev_of(para):
+    margin = pp[para.get('paraPrIDRef')].find('.//' + hh + 'margin')
+    return int(margin.find(hc + 'prev').get('value'))
+starts = [p for p in sec if p.tag == hp + 'p' and ''.join(t.text or '' for t in p.iter(hp + 't')).startswith(('2.', '4.'))]
+assert len(starts) == 2 and all(prev_of(p) > 1200 * 5 for p in starts), [prev_of(p) for p in starts]
+from exam_hwpx.builder import estimated_pages  # noqa: E402
+assert estimated_pages(spaced_data) == 2, estimated_pages(spaced_data)
+print('한글 문항 강조, 배점, 삼각형 수식, B4 용지, 조건 수식 나누기, 단 아래 빈 곳 나누기 확인 완료')

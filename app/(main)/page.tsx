@@ -5,8 +5,9 @@ import { api, ApiError, downloadStored, patchJson, postJson, won, type FileRef }
 import { figureRereadUsd, makeExam, rereadFigures, resumeExam, stripPngs, type MakeResult, type Progress, type Recovery, type Step } from "@/lib/client/make-exam";
 import { normalizeLegacyExam, reviewFigures, tidyExam, type FigureSuspect } from "@/lib/ai/assemble";
 import { loadExamCheckpoint } from "@/lib/client/exam-storage";
-import { pdfPaperMm } from "@/lib/client/pages";
+import { pdfPaperMm, pdfTextDirection } from "@/lib/client/pages";
 import { applyPaper, paperOf } from "@/lib/ai/assemble";
+import { itemOrderRotations, uprightExam } from "@/lib/ai/orientation";
 
 /** 그림 살피기 결과: 프로그램이 고친 그림과 다시 읽기를 권하는 그림 (시험지 데이터는 바꾸지 않는다) */
 type FigureReview = { fixes: { name: string; changes: string[] }[]; suspects: FigureSuspect[] };
@@ -127,15 +128,23 @@ export default function MakePage() {
       try {
         const { doc } = await api<{ doc: { title: string; exam_json?: any; cost_usd: number; original_files?: { path: string; type?: string; name?: string }[] } }>(`/api/documents/${docId}`, { signal: controller.signal });
         let exam = await loadExamCheckpoint(docId, doc.exam_json, controller.signal);
-        // 용지를 적어 두기 전에 읽은 문서: 원본 PDF 크기를 보고 B4 원본이면 B4 로 다시 만든다 (요금 없음)
+        // 원본 PDF 를 보고 예전 읽기 결과를 바로잡는다 (요금 없음):
+        //  - 옆으로 누운 스캔을 누운 채로 읽은 결과면 쪽마다 방향을 문항 순서로 알아내 자리·크기를 바로 세운다 (2026-11-02 숭의중)
+        //  - 용지를 적어 두기 전에 읽은 문서면 원본 PDF 크기를 보고 B4 원본이면 B4 로
         const pdf = doc.original_files?.find((f) => /pdf/i.test(f.type ?? "") || /\.pdf$/i.test(f.name ?? f.path));
-        if (exam && !exam.paper && pdf) {
+        const pages: any[] = Array.isArray(exam?.source_pages) ? exam.source_pages : [];
+        const maybeLying = pages.length > 0 && !pages.some((p) => p && "rotate" in p) && pages.some((p) => p?.width > p?.height);
+        if (exam && pdf && (!exam.paper || maybeLying)) {
           try {
             const { url } = await postJson<{ url: string }>("/api/files/download-url", { path: pdf.path }, controller.signal);
-            const size = await pdfPaperMm(await (await fetch(url, { signal: controller.signal })).arrayBuffer());
-            exam = applyPaper(exam, paperOf(size));
+            const bytes = await (await fetch(url, { signal: controller.signal })).arrayBuffer();
+            if (maybeLying && (await pdfTextDirection(bytes.slice(0))) === "vertical") {
+              const turns = itemOrderRotations(exam);
+              if (turns.size) exam = uprightExam(exam, turns);
+            }
+            if (!exam.paper) exam = applyPaper(exam, paperOf(await pdfPaperMm(bytes.slice(0))));
           } catch {
-            // 원본을 못 받으면 예전처럼 A4 로 만든다
+            // 원본을 못 받으면 예전처럼 만든다
           }
         }
         const pageProblems = Array.isArray(doc.exam_json?.pageProblems) ? doc.exam_json.pageProblems.filter((v: unknown): v is string => typeof v === "string") : [];

@@ -11,7 +11,7 @@ import { continuationHint } from "@/lib/ai/read-page";
 import { attachFigurePngs, renderExamFigures } from "@/lib/figure/render-exam";
 import { ApiError, patchJson, postJson, uploadFile, type FileRef } from "./api";
 import { saveExamCheckpoint } from "./exam-storage";
-import { figureImage, openSources, pageImage, precheckFiles } from "./pages";
+import { figureImage, openSources, orientationImage, pageImage, precheckFiles, rotateCanvas, textDirectionOf } from "./pages";
 import { assertFresh } from "./version";
 import { readCached } from "./read-cache";
 import { itemFigures } from "@/lib/figure/item-figures";
@@ -208,7 +208,35 @@ async function run(
   for (let i = 0; i < sources.length; i++) {
     check();
     tell({ step: "page", message: `쪽 ${i + 1}/${sources.length} 을 읽는 중입니다 (${sources[i].label}).` });
-    const canvas = await sources[i].render();
+    let canvas = await sources[i].render();
+    // 옆으로 누운 스캔(글자 줄이 세로)이면 방향을 AI 에게 물어(작은 사진, 쪽당 1원 남짓) 바로 세운 뒤 읽는다.
+    // 2026-11-02 숭의중: 누운 채로 읽어 그림이 절반 크기로 작아지고 몇 개는 누운 채로 그려졌다. 앞뒷면 스캔은 쪽마다 방향이 다르다
+    const direction = textDirectionOf(canvas);
+    let rotate: number | undefined = direction === "horizontal" ? 0 : undefined;
+    if (direction === "vertical") {
+      tell({ message: `쪽 ${i + 1} 이 옆으로 누워 있어 방향을 확인하는 중입니다.` });
+      try {
+        const o2 = orientationImage(canvas);
+        const r = await postJson<{ rotate: number | null; usage: Usage }>("/api/read/orient", {
+          image: `data:${o2.mediaType};base64,${o2.data}`,
+          model: o.models?.page,
+          docId,
+        }, signal);
+        tell({ usd: progress.usd + sumUsd(r.usage) });
+        // AI 가 바로 서 있다(0)고 하면 돌리지 않고 확인한 쪽으로, 답을 못 읽었으면(null) 확인하지 못한 쪽으로
+        if (r.rotate === 0 || r.rotate === 90 || r.rotate === 180 || r.rotate === 270) rotate = r.rotate;
+      } catch (err) {
+        if (signal.aborted) throw err;
+        if (err instanceof ApiError && [400, 401, 402, 403].includes(err.status)) throw err;
+        pageProblems.push(`${sources[i].label}: 쪽이 옆으로 누워 있는데 방향을 알아내지 못해 누운 채로 읽었습니다`);
+      }
+      if (rotate) {
+        const turned = rotateCanvas(canvas, rotate);
+        canvas.width = 0;
+        canvas.height = 0;
+        canvas = turned;
+      }
+    }
     const { image, scale } = pageImage(canvas);
     let res: { reading: PageReading; usage: Usage; cached?: boolean };
     try {
@@ -226,8 +254,14 @@ async function run(
     }
     tell({ usd: progress.usd + sumUsd(res.usage), reused: (progress.reused ?? 0) + (res.cached ? 1 : 0) });
     const page = i + 1;
-    const paper = sources[i].paperMm;
-    pages.push({ meta: { page, original: { width: canvas.width, height: canvas.height }, scale, ...(paper ? { paper_mm: paper } : {}) }, reading: res.reading });
+    const paper0 = sources[i].paperMm;
+    // 바로 세운 쪽의 종이 크기 (90°·270° 로 돌렸으면 가로세로를 바꾼다: 누운 B4 스캔 → B4)
+    const paper = paper0 && (rotate === 90 || rotate === 270) ? { width_mm: paper0.height_mm, height_mm: paper0.width_mm } : paper0;
+    pages.push({
+      meta: { page, original: { width: canvas.width, height: canvas.height }, scale, ...(paper ? { paper_mm: paper } : {}), ...(rotate !== undefined ? { rotate } : {}) },
+      reading: res.reading,
+    });
+    const upright = rotate !== undefined;
     for (const s of res.reading.sections) {
       if (s.title) lastSection = s.title;
       if (s.items.length) lastNo = s.items[s.items.length - 1].no;
@@ -258,6 +292,8 @@ async function run(
                   kind: job.region.kind,
                   model: o.models?.figure,
                   docId,
+                  // 쪽 방향을 확인했는지 (모르면 그림 방향을 고치지 않게)
+                  upright,
                 }, o.cacheScope ?? "", signal);
                 figures.set(job.key, { crop: cut.crop, scale: cut.scale, reading: r.figure });
                 tell({ usd: progress.usd + sumUsd(r.usage), reused: (progress.reused ?? 0) + (r.cached ? 1 : 0) });
@@ -383,11 +419,20 @@ export async function rereadFigures(
         continue;
       }
       tell({ message: `${t.name} 그림을 다시 읽는 중입니다.` });
+      const pageInfo = (Array.isArray(work.exam.source_pages) ? work.exam.source_pages : []).find((p: any) => p?.page === page);
       let canvas = canvases.get(page);
       if (!canvas) {
-        canvas = await sources[page - 1].render();
+        // 처음 읽을 때 바로 세운 쪽이면 같은 방향으로 돌린다 (그림 자리 box 는 바로 세운 쪽 기준)
+        const rendered = await sources[page - 1].render();
+        canvas = rotateCanvas(rendered, Number(pageInfo?.rotate) || 0);
+        if (canvas !== rendered) {
+          rendered.width = 0;
+          rendered.height = 0;
+        }
         canvases.set(page, canvas);
       }
+      // 쪽 방향을 확인했는지: 방향을 적어 둔 쪽이나 세로로 긴 쪽 (가로로 긴 쪽은 누운 스캔일 수 있다)
+      const upright = !!pageInfo && ("rotate" in pageInfo || !(pageInfo.width > pageInfo.height));
       // 처음 읽을 때와 같은 자리 (box 는 원본 쪽 그림의 픽셀)
       const kind = fig.asset_kind ?? "diagram";
       const cut = figureImage(canvas, { x: fig.box.x, y: fig.box.y, w: fig.box.w, h: fig.box.h, kind, place: fig.place ?? "below" } as any, 1);
@@ -402,6 +447,7 @@ export async function rereadFigures(
             model: o.models?.figure,
             docId: work.docId,
             hint,
+            upright,
             // 같은 그림을 또 다시 읽을 때 읽기 기억(같은 요청의 지난 답)이 아니라 새로 읽게
             attempt: Number(fig.reread?.count ?? 0) + 1,
           }, o.cacheScope ?? "", signal);

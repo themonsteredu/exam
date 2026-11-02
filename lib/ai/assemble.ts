@@ -12,6 +12,7 @@ import {
   SHAPE_DEVIATION_LIMIT,
   shapeDeviation,
   shapeDeviationNote,
+  uprightFigure,
   withShape,
   worthReporting,
   type Anchor,
@@ -29,8 +30,10 @@ export type PageMeta = {
   original: { width: number; height: number };
   /** AI 에게 보낸 사진 픽셀 = 원본 픽셀 × scale */
   scale: number;
-  /** 원본 종이 크기(mm). PDF 쪽에서만 안다 (사진은 모른다) */
+  /** 원본 종이 크기(mm). PDF 쪽에서만 안다 (사진은 모른다). 바로 세운 쪽 기준 */
   paper_mm?: { width_mm: number; height_mm: number };
+  /** 읽기 전에 쪽 그림을 시계 방향으로 돌린 각 (0·90·180·270). 글자 방향을 확인한 쪽만 (모르면 없음) */
+  rotate?: number;
 };
 
 /** 용지 (mm) */
@@ -291,6 +294,8 @@ export function assembleExam(
     width: meta.original.width,
     height: meta.original.height,
     ...(meta.paper_mm ? { width_mm: round1(meta.paper_mm.width_mm), height_mm: round1(meta.paper_mm.height_mm) } : {}),
+    // 그림 다시 읽기에서 같은 방향으로 돌려 자르려고, 그리고 방향을 확인한 쪽이라는 표시로
+    ...(meta.rotate !== undefined ? { rotate: meta.rotate } : {}),
   }));
   if (unsure.length) exam.unsure = unsure;
   return exam;
@@ -347,12 +352,19 @@ const isSpec = (v: unknown): v is FigureSpec => !!v && typeof v === "object" && 
  */
 export function reviewFigures(exam: any): FigureSuspect[] {
   const suspects: FigureSuspect[] = [];
+  // 바로 선 쪽인지: 방향을 확인한 쪽(rotate 가 적힘)이나 세로로 긴 쪽. 가로로 긴 쪽은 옆으로 누운 스캔일 수 있어,
+  // 원본 사진과 그림의 방향이 달라도 그림 탓이라고 보지 않는다 (누운 사진을 보고 바로 세워 그린 그림을 다시 눕히지 않게)
+  const pages = new Map<number, any>((Array.isArray(exam?.source_pages) ? exam.source_pages : []).map((p: any) => [p.page, p]));
+  const uprightPage = (page: unknown) => {
+    const p = pages.get(Number(page));
+    return !p || "rotate" in p || !(p.width > p.height);
+  };
   (exam?.sections ?? []).forEach((s: any, section: number) => {
     (s?.items ?? []).forEach((it: any, index: number) => {
       itemFigures(it).forEach((fig: any, figureIndex: number) => {
         let reasons: string[] = [];
         try {
-          reasons = reviewOne(fig);
+          reasons = reviewOne(fig, uprightPage(fig?.box?.page));
         } catch (err) {
           // 살피다 생긴 문제로 시험지 만들기가 멈추지 않게 (그 그림은 그대로 둔다)
           reasons = [];
@@ -371,7 +383,7 @@ export function reviewFigures(exam: any): FigureSuspect[] {
 }
 
 /** 그림 하나 살피기 (고칠 수 있으면 고치고, 남은 문제를 돌려준다) */
-function reviewOne(fig: any): string[] {
+function reviewOne(fig: any, upright: boolean): string[] {
   const reasons: string[] = [];
   if (fig.commands && typeof fig.commands === "object") {
     const check = checkFigureSpec(fig.commands);
@@ -381,7 +393,15 @@ function reviewOne(fig: any): string[] {
       return reasons;
     }
     const anchors: Anchor[] = Array.isArray(fig.anchors) ? fig.anchors.filter((a: any) => a && Array.isArray(a.px) && a.px.length === 2) : [];
-    const fixed = repairDegrees(check.spec, anchors);
+    // 원본과 다른 방향(옆으로 눕거나 거꾸로)으로 그린 그림은 먼저 원본 방향으로 돌린다 (2026-11-02 숭의중: 누운 스캔을 읽어 누운 채로 그림)
+    const up = upright && anchors.length ? uprightFigure(check.spec, anchors) : undefined;
+    if (up) {
+      fig.commands = up.spec;
+      fig.auto_fixes = [...(Array.isArray(fig.auto_fixes) ? fig.auto_fixes : []), up.change];
+      delete fig.png;
+      delete fig.png_size;
+    }
+    const fixed = repairDegrees(up ? up.spec : check.spec, anchors);
     if (fixed) {
       fig.commands = fixed.spec;
       fig.auto_fixes = [...(Array.isArray(fig.auto_fixes) ? fig.auto_fixes : []), ...fixed.changes];
@@ -391,7 +411,7 @@ function reviewOne(fig: any): string[] {
     }
     const shape = anchors.length ? shapeDeviation(fig.commands, anchors) : undefined;
     for (const m of withShape(degreeMismatches(fig.commands), shape)) if (worthReporting(m, fig.notes, shape)) reasons.push(degreeMismatchNote(m));
-    if (shape && shape.worst > SHAPE_DEVIATION_LIMIT) reasons.push(shapeDeviationNote(shape));
+    if (shape && shape.worst > SHAPE_DEVIATION_LIMIT && (upright || Math.abs(shape.rotation) <= 45)) reasons.push(shapeDeviationNote(shape));
     if (fig.render_error) reasons.push(`그림을 그리지 못했습니다: ${String(fig.render_error).slice(0, 80)}`);
   } else if (!fig.graphic && fig.asset_kind !== "photo" && fig.placeholder_note !== "사진 자리" && fig.box) {
     reasons.push("그림을 읽지 못해 빈 자리로 두었습니다");

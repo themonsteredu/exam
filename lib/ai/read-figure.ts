@@ -14,6 +14,7 @@ import {
   shapeDeviation,
   shapeDeviationNote,
   shapeDeviationText,
+  uprightFigure,
   withShape,
   worthReporting,
 } from "@/lib/figure/review";
@@ -78,7 +79,7 @@ export type FigureContext = {
 export async function readFigure(
   image: ImageInput,
   item: FigureContext,
-  o: { model?: string; effort?: Effort; maxAttempts?: number; apiKey?: string; signal?: AbortSignal; deadline?: number; hint?: string } = {},
+  o: { model?: string; effort?: Effort; maxAttempts?: number; apiKey?: string; signal?: AbortSignal; deadline?: number; hint?: string; pageUpright?: boolean } = {},
 ): Promise<{ figure: FigureReading; usage: Usage }> {
   const model = modelFor("figure", o.model);
   const maxAttempts = o.maxAttempts ?? 2;
@@ -131,7 +132,7 @@ export async function readFigure(
       throw err;
     }
     usage = addUsage(usage, call.usage);
-    result = judge(call.text, image, attempt);
+    result = judge(call.text, image, attempt, o.pageUpright !== false);
     if (result.commands && !result.errors.length) lastDrawable = result;
     if ((!result.errors.length && !result.advice?.length) || attempt === maxAttempts) break;
     // 고쳐 받을 시간이 모자라면 그대로 돌려준다 (서버 함수 시간 한도를 넘겨 이미 받은 답까지 잃지 않게)
@@ -146,7 +147,7 @@ export async function readFigure(
 }
 
 /** AI 의 답을 읽고 검사한다 */
-export function judge(text: string, image: { width: number; height: number }, attempt = 1): FigureReading {
+export function judge(text: string, image: { width: number; height: number }, attempt = 1, pageUpright = true): FigureReading {
   const base: FigureReading = { anchors: [], unsure: [], notes: "", errors: [], warnings: [], attempts: attempt };
   let json: unknown;
   try {
@@ -182,6 +183,13 @@ export function judge(text: string, image: { width: number; height: number }, at
   const advice: string[] = [];
   const adviceNotes: string[] = [];
   if (spec) {
+    // 원본 사진과 다른 방향(옆으로 눕거나 거꾸로)으로 그렸으면 먼저 원본 방향으로 돌린다.
+    // 쪽이 바로 선 것으로 확인된 경우만 (누운 쪽 사진을 보고 바로 세워 그린 그림을 다시 눕히지 않게)
+    const up = pageUpright && anchors.length ? uprightFigure(spec, anchors) : undefined;
+    if (up) {
+      spec = up.spec;
+      fixes.push(up.change);
+    }
     const fixed = repairDegrees(spec, anchors);
     if (fixed) {
       spec = fixed.spec;
@@ -194,7 +202,7 @@ export function judge(text: string, image: { width: number; height: number }, at
       advice.push(degreeMismatchText(m));
       adviceNotes.push(`그림: ${degreeMismatchNote(m)}`);
     }
-    if (shape && shape.worst > SHAPE_DEVIATION_LIMIT) {
+    if (shape && shape.worst > SHAPE_DEVIATION_LIMIT && (pageUpright || Math.abs(shape.rotation) <= 45)) {
       advice.push(shapeDeviationText(shape));
       adviceNotes.push(`그림: ${shapeDeviationNote(shape)}`);
     }

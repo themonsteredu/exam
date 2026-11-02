@@ -395,6 +395,62 @@ export function shapeDeviation(spec: FigureSpec, anchors: Anchor[], book?: Point
   return { worst: Math.abs(rotation) > ROTATION_LIMIT ? Math.max(worst.ratio, 1) : worst.ratio, worstPoint: worst.id, points, rotation };
 }
 
+/** 그림 좌표 돌리기 (시계 반대 방향, 도) */
+function turnXY([x, y]: [number, number], deg: number): [number, number] {
+  const r = (deg * Math.PI) / 180;
+  const round = (n: number) => Math.round(n * 1e6) / 1e6;
+  return [round(x * Math.cos(r) - y * Math.sin(r)), round(x * Math.sin(r) + y * Math.cos(r))];
+}
+
+/**
+ * 그림 명령 전체를 돌린다 (시계 반대 방향 deg 도): 좌표로 찍은 점·글자 자리는 돌리고, 방향각(polar·직선의 angle)과 글자 방향은 더한다.
+ * 다른 점에 견준 정의(intersect 의 두 점, 수선, 이등분선, 원과 직선, 중점, 자유점, dirOf+turn, isoApex)는 그대로 따라 돈다.
+ * 좌표축·함수 그래프·쌓기나무·모눈은 돌리면 뜻이 바뀌므로 그런 그림은 돌리지 않는다 (undefined).
+ */
+export function rotateSpec(spec: FigureSpec, deg: number): FigureSpec | undefined {
+  if (spec.elements.some((el: any) => ["axes", "function", "cubes", "grid"].includes(el?.type))) return undefined;
+  const copy: any = JSON.parse(JSON.stringify(spec));
+  const ref = (r: any) => (Array.isArray(r) && r.length === 2 && r.every((n: unknown) => typeof n === "number") ? turnXY(r as [number, number], deg) : r);
+  const dir = (d: any) => (d === undefined ? d : norm((typeof d === "number" ? d : DIRS[d] ?? 90) + deg));
+  for (const pt of copy.points ?? []) {
+    if (Array.isArray(pt.at)) pt.at = turnXY(pt.at, deg);
+    if (pt.polar) {
+      if (pt.polar.from) pt.polar.from = ref(pt.polar.from);
+      if (typeof pt.polar.angle === "number") pt.polar.angle = norm(pt.polar.angle + deg);
+      else if (!pt.polar.dirOf) pt.polar.angle = norm(deg);
+    }
+    for (const line of Array.isArray(pt.intersect) ? pt.intersect : []) {
+      if (Array.isArray(line?.through)) line.through = line.through.map(ref);
+      if (typeof line?.angle === "number") line.angle = norm(line.angle + deg);
+    }
+  }
+  for (const el of copy.elements) {
+    if (Array.isArray(el.points)) el.points = el.points.map(ref);
+    for (const key of ["at", "center", "through", "from", "to"]) if (key in el) el[key] = ref(el[key]);
+    if (el.type === "label" && el.dir !== undefined) el.dir = dir(el.dir);
+  }
+  delete copy.bbox;
+  return copy as FigureSpec;
+}
+
+/**
+ * AI 가 그림을 원본 사진과 다른 방향(옆으로 눕거나 거꾸로)으로 그렸으면 원본 방향으로 돌린다.
+ * 원본 기준점과 맞춰 본 돌림이 90°·180°·270° 가까이(20° 안)이고, 돌린 뒤 모양이 원본과 맞을 때만 (그 밖에는 undefined).
+ * 2026-11-02 숭의중: 옆으로 누운 스캔을 읽어 그림 몇 개를 누운 채로 그렸다.
+ */
+export function uprightFigure(spec: FigureSpec, anchors: Anchor[]): { spec: FigureSpec; change: string } | undefined {
+  const d = shapeDeviation(spec, anchors);
+  if (!d) return undefined;
+  const quarter = Math.round(d.rotation / 90);
+  if (quarter === 0 || Math.abs(d.rotation - quarter * 90) > 20) return undefined;
+  const turned = rotateSpec(spec, quarter * 90);
+  if (!turned) return undefined;
+  const after = shapeDeviation(turned, anchors);
+  if (!after || Math.abs(after.rotation) > 20 || after.worst > SHAPE_DEVIATION_LIMIT) return undefined;
+  const how = Math.abs(quarter) === 2 ? "거꾸로" : "옆으로 누워";
+  return { spec: turned, change: `그림이 원본과 달리 ${how} 있어 원본 방향으로 돌렸습니다 (${norm(quarter * 90)}°)` };
+}
+
 /** 원본과 많이 다른 점들 (여럿이면 모두) */
 function offPoints(d: ShapeDeviation): string[] {
   const off = d.points.filter((p) => p.ratio > SHAPE_DEVIATION_LIMIT).sort((a, b) => b.ratio - a.ratio).map((p) => p.id);

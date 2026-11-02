@@ -21,7 +21,7 @@ export async function POST(req: Request) {
   const deadline = Date.now() + BUDGET_MS;
   const denied = await requireSession(req);
   if (denied) return denied;
-  let body: { image?: unknown; item?: Record<string, unknown>; model?: unknown; docId?: unknown; kind?: unknown; hint?: unknown };
+  let body: { image?: unknown; item?: Record<string, unknown>; model?: unknown; docId?: unknown; kind?: unknown; hint?: unknown; upright?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -63,6 +63,8 @@ export async function POST(req: Request) {
         deadline,
         // 다시 읽기: 지난 그림에서 프로그램이 찾은 문제 (그림 읽기에만 쓴다)
         hint: typeof body.hint === "string" && body.hint.trim() ? body.hint.trim().slice(0, 600) : undefined,
+        // 화면이 쪽 방향을 확인했는지 (false 면 누운 스캔일 수 있어 그림 방향을 고치지 않는다)
+        pageUpright: body.upright !== false,
       },
     );
     await logUsage("figure", usage, docId, config.keyTag);

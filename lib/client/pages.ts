@@ -4,6 +4,7 @@
 import { figureCropRect, figureSendSize, fitForClaude } from "@/lib/ai/image-geometry";
 import type { FigureRegion } from "@/lib/ai/page-schema";
 import type { ImageInput } from "@/lib/ai/read-page";
+import { voteTextDirection, type TextDirection } from "@/lib/ai/orientation";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -157,6 +158,23 @@ export async function pdfPaperMm(bytes: ArrayBuffer): Promise<{ width_mm: number
   }
 }
 
+/** PDF 첫 쪽의 글자 줄 방향 (보관함 '다시 만들기'에서 누운 스캔으로 읽은 예전 결과인지 볼 때). 열지 못하면 'unknown' */
+export async function pdfTextDirection(bytes: ArrayBuffer): Promise<TextDirection> {
+  try {
+    const [source] = await openSources([new File([bytes], "원본.pdf", { type: "application/pdf" })]);
+    if (!source) return "unknown";
+    const canvas = await source.render();
+    try {
+      return textDirectionOf(canvas);
+    } finally {
+      canvas.width = 0;
+      canvas.height = 0;
+    }
+  } catch {
+    return "unknown";
+  }
+}
+
 export async function openSources(files: File[]): Promise<PageSource[]> {
   const out: PageSource[] = [];
   for (const file of files) {
@@ -262,6 +280,51 @@ export function figureImage(page: HTMLCanvasElement, region: FigureRegion, pageS
   const send = figureSendSize(crop.w, crop.h);
   const c = resized(page, send.width, send.height, crop.x, crop.y, crop.w, crop.h);
   return { image: toInputWithin(c, "image/png"), crop, scale: send.width / crop.w };
+}
+
+/**
+ * 쪽 그림의 글자 줄 방향 (가로/세로/모름). 긴 변 1600px 흑백으로 줄여 칸마다 다수결 (lib/ai/orientation voteTextDirection).
+ * 세로면 옆으로 누운 스캔이다 (2026-11-02 숭의중)
+ */
+export function textDirectionOf(page: HTMLCanvasElement): TextDirection {
+  const s = Math.min(1, 1600 / Math.max(page.width, page.height));
+  const c = resized(page, page.width * s, page.height * s);
+  try {
+    const { data } = c.getContext("2d")!.getImageData(0, 0, c.width, c.height);
+    const gray = new Uint8ClampedArray(c.width * c.height);
+    for (let i = 0, k = 0; k < gray.length; i += 4, k++) gray[k] = (data[i] * 299 + data[i + 1] * 587 + data[i + 2] * 114) / 1000;
+    return voteTextDirection(gray, c.width, c.height).direction;
+  } finally {
+    c.width = 0;
+    c.height = 0;
+  }
+}
+
+/** 쪽 그림을 시계 방향으로 deg 도 돌린 새 그림 (0 이면 그대로) */
+export function rotateCanvas(page: HTMLCanvasElement, deg: number): HTMLCanvasElement {
+  const d = ((deg % 360) + 360) % 360;
+  if (!d) return page;
+  const swap = d === 90 || d === 270;
+  const out = canvasOf(swap ? page.height : page.width, swap ? page.width : page.height);
+  const ctx = out.getContext("2d")!;
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, out.width, out.height);
+  ctx.translate(out.width / 2, out.height / 2);
+  ctx.rotate((d * Math.PI) / 180);
+  ctx.drawImage(page, -page.width / 2, -page.height / 2);
+  return out;
+}
+
+/** 방향을 물을 작은 쪽 사진 (긴 변 1024px JPEG) */
+export function orientationImage(page: HTMLCanvasElement): ImageInput {
+  const s = Math.min(1, 1024 / Math.max(page.width, page.height));
+  const c = resized(page, page.width * s, page.height * s);
+  try {
+    return toInput(c, "image/jpeg", 0.8);
+  } finally {
+    c.width = 0;
+    c.height = 0;
+  }
 }
 
 /** 미리보기용 작은 그림 */

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { applyPaper, assembleExam, figureJobs, joinPrintedLines, layoutFor, paperOf, replaceFigureReading, reviewFigures, usableReading } from "@/lib/ai/assemble";
+import { itemOrderRotations, uprightBox, uprightExam, voteTextDirection } from "@/lib/ai/orientation";
+import { rotateSpec, shapeDeviation, uprightFigure } from "@/lib/figure/review";
 import { itemFigures } from "@/lib/figure/item-figures";
 import { attachFigurePngs } from "@/lib/figure/render-exam";
 import { readCached, readingCacheKey } from "@/lib/client/read-cache";
@@ -118,4 +120,53 @@ try {
   const broken: any = { sections: [{ items: [{ no: 7, figure: { box: { page: 1, x: 0, y: 0, w: 10, h: 10 }, commands: { base: 6, points: [{ id: "B", polar: { length: 3, angle: 90 } }], elements: [{ type: "angle", points: ["B", "A", "C"], label: "50°" }] } } }] }] };
   assert.equal(reviewFigures(broken)[0]?.name, "7번");
 }
-console.log("그림 모두 넣기·머리 글자·모델별 재사용·같은 요청 한 번만·실패 요금·상자 글 줄 잇기·원본 용지(B4)·그림 다시 읽기 검사 통과 (AI 요금 없음)");
+// 옆으로 누운 스캔 (2026-11-02 숭의중: 앞뒷면 B4 스캔이 쪽마다 90°·270° 로 누움)
+{
+  // 글자 줄 방향 다수결: 가로 줄무늬(글자 줄) 그림과 그것을 돌린 그림
+  const W = 800, H = 1100, page = new Uint8ClampedArray(W * H).fill(255);
+  for (let y = 40; y < H - 40; y += 24) for (let yy = y; yy < y + 12; yy++) for (let x = 60; x < W - 60; x++) if ((x * 7 + yy * 3) % 5 < 3) page[yy * W + x] = 0;
+  const turned = new Uint8ClampedArray(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) turned[x * H + (H - 1 - y)] = page[y * W + x];
+  assert.equal(voteTextDirection(page, W, H).direction, "horizontal");
+  assert.equal(voteTextDirection(turned, H, W).direction, "vertical");
+  // 자리 바로 세우기: 90° 는 (x, y) → (H − y, x)
+  assert.deepEqual(uprightBox({ x: 100, y: 200, w: 50, h: 30 }, 3000, 2118, 90), { x: 1888, y: 100, w: 30, h: 50 });
+  assert.deepEqual(uprightBox({ x: 100, y: 200, w: 50, h: 30 }, 3000, 2118, 270), { x: 200, y: 2850, w: 30, h: 50 });
+  // 쪽마다 방향: 1쪽은 문항이 왼쪽→오른쪽(아래 반이 왼쪽 단), 2쪽은 오른쪽→왼쪽(앞뒷면)
+  const src = (page: number, x: number, y: number) => ({ page, x, y, w: 500, h: 600 });
+  const lying: any = {
+    source_pages: [{ page: 1, width: 3000, height: 2118, width_mm: 363.9, height_mm: 256.9 }, { page: 2, width: 3000, height: 2118, width_mm: 363.9, height_mm: 256.9 }],
+    sections: [{ items: [
+      { no: 1, source: src(1, 786, 1317), figure: { box: { page: 1, x: 858, y: 1324, w: 347, h: 354 }, width_mm: 22.7, size_mm: [22.7, 22.9], anchors: [{ at: "A", px: [900, 1400] }] } },
+      { no: 2, source: src(1, 1809, 1180) }, { no: 3, source: src(1, 439, 125) }, { no: 4, source: src(1, 1651, 125) },
+      { no: 5, source: src(2, 2228, 170) }, { no: 6, source: src(2, 937, 170) }, { no: 7, source: src(2, 2385, 1088) }, { no: 8, source: src(2, 904, 1088) },
+    ] }],
+  };
+  const turns = itemOrderRotations(lying);
+  assert.deepEqual([...turns], [[1, 90], [2, 270]], "앞뒷면 스캔: 쪽마다 방향");
+  const up = uprightExam(lying, turns);
+  assert.equal(up.paper?.name, "B4", "누운 B4 스캔은 바로 세우면 B4");
+  assert.deepEqual([up.source_pages[0].width, up.source_pages[0].height, up.source_pages[0].rotate], [2118, 3000, 90]);
+  const f1 = up.sections[0].items[0].figure;
+  assert.ok(f1.width_mm > 40 && f1.width_mm < 50, `그림 크기를 바로 세운 쪽으로 다시 잼 (${f1.width_mm}mm, 누운 채로는 22.7mm)`);
+  assert.deepEqual(f1.anchors[0].px, [718, 900], "기준점도 바로 세움");
+  assert.equal(uprightExam(up, turns), up, "이미 바로 세운 것은 그대로");
+  // 누운 채로 그린 그림을 원본 방향으로: 원본 기준점은 바로 선 그림, AI 그림은 90° 돌아감
+  const tri: any = { base: 6, points: [{ id: "A", at: [0, 0] }, { id: "B", at: [6, 0] }, { id: "C", at: [1, 4] }], elements: [{ type: "segment", points: ["A", "B"] }, { type: "label", at: "C", text: "C", dir: "N" }] };
+  const anchors = [{ at: "A", px: [100, 500] }, { at: "B", px: [400, 500] }, { at: "C", px: [150, 300] }] as any;
+  const lyingTri = rotateSpec(tri, 90)!;
+  assert.ok(Math.abs(shapeDeviation(lyingTri, anchors)!.rotation + 90) < 1);
+  const fixed = uprightFigure(lyingTri, anchors);
+  assert.ok(fixed && shapeDeviation(fixed.spec, anchors)!.worst < 0.01 && fixed.change.includes("옆으로 누워"), "누운 그림을 바로 세움");
+  assert.equal((fixed!.spec.elements[1] as any).dir, 90, "글자 방향도 같이 돈다");
+  assert.equal(uprightFigure(tri, anchors), undefined, "바로 선 그림은 그대로");
+  // 쪽 방향을 확인하지 못한 가로 쪽(누운 스캔일 수 있음)에서는 그림을 돌리지 않는다
+  const fig = () => ({ box: { page: 1, x: 0, y: 0, w: 10, h: 10 }, commands: JSON.parse(JSON.stringify(lyingTri)), anchors });
+  const unsure: any = { source_pages: [{ page: 1, width: 3000, height: 2118 }], sections: [{ items: [{ no: 1, figure: fig() }] }] };
+  reviewFigures(unsure);
+  assert.equal(unsure.sections[0].items[0].figure.auto_fixes, undefined, "확인 안 된 가로 쪽: 그림을 돌리지 않음");
+  const sure: any = { source_pages: [{ page: 1, width: 2118, height: 3000, rotate: 90 }], sections: [{ items: [{ no: 1, figure: fig() }] }] };
+  reviewFigures(sure);
+  assert.ok(sure.sections[0].items[0].figure.auto_fixes?.[0]?.includes("옆으로 누워"), "바로 선 쪽: 누운 그림을 돌림");
+}
+console.log("그림 모두 넣기·머리 글자·모델별 재사용·같은 요청 한 번만·실패 요금·상자 글 줄 잇기·원본 용지(B4)·그림 다시 읽기·누운 스캔 검사 통과 (AI 요금 없음)");

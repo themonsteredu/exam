@@ -310,6 +310,8 @@ def png_with_dpi(data: bytes, dpi: float) -> bytes:
 class ExamBuilder:
     def __init__(self, exam: dict, template: dict | None = None):
         self.exam = split_condition_pieces(exam)
+        # 문항마다 (부분 번호, 문항 번호, 첫 문단, 끝 문단) — 만든 뒤 단마다 빈 곳을 재는 데 쓴다
+        self.item_spans: list[tuple[int, int, int, int]] = []
         self.tpl = template or with_paper(get_template(exam.get("template")), exam.get("paper"))
         self.doc = HwpxDocument.new()
         self.warnings: list[str] = []  # 글자로 대신 넣은 수식 등
@@ -753,6 +755,11 @@ class ExamBuilder:
                 paragraphs[-1].append(piece)
         return [p for p in paragraphs if p] or [[]]
 
+    @staticmethod
+    def extra_before_pt(item: dict) -> float:
+        extra = item.get("_extra_before_mm")
+        return extra * 72 / 25.4 if isinstance(extra, (int, float)) and extra > 0 else 0.0
+
     def build_item(self, item: dict, is_first: bool):
         """문항 하나. 문항의 문단들은 '다음 문단과 함께'·'문단 보호'로 묶어 단·쪽 사이에서 잘리지 않게 한다."""
         start = len(self.doc.paragraphs)
@@ -827,7 +834,8 @@ class ExamBuilder:
                     # 내어쓰기: 첫 줄(문제 번호)은 단 왼쪽 끝에서, 다음 줄부터 5.5mm 들여 시작한다.
                     # 한글은 왼쪽 여백에서 첫 줄을 시작하고 내어쓰기 값만큼 나머지 줄을 민다 (왼쪽 여백 0 이어야 번호가 선택지 번호와 같은 세로줄에 선다)
                     indent_left_mm=0, first_line_indent_mm=-5.5,
-                    spacing_before_pt=0 if (is_first or item.get("break_before")) else t["item_gap_pt"],
+                    # 문항 사이: 양식 간격 + 원본처럼 풀이 공간 (balance_columns 가 단의 빈 곳을 나눠 준 만큼)
+                    spacing_before_pt=0 if (is_first or item.get("break_before")) else round(t["item_gap_pt"] + self.extra_before_pt(item), 1),
                 )
             else:
                 # 둘째 문단부터는 번호 다음 글자와 같은 세로줄에서 시작한다
@@ -1114,11 +1122,13 @@ class ExamBuilder:
         boxes = self.exam.get("boxes", [])
         for i, box in enumerate(boxes):
             self.build_box(box, anchor=first_col_para if i == 0 else None)
-        for section in self.exam.get("sections", []):
+        for si, section in enumerate(self.exam.get("sections", [])):
             if section.get("title"):
                 self.build_section_title(section["title"], section.get("break_before"))
             for j, item in enumerate(section.get("items", [])):
+                start = len(self.doc.paragraphs)
                 self.build_item(item, is_first=(j == 0))
+                self.item_spans.append((si, j, start, len(self.doc.paragraphs)))
         note = self.exam.get("page_end_note")
         if note:
             p = self.doc.add_paragraph("")
@@ -1166,8 +1176,8 @@ def postprocess(data: bytes) -> bytes:
     return out.getvalue()
 
 
-def estimated_pages(data: bytes) -> int | None:
-    """한글이 이 파일을 몇 쪽으로 짤지 python-hwpx 의 쪽 어림으로 잰다 (못 재면 None).
+def page_estimate(data: bytes):
+    """한글이 이 파일을 어떻게 짤지 python-hwpx 의 쪽 어림 (문단마다 줄의 쪽·단·세로 자리). 못 재면 None.
     어림기가 다루지 못하는 '글 옆에 띄운 그림'은 빼고 잰다 (그 문항은 실제보다 조금 짧게 잡힌다)."""
     try:
         from hwpx.layout.pages import estimate_pages
@@ -1183,9 +1193,95 @@ def estimated_pages(data: bytes) -> int | None:
                     raw = text.encode("utf-8")
                 zout.writestr(info, raw)
         est = estimate_pages(buf.getvalue())
-        return est.pages if not est.unsupported else None
+        return None if est.unsupported else est
     except Exception:  # noqa: BLE001 - 어림을 못 하면 맞추지 않고 그대로 만든다
         return None
+
+
+def estimated_pages(data: bytes) -> int | None:
+    """한글이 이 파일을 몇 쪽으로 짤지 (못 재면 None)."""
+    est = page_estimate(data)
+    return est.pages if est else None
+
+
+def _item_columns(builder: "ExamBuilder", est) -> list[dict]:
+    """문항마다 시작하는 쪽·단과 그 단에서 끝나는 세로 자리(HWPUNIT). 글 옆에 띄운 그림은 그 높이까지 친다."""
+    out = []
+    lines = est.lines
+    for si, j, start, end in builder.item_spans:
+        ls = [ln for k in range(start, min(end, len(lines))) for ln in lines[k]]
+        if not ls:
+            continue
+        key = (ls[0].page, ls[0].column)
+        bottom = max(ln.vertpos for ln in ls if (ln.page, ln.column) == key)
+        item = builder.exam["sections"][si]["items"][j]
+        for fig in [item.get("figure"), *(item.get("extra_figures") or [])]:
+            if isinstance(fig, dict) and fig.get("place") == "right":
+                w = builder.figure_width_mm(fig)
+                size = fig.get("png_size") or fig.get("size_mm")
+                if isinstance(size, (list, tuple)) and len(size) == 2 and size[0]:
+                    bottom = max(bottom, ls[0].vertpos + mm(w * size[1] / size[0]))
+        out.append({"si": si, "j": j, "col": key, "bottom": bottom, "split": any((ln.page, ln.column) != key for ln in ls)})
+    return out
+
+
+def balance_columns(exam: dict, tpl: dict, builder: "ExamBuilder", data: bytes):
+    """원본 자리에서 단·쪽을 나눴는데 우리 글이 원본보다 짧아 단 아래가 크게 비면, 그 빈 곳을 그 단 문항들 아래에 고르게 나눠 준다
+    (원본 시험지처럼 문항마다 풀이 공간). 2026-11-02 숭의중: 원본은 한 단에 두 문항씩 풀이 공간을 두고 실었는데
+    우리는 문항을 붙여 실어 단마다 아래가 반쯤 비었다. 다시 만든 뒤 쪽 수와 문항 자리가 그대로일 때만 쓴다 (아니면 None).
+    돌려주는 것: (한글 파일, 다시 만든 builder)"""
+    est = page_estimate(data)
+    if not est:
+        return None
+    t = tpl
+    m = t["margins_mm"]
+    body = mm(t["paper"]["height_mm"] - m["top"] - m["bottom"] - m.get("header", 0) - m.get("footer", 0))
+    line = mm(t["sizes"]["body"] * t["line_spacing"]["body"] / 100 * 25.4 / 72)
+    items = _item_columns(builder, est)
+    groups: dict[tuple, list] = {}
+    for it in items:
+        groups.setdefault(it["col"], []).append(it)
+    order = sorted(groups)
+    sections = exam.get("sections", [])
+
+    def forced(it) -> bool:
+        section = sections[it["si"]]
+        item = section["items"][it["j"]]
+        brk = item.get("break_before") or (section.get("break_before") if it["j"] == 0 else None)
+        return brk in ("column", "page")
+
+    # 단의 빈 곳을 문항 수만큼 나눠, 둘째 문항부터 그 앞에 한 몫씩 넣는다 (마지막 문항 아래 한 몫은 단 아래에 그대로 남는다).
+    # 문항 '아래' 간격으로 넣으면 단 나눔 너머 다음 단 맨 위로 넘어가 문항을 밀었다
+    extra: dict[tuple[int, int], float] = {}
+    for k, key in enumerate(order[:-1]):
+        group = groups[key]
+        nxt = groups[order[k + 1]][0]
+        if len(group) < 2 or not forced(nxt) or any(g["split"] for g in group):
+            continue  # 문항 하나뿐인 단, 원본 나눔이 아니라 차서 넘어간 단, 단 사이에 걸친 문항
+        free = body - max(g["bottom"] for g in group) - line
+        if free < mm(20):
+            continue
+        share = min(free * 0.9 / len(group) / MM, 100.0)
+        for g in group[1:]:
+            item = sections[g["si"]]["items"][g["j"]]
+            if item.get("break_before") or (g["j"] == 0):
+                continue  # 단·쪽 나눔이 있는 문항과 부분의 첫 문항(제목 상자 아래)은 앞 간격을 두지 않는다
+            extra[(g["si"], g["j"])] = round(share, 1)
+    if not extra:
+        return None
+    spaced = copy.deepcopy(exam)
+    for (si, j), value in extra.items():
+        spaced["sections"][si]["items"][j]["_extra_before_mm"] = value
+    again = ExamBuilder(spaced, tpl)
+    data2 = again.build()
+    est2 = page_estimate(data2)
+    if not est2 or est2.pages != est.pages:
+        return None
+    before = {(it["si"], it["j"]): it["col"] for it in items}
+    after = {(it["si"], it["j"]): it["col"] for it in _item_columns(again, est2)}
+    if before != after:
+        return None
+    return data2, again
 
 
 # 원본과 같은 자리에서 단·쪽을 나눌 때, 우리 글이 원본보다 길면 단이 넘쳐 빈 단이 생기고 쪽이 늘어난다
@@ -1224,6 +1320,18 @@ def _without_breaks(exam: dict, kinds: set[str]) -> dict:
 
 
 def build_exam(exam: dict, template: dict | None = None) -> tuple[bytes, list[str]]:
+    data, warnings, used_exam, used_tpl, builder = _build_fitted(exam, template)
+    # 원본 자리에서 나눈 단의 아래가 크게 비면 그 빈 곳을 문항들 아래에 나눠 준다 (원본처럼 풀이 공간)
+    if builder is not None:
+        spaced = balance_columns(used_exam, used_tpl, builder, data)
+        if spaced:
+            data = spaced[0]
+            warnings = warnings + [w for w in spaced[1].warnings if w not in warnings]
+    return data, warnings
+
+
+def _build_fitted(exam: dict, template: dict | None = None):
+    """원본 쪽 수 안에 들게 만든 한글 파일: (바이트, 알림, 쓴 시험지 데이터, 쓴 양식, 만든 builder — 원본 나눔을 지킨 경우만)."""
     # 원본이 B4 면 B4 로 (원본과 같은 쪽 수·배열을 글자·그림을 줄이지 않고 맞춘다)
     base = template or with_paper(get_template(exam.get("template")), exam.get("paper"))
     target = len(exam.get("source_pages") or [])
@@ -1232,10 +1340,10 @@ def build_exam(exam: dict, template: dict | None = None) -> tuple[bytes, list[st
     builder = ExamBuilder(exam, base)
     data = builder.build()
     if not target or not has_breaks:
-        return data, builder.warnings
+        return data, builder.warnings, exam, base, (builder if has_breaks else None)
     pages = estimated_pages(data)
     if pages is None or pages <= target:
-        return data, builder.warnings
+        return data, builder.warnings, exam, base, builder
     first_pages = pages
     # 1) 글을 조금씩 촘촘하게
     for n, step in enumerate(FIT_STEPS[1:], start=1):
@@ -1245,7 +1353,7 @@ def build_exam(exam: dict, template: dict | None = None) -> tuple[bytes, list[st
         pages = estimated_pages(data) or pages
         if pages <= target:
             builder.warnings.append(f"원본({target}쪽)과 같은 배열이 되도록 줄 간격·글자 크기를 조금 줄였습니다 (맞춤 {n}단계)")
-            return data, builder.warnings
+            return data, builder.warnings, exam, tpl, builder
     # 2) 그래도 넘치면 단 나눔을 풀고(쪽 나눔은 둔다), 3) 그래도 넘치면 쪽 나눔도 풀어 빈 단·빈 쪽이 생기지 않게 한다
     tightest = _fitted_template(base, FIT_STEPS[-1])
     for kinds, note in (({"column"}, "원본의 단 나눔"), ({"column", "page"}, "원본의 단·쪽 나눔")):
@@ -1254,6 +1362,6 @@ def build_exam(exam: dict, template: dict | None = None) -> tuple[bytes, list[st
         pages = estimated_pages(data) or pages
         if pages <= target or kinds == {"column", "page"}:
             builder.warnings.append(f"글이 원본보다 길어 {note}을 따르지 않고 이어서 넣었습니다 (원본 {target}쪽, 처음 어림 {first_pages}쪽 → {pages}쪽)")
-            return data, builder.warnings
-    return data, builder.warnings
+            return data, builder.warnings, exam, tightest, None
+    return data, builder.warnings, exam, base, None
 
