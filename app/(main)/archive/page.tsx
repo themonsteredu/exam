@@ -47,7 +47,7 @@ export default function ArchivePage() {
 
   const groups = useMemo(() => groupArchivedDocuments(docs ?? []), [docs]);
   const unfinished = useMemo(() => (docs ?? []).filter((doc) => !isArchived(doc)), [docs]);
-  const completedCount = groups.reduce((count, school) => count + school.count, 0);
+  const completedCount = groups.reduce((count, year) => count + year.count, 0);
 
   async function download(path: string, name: string) {
     setError("");
@@ -124,15 +124,22 @@ export default function ArchivePage() {
             </button>
           </div>
           {view === "completed" && (groups.length ? (
-            <section className="archive-tree" aria-label="학교별 완료 시험지">
-              {groups.map((school, index) => (
-                <details className="archive-school" key={school.key} open={index === 0}>
-                  <summary>{school.label} <span className="archive-count">{school.count}건</span></summary>
-                  <div className="archive-terms">
-                    {school.groups.map((term, i) => (
+            <section className="archive-tree" aria-label="년도·학기·학년별 완료 시험지">
+              {groups.map((year, index) => (
+                <details className="archive-year" key={year.key} open={index === 0}>
+                  <summary>{year.label} <span className="archive-count">{year.count}건</span></summary>
+                  <div className="archive-branches">
+                    {year.terms.map((term, i) => (
                       <details key={term.key} open={i === 0}>
                         <summary>{term.label} <span className="archive-count">{term.count}건</span></summary>
-                        <ul className="archive-documents">{term.docs.map(row)}</ul>
+                        <div className="archive-branches">
+                          {term.grades.map((grade, j) => (
+                            <details key={grade.key} open={j === 0}>
+                              <summary>{grade.label} <span className="archive-count">{grade.count}건</span></summary>
+                              <ul className="archive-documents">{grade.docs.map(row)}</ul>
+                            </details>
+                          ))}
+                        </div>
                       </details>
                     ))}
                   </div>
