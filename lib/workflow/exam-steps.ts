@@ -16,9 +16,6 @@ import { ReadError } from "@/lib/ai/claude";
 import { fakeAiEnabled, fakeFigure, fakePage } from "@/lib/ai/fake";
 import type { Progress } from "@/lib/client/make-exam";
 
-// 한 함수 실행에서 두 번의 긴 AI 호출이 이어져 플랫폼 제한을 넘지 않게 한다.
-Object.assign(process.env, { WORKFLOW_MAX_INLINE_STEPS: "0" });
-
 async function active(job: JobInput) {
   const state = await getJob(job.docId);
   if (state?.status === "cancelled") throw new FatalError("제작을 취소했습니다.");
@@ -216,7 +213,9 @@ export async function finish(job: JobInput, drawn: Awaited<ReturnType<typeof dra
   const { token } = await makeSessionToken(await sessionVersion(), await currentSessionKey());
   // 쿠키와 키는 단계 안에서만 쓰며 작업 이력이나 브라우저로 전달하지 않는다.
   const endpoint = `${job.origin}${process.env.EXAM_STORE === "local" ? "/api/dev-hwpx" : "/api/hwpx"}`;
-  const res = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json", cookie: `${SESSION_COOKIE}=${token}` }, body: JSON.stringify({ input_paths: drawn.record.parts }), signal: AbortSignal.timeout(280_000) });
+  const headers: Record<string, string> = { "content-type": "application/json", cookie: `${SESSION_COOKIE}=${token}` };
+  if (process.env.VERCEL_AUTOMATION_BYPASS_SECRET) headers["x-vercel-protection-bypass"] = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+  const res = await fetch(endpoint, { method: "POST", headers, redirect: "error", body: JSON.stringify({ input_paths: drawn.record.parts }), signal: AbortSignal.timeout(280_000) });
   const output = await res.json();
   if (!res.ok || typeof output.path !== "string" || !output.path.startsWith(`generated/${job.docId}/`) || !output.path.endsWith(".hwpx")) throw new Error(output.error || "한글 파일을 보관하지 못했습니다.");
   await active(job);

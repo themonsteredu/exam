@@ -26,8 +26,11 @@ export async function POST(req: Request) {
     if (mode !== "create" && !doc.exam_json) return Response.json({ error: "저장된 읽기 결과가 없습니다." }, { status: 400 });
     const targets = Array.isArray(body.targets) ? body.targets.slice(0, 100).filter((t: any) => [t?.section, t?.index, t?.figureIndex].every(n => Number.isInteger(n) && n >= 0)).map((t: any) => ({ section: t.section, index: t.index, figureIndex: t.figureIndex, name: String(t.name || "그림").slice(0, 80), reasons: Array.isArray(t.reasons) ? t.reasons.slice(0, 10).map((r: unknown) => String(r).slice(0, 600)) : [] })) : [];
     if (mode === "reread" && !targets.length) return Response.json({ error: "다시 읽을 그림을 골라 주세요." }, { status: 400 });
-    // 요청의 Host를 작업 주소로 믿지 않는다. 배포가 제공한 주소만 사용한다.
-    const origin = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : new URL(req.url).origin;
+    // 요청의 Host를 작업 주소로 믿지 않는다. 보호된 개별 배포는 자동화 자격이 있을 때만 사용한다.
+    // 운영에서는 공개 운영 주소로 접근하되, 문서 API에는 별도로 앱의 세션 인증을 적용한다.
+    const deploymentHost = process.env.VERCEL_ENV === "production" && !process.env.VERCEL_AUTOMATION_BYPASS_SECRET
+      ? (process.env.VERCEL_PROJECT_PRODUCTION_URL || "exam-maker-one.vercel.app") : process.env.VERCEL_URL;
+    const origin = deploymentHost ? `https://${deploymentHost}` : new URL(req.url).origin;
     if (state?.status === "completed" && mode !== "create") {
       // 결과 저장 직후 이전 실행이 반환 중이면 완료를 기다린 뒤 새 실행을 접수한다.
       await getRun(state.runId).returnValue.catch(() => undefined);
