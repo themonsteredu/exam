@@ -75,7 +75,11 @@ export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGUR
         const fig = figures[f];
         const base = { section: s, index: i, figureIndex: f, no: items[i].no };
         const originalWidthMm = figureWidthMm(fig);
-        const widthPx = pxForPrint(Math.min(originalWidthMm * PRINT_FIGURE_SCALE, maxWidthMm), dpi);
+        const size = fig.size_mm ?? [originalWidthMm, originalWidthMm];
+        const aspect = size[1] / Math.max(size[0], 0.01);
+        const minimumWidth = fig.commands && (!fig.asset_kind || fig.asset_kind === "diagram")
+          ? Math.min(44, 65 / Math.max(aspect, 0.01)) : 0;
+        const widthPx = pxForPrint(Math.min(Math.max(originalWidthMm * PRINT_FIGURE_SCALE, minimumWidth), maxWidthMm), dpi);
         if (fig.graphic) {
           try {
             // 세로로 긴 표도 캔버스 크기 제한 안에서 비율을 유지한다.

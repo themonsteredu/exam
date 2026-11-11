@@ -8,6 +8,7 @@ import { loadExamCheckpoint } from "@/lib/client/exam-storage";
 import { pdfPaperMm, pdfTextDirection } from "@/lib/client/pages";
 import { applyPaper, paperOf } from "@/lib/ai/assemble";
 import { itemOrderRotations, uprightExam } from "@/lib/ai/orientation";
+import { jobResult, submitExam } from "@/lib/client/server-exam";
 
 /** 그림 살피기 결과: 프로그램이 고친 그림과 다시 읽기를 권하는 그림 (시험지 데이터는 바꾸지 않는다) */
 type FigureReview = { fixes: { name: string; changes: string[] }[]; suspects: FigureSuspect[] };
@@ -90,6 +91,7 @@ export default function MakePage() {
   const [error, setError] = useState("");
   const [errorDetail, setErrorDetail] = useState("");
   const [busy, setBusy] = useState(false);
+  const [serverDocId, setServerDocId] = useState<string | null>(null);
   /** 이 화면을 연 뒤 프로그램이 새 판으로 바뀌었는지 (바뀌었으면 새로 고치라고 알린다) */
   const [stale, setStale] = useState(false);
   const [recovery, setRecovery] = useState<Recovery | null>(null);
@@ -99,6 +101,44 @@ export default function MakePage() {
   const recoveryReview = useMemo(() => (recovery ? figureReview(recovery.exam) : null), [recovery]);
   const abort = useRef<AbortController | null>(null);
   const input = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("job") || localStorage.getItem("exam-server-job");
+    if (id && /^[0-9a-f-]{36}$/.test(id)) { setServerDocId(id); setBusy(true); }
+  }, []);
+
+  useEffect(() => {
+    if (!serverDocId) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const { job, doc } = await api<any>(`/api/jobs/${serverDocId}`);
+        if (stopped) return;
+        setTitle(doc.title);
+        if (job?.progress) setProgress(job.progress);
+        if (job?.status === "completed" || (!job && doc.status === "done" && doc.hwpx_path)) {
+          const out = await jobResult(doc, job?.warnings || []);
+          if (stopped) return;
+          setResult(out); setRecovery(null); setBusy(false); setError(""); setServerDocId(null);
+          localStorage.removeItem("exam-server-job");
+          window.history.replaceState(null, "", window.location.pathname);
+          return;
+        }
+        if (job?.status === "failed" || job?.status === "cancelled") {
+          setError(job.error || "제작을 취소했습니다."); setBusy(false); setServerDocId(null);
+          localStorage.removeItem("exam-server-job");
+          if (doc.exam_json) setRecovery({ docId: doc.id, title: doc.title, exam: await loadExamCheckpoint(doc.id, doc.exam_json), usd: doc.cost_usd, pageProblems: doc.exam_json.pageProblems || [] });
+          return;
+        }
+      } catch (err) {
+        if (!stopped) setError("진행 상태를 다시 연결하고 있습니다. 접수된 서버 작업은 계속됩니다.");
+      }
+      if (!stopped) timer = setTimeout(poll, 4000);
+    };
+    void poll();
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [serverDocId]);
 
   useEffect(() => {
     (async () => {
@@ -195,6 +235,23 @@ export default function MakePage() {
 
   async function start(savedWork?: Recovery, reread?: FigureSuspect[]) {
     if (abort.current || !JXG || !ready || (!savedWork && (!files.length || !ready.keySaved))) return;
+    if (!reread?.length) {
+      setBusy(true); setError(""); setErrorDetail(""); setResult(null); setResuming(!!savedWork);
+      const controller = new AbortController(); abort.current = controller;
+      let queued = false;
+      try {
+        await submitExam({ files, title: title.trim() || "시험지", saved: savedWork, signal: controller.signal, onProgress: setProgress,
+          onQueued: (id) => {
+            queued = true; setServerDocId(id); localStorage.setItem("exam-server-job", id);
+            window.history.replaceState(null, "", `?job=${id}`);
+          },
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        if (!queued) setBusy(false);
+      } finally { abort.current = null; }
+      return;
+    }
     setBusy(true);
     setResuming(!!savedWork);
     setRereading(savedWork && reread?.length ? reread.length : 0);
@@ -276,6 +333,14 @@ export default function MakePage() {
         <h1>시험지 만들기</h1>
         <p className="lead">시험지 PDF 나 사진을 올리면 AI 가 읽어서 학교 양식의 한글 파일로 만들어 줍니다. 원본과 만든 파일은 보관함에 저장됩니다.</p>
       </div>
+
+      {serverDocId && <div className="notice" role="status">
+        <strong>서버에서 제작 중</strong>
+        <p>원본 업로드가 끝났습니다. 창을 닫아도 계속 만들며, 완성 파일은 완료 보관함에 저장됩니다.</p>
+        <button type="button" onClick={async () => {
+          await api(`/api/jobs/${serverDocId}`, { method: "DELETE" });
+        }}>제작 취소</button>
+      </div>}
 
       {(stale || error === STALE_MESSAGE) && (
         <p className="notice error" role="alert">

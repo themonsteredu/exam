@@ -568,7 +568,14 @@ class ExamBuilder:
 
     def scaled_figure_width_mm(self, fig: dict, default: float = 50) -> float:
         source_width = fig.get("width_mm") or (fig.get("size_mm") or [default])[0]
-        return float(source_width) * self.tpl["figure"].get("scale", 1.0)
+        width = float(source_width) * self.tpl["figure"].get("scale", 1.0)
+        # 원본의 작은 도형을 배율만 키우면 여전히 작다. 도형 전체를 같은 비율로
+        # 키우되, 세로로 긴 그림은 최소 크기 때문에 65mm보다 길어지지 않게 한다.
+        if fig.get("commands") and fig.get("asset_kind", "diagram") == "diagram":
+            size = fig.get("png_size") or fig.get("size_mm") or [source_width, source_width]
+            aspect = float(size[1]) / max(float(size[0]), 0.01)
+            width = max(width, min(44.0, 65.0 / max(aspect, 0.01)))
+        return width
 
     def figure_width_mm(self, fig: dict) -> float:
         column_mm = self.column_width() / MM
@@ -791,8 +798,8 @@ class ExamBuilder:
         """문항 하나. 문항의 문단들은 '다음 문단과 함께'·'문단 보호'로 묶어 단·쪽 사이에서 잘리지 않게 한다."""
         start = len(self.doc.paragraphs)
         self._build_item(item, is_first, section_title)
-        if item.get("split_ok"):
-            return  # 원본에서도 다음 단으로 이어진 문항: 원본처럼 단 사이에서 나뉘게 둔다
+        # 원본의 단을 가로지른 영역(split_ok)은 출력 문항을 쪼개라는 뜻이 아니다.
+        # 문제 글·그림·선택지는 함께 넘긴다. 한 단보다 긴 문항은 한글이 나눈다.
         made = self.doc.paragraphs[start:]
         for k, p in enumerate(made):
             self.para_format(p, keep_lines=True, **({"keep_with_next": True} if k < len(made) - 1 else {}))

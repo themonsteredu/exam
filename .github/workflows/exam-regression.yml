@@ -10,7 +10,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -34,3 +34,5 @@ jobs:
       - run: python scripts/check_latex.py
       - run: python scripts/check_eq_width.py
       - run: python scripts/check_staged_hwpx.py
+      - run: npm run build
+      - run: node scripts/check_background_exam.mjs

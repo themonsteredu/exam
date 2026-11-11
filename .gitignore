@@ -7,3 +7,6 @@ node_modules/
 output/ai/report.html
 output/ai/.render-*
 .data/
+/.swc
+/.workflow-data/
+/app/.well-known/workflow/
