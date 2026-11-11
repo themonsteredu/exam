@@ -17,7 +17,7 @@ import { fakeAiEnabled, fakeFigure, fakePage } from "@/lib/ai/fake";
 import type { Progress } from "@/lib/client/make-exam";
 
 // 한 함수 실행에서 두 번의 긴 AI 호출이 이어져 플랫폼 제한을 넘지 않게 한다.
-Object.assign(process.env, { WORKFLOW_MAX_INLINE_STEPS: "1" });
+Object.assign(process.env, { WORKFLOW_MAX_INLINE_STEPS: "0" });
 
 async function active(job: JobInput) {
   const state = await getJob(job.docId);
