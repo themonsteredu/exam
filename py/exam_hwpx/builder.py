@@ -818,13 +818,18 @@ class ExamBuilder:
                        if k > 0 and re.match(r"^\s*(\(\s*1\s*\)|⑴|1\))", "".join(str(x.get("t", "")) for x in pieces if isinstance(x, dict) and "t" in x))), None)
         first = None
         brk = item.get("break_before")
+        boxes_before = item.get("boxes_before") or []
+        extra_pt = 0 if is_first or brk else self.extra_before_pt(item)
         # 문항 앞의 안내 상자 (쪽 중간의 "서술형 유의사항" 같은 것). 단·쪽 나눔은 상자 앞에서 한다
-        for b, box in enumerate(item.get("boxes_before") or []):
+        for b, box in enumerate(boxes_before):
             pa = self.doc.add_paragraph("")
             if b == 0:
                 self.set_break(pa, brk)
                 brk = None
             self.build_box(box, anchor=pa)
+            if b == 0 and extra_pt:
+                # 풀이 여백을 안내 상자와 문항 사이에 끼워 넣지 않는다.
+                self.para_format(pa, spacing_before_pt=round(extra_pt, 1))
         figures = [f for f in [item.get("figure"), *(item.get("extra_figures") or [])] if f]
         # 선택지를 표로 인쇄한 문항(번호 ①~⑤ 가 든 표): 그 표가 곧 선택지라 선택지 자리에 한글 표로 넣는다
         dup = [f for f in figures if self.is_choice_table(f, item)]
@@ -884,7 +889,9 @@ class ExamBuilder:
                     # 한글은 왼쪽 여백에서 첫 줄을 시작하고 내어쓰기 값만큼 나머지 줄을 민다 (왼쪽 여백 0 이어야 번호가 선택지 번호와 같은 세로줄에 선다)
                     indent_left_mm=0, first_line_indent_mm=-5.5,
                     # 문항 사이: 양식 간격 + 원본처럼 풀이 공간 (balance_columns 가 단의 빈 곳을 나눠 준 만큼)
-                    spacing_before_pt=0 if (is_first or item.get("break_before")) else round(t["item_gap_pt"] + self.extra_before_pt(item), 1),
+                    spacing_before_pt=0 if (is_first or item.get("break_before")) else round(
+                        t["item_gap_pt"] + (0 if boxes_before else extra_pt), 1
+                    ),
                 )
             else:
                 # 둘째 문단부터는 번호 다음 글자와 같은 세로줄에서 시작한다
@@ -1300,7 +1307,8 @@ def _item_columns(builder: "ExamBuilder", est) -> list[dict]:
         ls = [ln for k in range(start, min(end, len(lines))) for ln in lines[k]]
         if not ls:
             continue
-        key = (ls[0].page, ls[0].column)
+        columns = tuple(dict.fromkeys((ln.page, ln.column) for ln in ls))
+        key = columns[0]
         bottom = max(ln.vertpos for ln in ls if (ln.page, ln.column) == key)
         item = builder.exam["sections"][si]["items"][j]
         for fig in [item.get("figure"), *(item.get("extra_figures") or [])]:
@@ -1309,19 +1317,13 @@ def _item_columns(builder: "ExamBuilder", est) -> list[dict]:
                 size = fig.get("png_size") or fig.get("size_mm")
                 if isinstance(size, (list, tuple)) and len(size) == 2 and size[0]:
                     bottom = max(bottom, ls[0].vertpos + mm(w * size[1] / size[0]))
-        out.append({"si": si, "j": j, "col": key, "bottom": bottom, "split": any((ln.page, ln.column) != key for ln in ls)})
+        out.append({"si": si, "j": j, "col": key, "columns": columns, "top": ls[0].vertpos, "bottom": bottom})
     return out
 
 
-def balance_columns(exam: dict, tpl: dict, builder: "ExamBuilder", data: bytes):
-    """원본 자리에서 단·쪽을 나눴는데 우리 글이 원본보다 짧아 단 아래가 크게 비면, 그 빈 곳을 그 단 문항들 아래에 고르게 나눠 준다
-    (원본 시험지처럼 문항마다 풀이 공간). 2026-11-02 숭의중: 원본은 한 단에 두 문항씩 풀이 공간을 두고 실었는데
-    우리는 문항을 붙여 실어 단마다 아래가 반쯤 비었다. 다시 만든 뒤 쪽 수와 문항 자리가 그대로일 때만 쓴다 (아니면 None).
-    돌려주는 것: (한글 파일, 다시 만든 builder)"""
-    est = page_estimate(data)
-    if not est:
-        return None
-    t = tpl
+def balance_columns(builder: "ExamBuilder", est):
+    """완성된 각 단의 여백을 문항 사이에 나누고, 두 문항씩이면 아래 문항의 시작 높이를 맞춘다."""
+    exam, t = builder.exam, builder.tpl
     m = t["margins_mm"]
     body = mm(t["paper"]["height_mm"] - m["top"] - m["bottom"] - m.get("header", 0) - m.get("footer", 0))
     line = mm(t["sizes"]["body"] * t["line_spacing"]["body"] / 100 * 25.4 / 72)
@@ -1329,44 +1331,57 @@ def balance_columns(exam: dict, tpl: dict, builder: "ExamBuilder", data: bytes):
     groups: dict[tuple, list] = {}
     for it in items:
         groups.setdefault(it["col"], []).append(it)
-    order = sorted(groups)
     sections = exam.get("sections", [])
+    split_columns = {col for it in items if len(it["columns"]) > 1 for col in it["columns"]}
+    column_ends: dict[tuple, int] = {}
+    for paragraph in est.lines:
+        for ln in paragraph:
+            col = (ln.page, ln.column)
+            column_ends[col] = max(column_ends.get(col, 0), ln.vertpos)
 
-    def forced(it) -> bool:
-        section = sections[it["si"]]
-        item = section["items"][it["j"]]
-        brk = item.get("break_before") or (section.get("break_before") if it["j"] == 0 else None)
-        return brk in ("column", "page")
+    def can_add_space(it: dict) -> bool:
+        return it["j"] > 0 and not sections[it["si"]]["items"][it["j"]].get("break_before")
 
-    # 단의 빈 곳을 문항 수만큼 나눠, 둘째 문항부터 그 앞에 한 몫씩 넣는다 (마지막 문항 아래 한 몫은 단 아래에 그대로 남는다).
-    # 문항 '아래' 간격으로 넣으면 단 나눔 너머 다음 단 맨 위로 넘어가 문항을 밀었다
+    # 문항 앞 간격으로 빈 곳을 나눠 주고 마지막 문항 밑에도 한 몫을 남긴다.
     extra: dict[tuple[int, int], float] = {}
-    for k, key in enumerate(order[:-1]):
-        group = groups[key]
-        nxt = groups[order[k + 1]][0]
-        if len(group) < 2 or not forced(nxt) or any(g["split"] for g in group):
-            continue  # 문항 하나뿐인 단, 원본 나눔이 아니라 차서 넘어간 단, 단 사이에 걸친 문항
-        free = body - max(g["bottom"] for g in group) - line
-        if free < mm(20):
+    pairs: dict[int, list[tuple[dict, float]]] = {}
+    for col, group in groups.items():
+        if len(group) < 2 or col in split_columns:
             continue
-        share = min(free * 0.9 / len(group) / MM, 100.0)
+        end = max(column_ends.get(col, 0), max(g["bottom"] for g in group))
+        free = max(0, body - end - line)
+        budget = min(free * 0.9, mm(100) * len(group))
+        share = budget / len(group) if free >= mm(20) else 0.0
         for g in group[1:]:
-            item = sections[g["si"]]["items"][g["j"]]
-            if item.get("break_before") or (g["j"] == 0):
-                continue  # 단·쪽 나눔이 있는 문항과 부분의 첫 문항(제목 상자 아래)은 앞 간격을 두지 않는다
-            extra[(g["si"], g["j"])] = round(share, 1)
-    if not extra:
+            if can_add_space(g):
+                extra[(g["si"], g["j"])] = share
+        if len(group) == 2 and can_add_space(group[1]):
+            second = group[1]
+            if not sections[second["si"]]["items"][second["j"]].get("boxes_before"):
+                pairs.setdefault(col[0], []).append((second, min(budget * 0.75, mm(100))))
+
+    for pair in pairs.values():
+        if len(pair) != 2:
+            continue
+        # 내용이 긴 단에도 들어가는 높이에서 양쪽 두 번째 문항을 맞춘다.
+        proposed = [it["top"] + extra[(it["si"], it["j"])] for it, _ in pair]
+        target = max(max(it["top"] for it, _ in pair), min(proposed))
+        if all(target - it["top"] <= limit for it, limit in pair):
+            for it, _ in pair:
+                extra[(it["si"], it["j"])] = target - it["top"]
+
+    if not any(extra.values()):
         return None
     spaced = copy.deepcopy(exam)
     for (si, j), value in extra.items():
-        spaced["sections"][si]["items"][j]["_extra_before_mm"] = value
-    again = ExamBuilder(spaced, tpl)
+        spaced["sections"][si]["items"][j]["_extra_before_mm"] = value / MM
+    again = ExamBuilder(spaced, t)
     data2 = again.build()
     est2 = page_estimate(data2)
     if not est2 or est2.pages != est.pages:
         return None
-    before = {(it["si"], it["j"]): it["col"] for it in items}
-    after = {(it["si"], it["j"]): it["col"] for it in _item_columns(again, est2)}
+    before = {(it["si"], it["j"]): it["columns"] for it in items}
+    after = {(it["si"], it["j"]): it["columns"] for it in _item_columns(again, est2)}
     if before != after:
         return None
     return data2, again
@@ -1391,27 +1406,24 @@ def build_exam(exam: dict, template: dict | None = None) -> tuple[bytes, list[st
                      for s in exam.get("sections", []))
     builder = ExamBuilder(exam, tpl)
     data = builder.build()
-    if not has_breaks:
-        return data, builder.warnings
-
-    pages = estimated_pages(data) if target else None
-    if pages is not None and pages > target:
+    est = page_estimate(data)
+    if has_breaks and target and est and est.pages > target:
         # 원본 쪽 나눔은 유지하고 단 나눔부터 풀어 본다. 여전히 넘치면 문항을 두 단에 이어 넣는다.
         relaxed = ExamBuilder(_without_breaks(exam, {"column"}), tpl)
         relaxed_data = relaxed.build()
-        relaxed_pages = estimated_pages(relaxed_data)
-        if relaxed_pages is not None and relaxed_pages <= target:
+        relaxed_est = page_estimate(relaxed_data)
+        if relaxed_est and relaxed_est.pages <= target:
             relaxed.warnings.append("풀이 공간을 확보하기 위해 일부 문항을 다음 단으로 옮겼습니다.")
-            return relaxed_data, relaxed.warnings
+            builder, data, est = relaxed, relaxed_data, relaxed_est
+        else:
+            builder = ExamBuilder(_without_breaks(exam, {"column", "page"}), tpl)
+            data = builder.build()
+            est = page_estimate(data)
+            builder.warnings.append("글자 크기와 풀이 공간을 확보하기 위해 문항을 다음 단과 쪽으로 이어 배치했습니다.")
 
-        flowing = ExamBuilder(_without_breaks(exam, {"column", "page"}), tpl)
-        data = flowing.build()
-        flowing.warnings.append("글자 크기와 풀이 공간을 확보하기 위해 문항을 다음 단과 쪽으로 이어 배치했습니다.")
-        return data, flowing.warnings
-
-    # 원본 나눔을 유지했을 때 단 아래에 남는 공간은 문항 사이에도 나눠 준다.
-    spaced = balance_columns(exam, tpl, builder, data)
-    if spaced:
-        return spaced[0], spaced[1].warnings
+    # 원본 위치에서 나눈 단과 자연스럽게 흘러 들어간 단 모두에서 여백을 살핀다.
+    if est and (spaced := balance_columns(builder, est)):
+        data, again = spaced
+        return data, builder.warnings + [w for w in again.warnings if w not in builder.warnings]
     return data, builder.warnings
 

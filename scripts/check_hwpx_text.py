@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'py'))
-from exam_hwpx.builder import build_exam, split_condition_list  # noqa: E402
+from exam_hwpx.builder import ExamBuilder, build_exam, estimated_pages, page_estimate, split_condition_list  # noqa: E402
 from exam_hwpx.template import mm  # noqa: E402
 
 # 쉼표로 나열한 조건 수식은 하나씩 나눈다 (한글 수식은 줄을 못 바꿔 앞 줄 끝이 빈다). 순서쌍·집합·관계식 아닌 나열은 그대로
@@ -72,8 +72,58 @@ def prev_of(para, styles):
     return int(margin.find(hc + 'prev').get('value'))
 starts = [p for p in sec if p.tag == hp + 'p' and ''.join(t.text or '' for t in p.iter(hp + 't')).startswith(('2.', '4.'))]
 assert len(starts) == 2 and all(prev_of(p, pp) > 1200 * 5 for p in starts), [prev_of(p, pp) for p in starts]
-from exam_hwpx.builder import estimated_pages  # noqa: E402
 assert estimated_pages(spaced_data) == 2, estimated_pages(spaced_data)
+
+
+def question_starts(data):
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        section = ET.fromstring(z.read('Contents/section0.xml'))
+    estimate = page_estimate(data)
+    assert estimate is not None, '시험지의 쪽·단 위치를 확인할 수 있어야 한다'
+    starts = {}
+    for index, paragraph in enumerate(section.findall(hp + 'p')):
+        text = ''.join(t.text or '' for t in paragraph.iter(hp + 't'))
+        number, dot, rest = text.partition('.')
+        if dot and number.isdecimal() and rest.startswith(' '):
+            line = estimate.lines[index][0]
+            starts[int(number)] = (line.page, line.column, line.vertpos)
+    return estimate.pages, starts
+
+
+# 위 문항의 길이가 달라도 같은 쪽 양쪽 단의 아래 문항을 나란히 둔다.
+longer = q(9, 'column')
+longer['stem'].extend([{'t': '\n'}, {'t': '조건에 맞는 각의 크기를 구하시오.'}])
+paired = {
+    'source_pages': [{'page': 1, 'width': 1000, 'height': 1414}],
+    'sections': [{'items': [q(7), q(8), longer, q(10)]}],
+}
+_, before = question_starts(ExamBuilder(paired).build())
+assert abs(before[8][2] - before[10][2]) > mm(1), before
+paired_data, _ = build_exam(paired)
+pages, after = question_starts(paired_data)
+assert pages == 1 and set(after) == {7, 8, 9, 10}, (pages, after)
+assert {no: start[:2] for no, start in before.items()} == {no: start[:2] for no, start in after.items()}
+assert after[7][:2] == after[8][:2] and after[9][:2] == after[10][:2] and after[7][1] != after[9][1], after
+assert abs(after[8][2] - after[10][2]) <= mm(1), after
+assert min(after[8][2] - before[8][2], after[10][2] - before[10][2]) > mm(1), (before, after)
+
+# 원본 쪽·단 나눔이 없는 마지막 단에서도 아래 문항 앞에 풀이 공간을 나눈다.
+with_notice = {**q(2), 'boxes_before': [{'kind': 'notice', 'framed': False, 'lines': ['※ 두 번째 문제 안내']}]}
+unforced = {'sections': [{'items': [q(1), with_notice]}]}
+_, before = question_starts(ExamBuilder(unforced).build())
+unforced_data, _ = build_exam(unforced)
+pages, after = question_starts(unforced_data)
+assert pages == 1 and after[1][:2] == after[2][:2] == before[2][:2], (pages, after)
+assert after[2][2] - before[2][2] >= mm(10), (before, after)
+with zipfile.ZipFile(io.BytesIO(unforced_data)) as z:
+    unforced_sec = ET.fromstring(z.read('Contents/section0.xml'))
+    unforced_styles = {e.get('id'): e for e in ET.fromstring(z.read('Contents/header.xml')).iter(hh + 'paraPr')}
+for p in unforced_sec.findall(hp + 'p'):
+    text = ''.join(t.text or '' for t in p.iter(hp + 't'))
+    if text.startswith('※ 두 번째 문제 안내'):
+        assert prev_of(p, unforced_styles) >= mm(10), '풀이 여백은 안내문 앞에 둔다'
+    if text.startswith('2. '):
+        assert prev_of(p, unforced_styles) == 1200, '안내문과 문제 사이는 기본 간격'
 
 # 한 쪽에 들어갈 수 없는 시험지도 글자 크기와 문항별 풀이 자리를 유지한다.
 written = []
