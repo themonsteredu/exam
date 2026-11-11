@@ -13,7 +13,7 @@ const token = `${body}.${createHmac("sha256", secret).update(body).digest("base6
 const device = "a".repeat(43);
 const cookie = `exam_session=${token}; exam_device=${device}`;
 const server = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "-p", "3197"], {
-  env: { ...process.env, EXAM_STORE: "local", EXAM_FAKE_AI: "1", APP_SECRET: secret, WORKFLOW_MAX_INLINE_STEPS: "0" }, stdio: ["ignore", "pipe", "pipe"],
+  env: { ...process.env, EXAM_STORE: "local", EXAM_FAKE_AI: "1", APP_SECRET: secret, WORKFLOW_SPEC_VERSION: "9", WORKFLOW_MAX_INLINE_STEPS: "0" }, stdio: ["ignore", "pipe", "pipe"],
 });
 let logs = "";
 server.stdout.on("data", d => { logs = (logs + d).slice(-20000); });
