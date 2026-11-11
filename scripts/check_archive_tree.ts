@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { groupArchivedDocuments, isArchived, type ArchiveDocument } from "@/lib/client/archive-tree";
 
 function exam(id: string, title: string, original: string, options: Partial<ArchiveDocument> = {}): ArchiveDocument {
@@ -45,4 +48,53 @@ assert.deepEqual(tree[1].groups.map((group) => [group.label, group.docs.map((doc
 ]);
 assert.deepEqual(groupArchivedDocuments([noOriginal, noOutput, stopped, failed]), []);
 
-console.log("완료 파일·원본 확인, 학교 및 학년 분류, 충돌과 미분류, 정렬 검사 통과");
+// 실제 파일 저장 경로와 보관함 API에서 원본을 추가하는 흐름을 확인한다.
+const previousDirectory = process.cwd();
+const scratch = await mkdtemp(path.join(tmpdir(), "exam-archive-check-"));
+try {
+  process.chdir(scratch);
+  process.env.EXAM_STORE = "local";
+  process.env.APP_SECRET = "exam-archive-test-secret-0123456789";
+  const { getStore } = await import("@/lib/server/store");
+  const { makeSessionToken } = await import("@/lib/server/session");
+  const documents = await import("@/app/api/documents/[id]/route");
+  const upload = await import("@/app/api/files/upload-url/route");
+  const localFiles = await import("@/app/api/dev-files/route");
+  const store = getStore();
+  const doc = await store.createDoc("금호중학교 1학년 2학기");
+  await store.updateDoc(doc.id, { hwpx_path: `generated/${doc.id}/exam.hwpx`, status: "done" });
+  assert.equal(isArchived((await store.getDoc(doc.id))!), false);
+  const { token } = await makeSessionToken(1, process.env.APP_SECRET);
+  const request = (url: string, method: string, body: unknown) => new Request("http://localhost" + url, {
+    method, headers: { cookie: "exam_session=" + token, "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+  const sign = () => upload.POST(request("/api/files/upload-url", "POST", {
+    docId: doc.id, kind: "original", name: "금호중학교.pdf", type: "application/pdf", size: 7,
+  }));
+  const signed = await sign();
+  assert.equal(signed.status, 200);
+  const first = await signed.json();
+  const second = await (await sign()).json();
+  assert.notEqual(first.path, second.path, "다시 올려도 이전 원본 경로를 덮어쓰지 않는다");
+  const stored = await localFiles.PUT(new Request("http://localhost" + first.url, {
+    method: "PUT", headers: first.headers, body: "fixture",
+  }));
+  assert.equal(stored.ok, true);
+  const original = { path: first.path, name: "금호중학교.pdf", size: 7, type: "application/pdf" };
+  const attach = () => documents.PATCH(request(`/api/documents/${doc.id}`, "PATCH", {
+    attach_originals: [original],
+  }), { params: Promise.resolve({ id: doc.id }) });
+  assert.equal((await attach()).status, 200);
+  const bundled = (await store.getDoc(doc.id))!;
+  assert.equal(isArchived(bundled), true);
+  assert.deepEqual(bundled.original_files, [original]);
+  assert.equal(bundled.hwpx_path, `generated/${doc.id}/exam.hwpx`);
+  const originalUrl = await store.downloadUrl(original.path);
+  assert.equal(await (await localFiles.GET(new Request("http://localhost" + originalUrl))).text(), "fixture");
+  assert.equal((await attach()).status, 409, "이미 연결된 원본을 바꾸지 않는다");
+} finally {
+  process.chdir(previousDirectory);
+  await rm(scratch, { recursive: true, force: true });
+}
+
+console.log("완료 파일과 원본 묶기, 원본 추가와 내려받기, 학교·학년 분류 및 정렬 검사 통과");
