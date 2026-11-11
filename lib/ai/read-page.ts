@@ -1,8 +1,8 @@
 // 1차 읽기: 시험지 한 쪽 사진 → 머리 표, 안내 상자, 문항, 그림 위치.
-// 서버 전용 (Claude 를 부른다).
+// 서버 전용 (설정에서 고른 AI를 부른다).
 
-import type { BetaMessageParam } from "@anthropic-ai/sdk/resources/beta/messages/messages";
-import { addUsage, assistantTurn, callClaude, extractJson, modelFor, ReadError, type Effort, type Usage } from "./claude";
+import { callAI, assistantTurn, type AITurn } from "./client";
+import { addUsage, extractJson, modelFor, ReadError, type Effort, type Usage } from "./claude";
 import { PageReadingS, pageReadingJsonSchema, type PageReading } from "./page-schema";
 import { PAGE_SYSTEM, pageUserText } from "./prompts";
 
@@ -20,7 +20,7 @@ export async function readPage(
   image: ImageInput,
   o: { page: number; total: number; before?: string; model?: string; effort?: Effort; apiKey?: string; signal?: AbortSignal; deadline?: number },
 ): Promise<{ reading: PageReading; usage: Usage; raw: string }> {
-  const messages: BetaMessageParam[] = [
+  const messages: AITurn[] = [
     {
       role: "user",
       content: [
@@ -36,14 +36,14 @@ export async function readPage(
   for (let attempt = 1; attempt <= 2; attempt++) {
     let call;
     try {
-      call = await callClaude({
+      call = await callAI({
         system: PAGE_SYSTEM,
         model,
         apiKey: o.apiKey,
         messages,
         effort: o.effort ?? PAGE_EFFORT,
         maxTokens: 32000,
-        // 구조화 출력: 답이 꼭 정해진 모양이 되게 한다 (API 가 이 모양을 받지 못하면 callClaude 가 지시문 방식으로 한 번 다시 묻는다)
+        // 구조화 출력: 답이 꼭 정해진 모양이 되게 한다 (API 가 이 모양을 받지 못하면 callAI 가 지시문 방식으로 한 번 다시 묻는다)
         jsonSchema,
         signal: o.signal,
         deadline: o.deadline,

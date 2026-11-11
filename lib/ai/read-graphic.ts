@@ -1,5 +1,5 @@
-import type { BetaMessageParam } from "@anthropic-ai/sdk/resources/beta/messages/messages";
-import { addUsage, assistantTurn, callClaude, extractJson, modelFor, ReadError, type Usage, type Effort } from "./claude";
+import { callAI, assistantTurn, type AITurn } from "./client";
+import { addUsage, extractJson, modelFor, ReadError, type Usage, type Effort } from "./claude";
 import { checkGraphic } from "@/lib/graphic/schema";
 import type { FigureContext, FigureReading } from "./read-figure";
 import type { ImageInput } from "./read-page";
@@ -31,14 +31,14 @@ export function judgeGraphic(text: string, attempt = 1): FigureReading {
 }
 
 export async function readGraphic(image: ImageInput, item: FigureContext, o: { model?: string; effort?: Effort; apiKey?: string; signal?: AbortSignal; deadline?: number } = {}): Promise<{ figure: FigureReading; usage: Usage }> {
-  const messages: BetaMessageParam[] = [{ role: "user", content: [
+  const messages: AITurn[] = [{ role: "user", content: [
     { type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } },
     { type: "text", text: `${item.no}번 자료. 사진 ${image.width}×${image.height}px. 문제: ${piecesToText(item.stem)}\n선택지: ${item.choices.map(piecesToText).join(" / ")}\n보기: ${item.bogi.map(piecesToText).join(" / ")}\n이 문제의 자료를 재작성해 주세요.` },
   ] }];
   let usage: Usage | undefined, result: FigureReading | undefined;
   for (let attempt = 1; attempt <= 2; attempt++) {
     let call;
-    try { call = await callClaude({ system: GRAPHIC_SYSTEM, messages, model: modelFor("figure", o.model), apiKey: o.apiKey,
+    try { call = await callAI({ system: GRAPHIC_SYSTEM, messages, model: modelFor("figure", o.model), apiKey: o.apiKey,
       effort: o.effort ?? "high", maxTokens: 32000, signal: o.signal, deadline: o.deadline }); }
     catch (e) { if (e instanceof ReadError && usage) e.usage = e.usage ? addUsage(usage, e.usage) : usage; throw e; }
     usage = addUsage(usage, call.usage);

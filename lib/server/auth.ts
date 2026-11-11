@@ -3,7 +3,8 @@
 import { isModel, modelFor, type Pass, type Usage } from "@/lib/ai/claude";
 import { deviceOf } from "./device";
 import { cookieValue, readSessionToken, SESSION_COOKIE } from "./session";
-import { getStore, LOGIN_LIMIT, type LoginGate, type UsageRow } from "./store";
+import { apiKeyDevice, getStore, LOGIN_LIMIT, type LoginGate, type UsageRow } from "./store";
+import { providerFor, type AiProvider } from "../ai/models";
 
 export { isHttps } from "./session";
 
@@ -63,7 +64,7 @@ export function clientIp(req: Request): string {
   return (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() || req.headers.get("x-real-ip") || "unknown";
 }
 
-export type AiConfig = { apiKey: string | null; keyBroken: boolean; keyTag: string | null; models: Record<Pass, string> };
+export type AiConfig = { apiKey: string | null; keyBroken: boolean; keyTag: string | null; models: Record<Pass, string>; model: string; provider: AiProvider };
 
 /** 저장된 모델 고르기 (없거나 모르는 모델이면 기본값) */
 export function pickModels(saved: unknown): Record<Pass, string> {
@@ -75,14 +76,21 @@ export function pickModels(saved: unknown): Record<Pass, string> {
 }
 
 /** 이 기기(브라우저)에 저장한 API 키(저장 창구가 풀어 준다)와 모델. 기기 표시가 없으면 키 없음 */
-export async function aiConfig(req: Request): Promise<AiConfig> {
+export async function aiConfig(req: Request, pass: Pass = "page", override?: unknown): Promise<AiConfig> {
   const device = await deviceOf(req);
-  const saved = device ? await getStore().getApiKey(device) : null;
+  const store = getStore();
+  const info = device ? await store.deviceInfo(device) : null;
+  const models = pickModels(info?.models);
+  const model = isModel(override) ? override : models[pass];
+  const provider = providerFor(model);
+  const saved = device ? await store.getApiKey(apiKeyDevice(device, provider)) : null;
   return {
     apiKey: saved?.key ?? null,
     keyBroken: !!saved?.broken,
     keyTag: saved?.tag ?? null,
-    models: pickModels(saved?.models),
+    models,
+    model,
+    provider,
   };
 }
 

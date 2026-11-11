@@ -3,49 +3,54 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { api, postJson, won } from "@/lib/client/api";
 import { examEstimate, type ModelInfo } from "@/lib/ai/models-info";
+import { PROVIDER_NAMES, providerFor, type AiProvider } from "@/lib/ai/models";
 
+type KeyInfo = { saved: false } | { saved: true; last4: string; savedAt: string; broken: boolean };
+type MonthUsage = { month: string; calls: number; usd: number };
 type Settings = {
-  apiKey: { saved: false } | { saved: true; last4: string; savedAt: string; broken: boolean };
+  apiKey: KeyInfo;
+  apiKeys: Record<AiProvider, KeyInfo>;
   models: { page: string; figure: string };
   modelOptions: ModelInfo[];
-  usage: { month: string; calls: number; usd: number }[];
+  usage: MonthUsage[];
+  usageByProvider: Record<AiProvider, MonthUsage[]>;
   krwPerUsd: number;
 };
 
-const day = (iso: string) => (iso ? new Date(iso).toLocaleDateString("ko-KR") : "");
+const day = (iso: string) => iso ? new Date(iso).toLocaleDateString("ko-KR") : "";
+const providers: AiProvider[] = ["anthropic", "openai"];
 
 export default function SettingsPage() {
-  const [s, setS] = useState<Settings | null>(null);
+  const [settings, setSettings] = useState<Settings | null>(null);
   const [loadError, setLoadError] = useState("");
-
   const load = useCallback(async () => {
     try {
-      setS(await api<Settings>("/api/settings"));
+      setSettings(await api<Settings>("/api/settings"));
       setLoadError("");
-    } catch (err) {
-      setLoadError(err instanceof Error ? err.message : String(err));
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : String(error));
     }
   }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
+  useEffect(() => { load(); }, [load]);
 
   return (
     <main className="page" style={{ maxWidth: 820 }}>
       <div className="page-head">
         <h1>설정</h1>
-        <p className="lead">
-          AI 열쇠(API 키), 쓸 AI 모델, 달마다 쓴 AI 요금, 비밀번호를 여기서 정합니다. AI 열쇠와 모델은 이 기기(이 브라우저)에만 따로 저장되므로, 여러
-          사람이 함께 써도 AI 요금은 각자 자기 열쇠로 나갑니다.
-        </p>
+        <p className="lead">이 브라우저에서 쓸 API 키와 AI 모델을 등록하고 사용 요금을 확인합니다.</p>
       </div>
       {loadError && <p className="notice error">{loadError}</p>}
-      {s && (
+      {settings && (
         <>
-          <KeyCard s={s} onChange={load} />
-          <ModelCard s={s} onChange={load} />
-          <UsageCard s={s} />
+          <section className="card">
+            <h2>AI API 키</h2>
+            <p className="muted small">키는 이 브라우저에 연결해 서버에 암호화하여 보관합니다. AI 사용료는 각 키의 계정에 청구됩니다.</p>
+            {providers.map((provider) => (
+              <KeyForm key={provider} provider={provider} info={settings.apiKeys?.[provider] ?? { saved: false }} onChange={load} />
+            ))}
+          </section>
+          <ModelCard settings={settings} onChange={load} />
+          <UsageCard settings={settings} />
           <PasswordCard />
         </>
       )}
@@ -53,189 +58,139 @@ export default function SettingsPage() {
   );
 }
 
-function KeyCard({ s, onChange }: { s: Settings; onChange: () => void }) {
+function KeyForm({ provider, info, onChange }: { provider: AiProvider; info: KeyInfo; onChange: () => void }) {
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const name = PROVIDER_NAMES[provider];
 
-  async function save(e: FormEvent) {
-    e.preventDefault();
+  async function save(event: FormEvent) {
+    event.preventDefault();
     setBusy(true);
-    setMsg(null);
+    setMessage(null);
     try {
-      await postJson("/api/settings/api-key", { key });
+      await postJson("/api/settings/api-key", { provider, key });
       setKey("");
-      setMsg({ ok: true, text: "열쇠를 확인하고 저장했습니다." });
+      setMessage({ ok: true, text: `${name} 키를 확인하고 저장했습니다.` });
       onChange();
-    } catch (err) {
-      setMsg({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    } catch (error) {
+      setMessage({ ok: false, text: error instanceof Error ? error.message : String(error) });
     } finally {
       setBusy(false);
     }
   }
 
   async function remove() {
-    if (!confirm("이 기기에 저장된 API 키를 지울까요? 지우면 이 기기에서 AI 읽기를 할 수 없습니다.")) return;
+    if (!confirm(`이 브라우저에 등록된 ${name} API 키를 지울까요?`)) return;
     setBusy(true);
+    setMessage(null);
     try {
-      await api("/api/settings/api-key", { method: "DELETE" });
-      setMsg({ ok: true, text: "열쇠를 지웠습니다." });
+      await api(`/api/settings/api-key?provider=${provider}`, { method: "DELETE" });
+      setKey("");
+      setMessage({ ok: true, text: `${name} 키를 지웠습니다.` });
       onChange();
-    } catch (err) {
-      setMsg({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    } catch (error) {
+      setMessage({ ok: false, text: error instanceof Error ? error.message : String(error) });
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <form className="card" onSubmit={save}>
-      <h2>AI 열쇠 (API 키)</h2>
-      {s.apiKey.saved ? (
-        s.apiKey.broken ? (
-          <p className="notice error">저장된 열쇠를 열지 못했습니다. 열쇠를 다시 넣어 주세요.</p>
-        ) : (
-          <p>
-            저장되어 있습니다: <strong>sk-ant-…{s.apiKey.last4}</strong> <span className="muted small">({day(s.apiKey.savedAt)} 저장)</span>
-          </p>
-        )
-      ) : (
-        <p className="notice">이 기기에는 아직 열쇠가 없습니다. 열쇠를 넣어야 AI 가 시험지를 읽을 수 있습니다.</p>
-      )}
-      <p className="muted small">
-        Claude 콘솔(platform.claude.com)의 API Keys 화면에서 만든 열쇠를 붙여 넣으세요. 저장하기 전에 맞는 열쇠인지 확인합니다(요금 없음).
-        넣은 열쇠는 이 기기(이 브라우저)에서만 쓰입니다. 다른 사람이나 다른 기기는 각자 자기 열쇠를 넣으면 되고, AI 요금은 그 열쇠의 주인에게
-        나갑니다. 열쇠는 서버에 암호로 잠가 두고, 화면에는 끝 네 자리만 보입니다. 브라우저의 방문 기록(쿠키)을 지우면 열쇠를 다시 넣어야 합니다.
-      </p>
+    <form onSubmit={save} className="stack" style={{ paddingTop: 16, paddingBottom: 16, borderTop: "1px solid var(--line, #ddd)" }}>
+      <h3 style={{ margin: 0 }}>{provider === "openai" ? "GPT (OpenAI)" : "Claude"}</h3>
+      {info.saved && !info.broken && <p className="small">등록된 키 <strong>…{info.last4}</strong> · {day(info.savedAt)} 저장</p>}
+      {info.saved && info.broken && <p className="notice error">등록된 키를 열지 못했습니다. 다시 등록해 주세요.</p>}
       <label className="field">
-        새 열쇠
-        <input type="password" autoComplete="off" placeholder="sk-ant-로 시작하는 열쇠" value={key} onChange={(e) => setKey(e.target.value)} />
+        {info.saved ? "새 API 키로 바꾸기" : `${name} API 키 등록`}
+        <input type="password" autoComplete="off" aria-label={`${name} API 키`}
+          placeholder={provider === "openai" ? "OpenAI에서 발급한 sk-… 키" : "Claude에서 발급한 sk-ant-api… 키"}
+          value={key} onChange={(event) => setKey(event.target.value)} disabled={busy} />
       </label>
-      {msg && <p className={`notice${msg.ok ? "" : " error"}`}>{msg.text}</p>}
+      {message && <p className={`notice${message.ok ? "" : " error"}`}>{message.text}</p>}
       <div className="row">
-        <button className="primary" type="submit" disabled={busy || !key.trim()}>
-          {busy ? "확인하는 중" : "확인하고 저장"}
-        </button>
-        {s.apiKey.saved && (
-          <button type="button" onClick={remove} disabled={busy}>
-            열쇠 지우기
-          </button>
-        )}
+        <button className="primary" type="submit" disabled={busy || !key.trim()}>{busy ? "확인하는 중" : `${name} 키 확인하고 저장`}</button>
+        {info.saved && <button type="button" onClick={remove} disabled={busy}>{name} 키 지우기</button>}
       </div>
     </form>
   );
 }
 
-function ModelCard({ s, onChange }: { s: Settings; onChange: () => void }) {
-  const [page, setPage] = useState(s.models.page);
-  const [figure, setFigure] = useState(s.models.figure);
+function ModelCard({ settings, onChange }: { settings: Settings; onChange: () => void }) {
+  const [page, setPage] = useState(settings.models.page);
+  const [figure, setFigure] = useState(settings.models.figure);
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const known = (id: string) => s.modelOptions.some((m) => m.id === id);
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  useEffect(() => { setPage(settings.models.page); setFigure(settings.models.figure); }, [settings.models.page, settings.models.figure]);
+  const known = (id: string) => settings.modelOptions.some((model) => model.id === id);
   const estimate = known(page) && known(figure) ? examEstimate(page as ModelInfo["id"], figure as ModelInfo["id"]) : null;
+  const selectedProviders = [...new Set([page, figure].map(providerFor))];
+  const missingKeys = selectedProviders.filter((provider) => {
+    const key = settings.apiKeys?.[provider];
+    return !key?.saved || key.broken;
+  });
 
   async function save() {
     setBusy(true);
-    setMsg(null);
+    setMessage(null);
     try {
       await postJson("/api/settings/models", { page, figure });
-      setMsg({ ok: true, text: "저장했습니다." });
+      setMessage({ ok: true, text: "AI 모델을 저장했습니다." });
       onChange();
-    } catch (err) {
-      setMsg({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    } catch (error) {
+      setMessage({ ok: false, text: error instanceof Error ? error.message : String(error) });
     } finally {
       setBusy(false);
     }
   }
 
-  const options = s.modelOptions.map((m) => (
-    <option key={m.id} value={m.id}>
-      {m.name} (100만 토큰당 입력 ${m.price.input} · 출력 ${m.price.output})
-    </option>
+  const options = providers.map((provider) => (
+    <optgroup key={provider} label={PROVIDER_NAMES[provider]}>
+      {settings.modelOptions.filter((model) => providerFor(model.id) === provider).map((model) => (
+        <option key={model.id} value={model.id}>{model.name} · 입력 ${model.price.input} / 출력 ${model.price.output}</option>
+      ))}
+    </optgroup>
   ));
 
   return (
     <section className="card">
-      <h2>AI 모델</h2>
-      <p className="muted small">
-        이 기기에서 쪽 읽기(글·수식 옮기기)와 그림 읽기(그림을 그림 명령으로)에 쓸 모델을 따로 고를 수 있습니다. 비싼 모델일수록 정확합니다.
-      </p>
+      <h2>시험지를 읽을 AI</h2>
+      <p className="muted small">글·수식과 도형에 사용할 모델을 각각 고릅니다. 모델별 정확도는 같은 시험지로 비교해 주세요. 표시 요금은 100만 토큰당 달러입니다.</p>
       <div className="stack">
-        <label className="field">
-          쪽 읽기
-          <select value={page} onChange={(e) => setPage(e.target.value)}>
-            {options}
-          </select>
-        </label>
-        <label className="field">
-          그림 읽기
-          <select value={figure} onChange={(e) => setFigure(e.target.value)}>
-            {options}
-          </select>
-        </label>
+        <label className="field">쪽 읽기 · 글과 수식<select value={page} onChange={(event) => setPage(event.target.value)} disabled={busy}>{options}</select></label>
+        <label className="field">그림 읽기 · 도형과 도표<select value={figure} onChange={(event) => setFigure(event.target.value)} disabled={busy}>{options}</select></label>
       </div>
-      <ul className="small muted" style={{ margin: 0, paddingLeft: "1.2em" }}>
-        {s.modelOptions.map((m) => (
-          <li key={m.id}>
-            {m.name}: {m.note}
-          </li>
-        ))}
-      </ul>
-      {estimate !== null && (
-        <p>
-          이렇게 고르면 25문항 시험지 한 부(약 7쪽, 그림 12개)에 약 <strong>{won(estimate, s.krwPerUsd)}</strong> 정도 듭니다 (어림값).
-        </p>
-      )}
-      {msg && <p className={`notice${msg.ok ? "" : " error"}`}>{msg.text}</p>}
-      <div className="row">
-        <button className="primary" type="button" onClick={save} disabled={busy || (page === s.models.page && figure === s.models.figure)}>
-          저장
-        </button>
-      </div>
+      {missingKeys.length > 0 && <p className="notice">{missingKeys.map((provider) => PROVIDER_NAMES[provider]).join(", ")} 키를 위에서 등록하면 선택한 모델로 읽을 수 있습니다.</p>}
+      {estimate !== null && <p>25문항 시험지 한 부(약 7쪽, 그림 12개)의 예상 요금은 약 <strong>{won(estimate, settings.krwPerUsd)}</strong>입니다. 실제 사용량에 따라 달라집니다.</p>}
+      {message && <p className={`notice${message.ok ? "" : " error"}`}>{message.text}</p>}
+      <div className="row"><button className="primary" type="button" onClick={save} disabled={busy || (page === settings.models.page && figure === settings.models.figure)}>모델 저장</button></div>
     </section>
   );
 }
 
-function UsageCard({ s }: { s: Settings }) {
-  // 한국 시간 기준 달 (월별 기록도 한국 시간으로 묶는다). sv-SE 형식은 "2026-10"
+function UsageCard({ settings }: { settings: Settings }) {
+  const [provider, setProvider] = useState<AiProvider | "all">("all");
+  const rows = provider === "all" ? settings.usage : settings.usageByProvider?.[provider] ?? [];
   const thisMonth = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit" }).format(new Date());
-  const now = s.usage.find((u) => u.month === thisMonth);
+  const now = rows.find((row) => row.month === thisMonth);
   return (
     <section className="card">
-      <h2>달마다 쓴 AI 요금 (이 열쇠)</h2>
-      <p>
-        이번 달: <strong>{won(now?.usd ?? 0, s.krwPerUsd)}</strong> <span className="muted small">(AI 를 {now?.calls ?? 0}번 불렀습니다)</span>
-      </p>
-      {s.usage.length > 0 ? (
-        <div className="table-wrap">
-          <table className="list">
-            <thead>
-              <tr>
-                <th>달</th>
-                <th className="num">부른 횟수</th>
-                <th className="num">요금</th>
-                <th className="num hide-sm">달러</th>
-              </tr>
-            </thead>
-            <tbody>
-              {s.usage.map((u) => (
-                <tr key={u.month}>
-                  <td>{u.month.replace("-", "년 ")}월</td>
-                  <td className="num">{u.calls.toLocaleString("ko-KR")}</td>
-                  <td className="num">{won(u.usd, s.krwPerUsd)}</td>
-                  <td className="num hide-sm">${u.usd.toFixed(2)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <p className="muted">{s.apiKey.saved ? "아직 기록이 없습니다." : "열쇠를 넣으면 그 열쇠로 쓴 요금이 여기에 나옵니다."}</p>
-      )}
-      <p className="muted small">
-        이 프로그램이 이 기기의 열쇠로 AI 를 부를 때마다 적은 어림값입니다 (1달러 {s.krwPerUsd.toLocaleString("ko-KR")}원으로 계산). 같은 열쇠를 다른
-        기기에도 넣었다면 함께 더해집니다. 실제 청구액은 Claude 콘솔의 Usage 화면에서 볼 수 있습니다.
-      </p>
+      <h2>AI 사용 요금</h2>
+      <label className="field">확인할 AI
+        <select value={provider} onChange={(event) => setProvider(event.target.value as AiProvider | "all")}>
+          <option value="all">Claude + GPT</option><option value="anthropic">Claude</option><option value="openai">GPT</option>
+        </select>
+      </label>
+      <p>이번 달 <strong>{won(now?.usd ?? 0, settings.krwPerUsd)}</strong> · {now?.calls ?? 0}회</p>
+      {rows.length > 0 ? (
+        <div className="table-wrap"><table className="list">
+          <thead><tr><th>달</th><th className="num">사용 횟수</th><th className="num">요금</th><th className="num hide-sm">달러</th></tr></thead>
+          <tbody>{rows.map((row) => (
+            <tr key={row.month}><td>{row.month.replace("-", "년 ")}월</td><td className="num">{row.calls.toLocaleString("ko-KR")}</td><td className="num">{won(row.usd, settings.krwPerUsd)}</td><td className="num hide-sm">${row.usd.toFixed(2)}</td></tr>
+          ))}</tbody>
+        </table></div>
+      ) : <p className="muted">등록한 API 키의 사용 기록이 여기에 나옵니다.</p>}
+      <p className="muted small">이 프로그램의 사용량을 1달러 {settings.krwPerUsd.toLocaleString("ko-KR")}원으로 환산한 값입니다. 같은 키를 등록한 기기의 사용량은 합산합니다. 실제 청구액은 각 회사의 API 사용량 화면에서 확인해 주세요.</p>
     </section>
   );
 }

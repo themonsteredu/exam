@@ -15,12 +15,8 @@ export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export type Pass = "page" | "figure";
 
 /** 고를 수 있는 모델 (요청에서 모델을 바꿀 때도 이 가운데서만) */
-export const MODELS = ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-opus-5"] as const;
-export type ModelId = (typeof MODELS)[number];
-
-export function isModel(value: unknown): value is ModelId {
-  return typeof value === "string" && (MODELS as readonly string[]).includes(value);
-}
+export { MODELS, isModel } from "./models";
+export type { ModelId } from "./models";
 
 /** 이 단계(쪽 읽기·그림 읽기)에 쓸 모델 */
 export function modelFor(pass: Pass, override?: string): string {

@@ -11,6 +11,7 @@ import path from "node:path";
 import { getVercelOidcToken } from "@vercel/oidc";
 import { openApiKey, sealApiKey, type SealedKey } from "./secrets";
 import { appSecret } from "./session";
+import type { AiProvider } from "../ai/models";
 
 /** 저장 창구 주소 (비밀이 아니다) */
 export const DEFAULT_GATEWAY_URL = "https://vypnobpmyadtcvxhtagn.supabase.co/functions/v1/exam-gateway";
@@ -69,6 +70,12 @@ export type DeviceKey = { key: string | null; broken: boolean; tag: string | nul
 /** 기기 값 (lib/server/device.ts 의 deviceTag: SHA-256 16진수) */
 export const DEVICE = /^[0-9a-f]{64}$/;
 const KEY_TAG = /^[0-9a-f]{32}$/;
+
+/** Claude uses the existing device row. Each additional provider gets its own encrypted key row. */
+export function apiKeyDevice(device: string, provider: AiProvider): string {
+  if (!DEVICE.test(device)) throw new Error("기기 표시가 올바르지 않습니다.");
+  return provider === "anthropic" ? device : createHash("sha256").update(`exam-provider:${provider}:${device}`).digest("hex");
+}
 
 export interface Store {
   getSettings(keys: string[]): Promise<Record<string, unknown>>;
