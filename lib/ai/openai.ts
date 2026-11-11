@@ -3,7 +3,7 @@ import { ReadError, type Usage } from "./claude";
 import { OPENAI_PRICES } from "./models";
 import type { AIRequest, AIResult, AITurn } from "./client";
 
-type OutputItem = { type: string; content?: { type: string; text?: string; refusal?: string }[]; [key: string]: unknown };
+type OutputItem = { type: string; content?: { type: string; text?: string; refusal?: string; [key: string]: unknown }[]; [key: string]: unknown };
 export type OpenAIResponse = {
   id: string;
   model: string;
@@ -53,6 +53,7 @@ function inputTurns(turns: AITurn[]): Record<string, unknown>[] {
   return turns.flatMap<Record<string, unknown>>((turn) => {
     if ("provider" in turn) return turn.response.output;
     if (typeof turn.content === "string") return [{ role: turn.role, content: turn.content }];
+    if (!turn.content) throw new ReadError("input", "GPT에 보낼 내용이 없습니다.");
     const content = turn.content.map((block) => {
       if (block.type === "text") return { type: "input_text", text: block.text };
       if (block.type === "image" && block.source.type === "base64") {
