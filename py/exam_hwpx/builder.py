@@ -818,13 +818,18 @@ class ExamBuilder:
                        if k > 0 and re.match(r"^\s*(\(\s*1\s*\)|⑴|1\))", "".join(str(x.get("t", "")) for x in pieces if isinstance(x, dict) and "t" in x))), None)
         first = None
         brk = item.get("break_before")
+        boxes_before = item.get("boxes_before") or []
+        extra_pt = 0 if is_first or brk else self.extra_before_pt(item)
         # 문항 앞의 안내 상자 (쪽 중간의 "서술형 유의사항" 같은 것). 단·쪽 나눔은 상자 앞에서 한다
-        for b, box in enumerate(item.get("boxes_before") or []):
+        for b, box in enumerate(boxes_before):
             pa = self.doc.add_paragraph("")
             if b == 0:
                 self.set_break(pa, brk)
                 brk = None
             self.build_box(box, anchor=pa)
+            if b == 0 and extra_pt:
+                # 풀이 여백을 안내 상자와 문항 사이에 끼워 넣지 않는다.
+                self.para_format(pa, spacing_before_pt=round(extra_pt, 1))
         figures = [f for f in [item.get("figure"), *(item.get("extra_figures") or [])] if f]
         # 선택지를 표로 인쇄한 문항(번호 ①~⑤ 가 든 표): 그 표가 곧 선택지라 선택지 자리에 한글 표로 넣는다
         dup = [f for f in figures if self.is_choice_table(f, item)]
@@ -884,7 +889,9 @@ class ExamBuilder:
                     # 한글은 왼쪽 여백에서 첫 줄을 시작하고 내어쓰기 값만큼 나머지 줄을 민다 (왼쪽 여백 0 이어야 번호가 선택지 번호와 같은 세로줄에 선다)
                     indent_left_mm=0, first_line_indent_mm=-5.5,
                     # 문항 사이: 양식 간격 + 원본처럼 풀이 공간 (balance_columns 가 단의 빈 곳을 나눠 준 만큼)
-                    spacing_before_pt=0 if (is_first or item.get("break_before")) else round(t["item_gap_pt"] + self.extra_before_pt(item), 1),
+                    spacing_before_pt=0 if (is_first or item.get("break_before")) else round(
+                        t["item_gap_pt"] + (0 if boxes_before else extra_pt), 1
+                    ),
                 )
             else:
                 # 둘째 문단부터는 번호 다음 글자와 같은 세로줄에서 시작한다
@@ -1349,7 +1356,9 @@ def balance_columns(builder: "ExamBuilder", est):
             if can_add_space(g):
                 extra[(g["si"], g["j"])] = share
         if len(group) == 2 and can_add_space(group[1]):
-            pairs.setdefault(col[0], []).append((group[1], min(budget * 0.75, mm(100))))
+            second = group[1]
+            if not sections[second["si"]]["items"][second["j"]].get("boxes_before"):
+                pairs.setdefault(col[0], []).append((second, min(budget * 0.75, mm(100))))
 
     for pair in pairs.values():
         if len(pair) != 2:

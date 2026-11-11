@@ -108,12 +108,22 @@ assert abs(after[8][2] - after[10][2]) <= mm(1), after
 assert min(after[8][2] - before[8][2], after[10][2] - before[10][2]) > mm(1), (before, after)
 
 # 원본 쪽·단 나눔이 없는 마지막 단에서도 아래 문항 앞에 풀이 공간을 나눈다.
-unforced = {'sections': [{'items': [q(1), q(2)]}]}
+with_notice = {**q(2), 'boxes_before': [{'kind': 'notice', 'framed': False, 'lines': ['※ 두 번째 문제 안내']}]}
+unforced = {'sections': [{'items': [q(1), with_notice]}]}
 _, before = question_starts(ExamBuilder(unforced).build())
 unforced_data, _ = build_exam(unforced)
 pages, after = question_starts(unforced_data)
 assert pages == 1 and after[1][:2] == after[2][:2] == before[2][:2], (pages, after)
 assert after[2][2] - before[2][2] >= mm(10), (before, after)
+with zipfile.ZipFile(io.BytesIO(unforced_data)) as z:
+    unforced_sec = ET.fromstring(z.read('Contents/section0.xml'))
+    unforced_styles = {e.get('id'): e for e in ET.fromstring(z.read('Contents/header.xml')).iter(hh + 'paraPr')}
+for p in unforced_sec.findall(hp + 'p'):
+    text = ''.join(t.text or '' for t in p.iter(hp + 't'))
+    if text.startswith('※ 두 번째 문제 안내'):
+        assert prev_of(p, unforced_styles) >= mm(10), '풀이 여백은 안내문 앞에 둔다'
+    if text.startswith('2. '):
+        assert prev_of(p, unforced_styles) == 1200, '안내문과 문제 사이는 기본 간격'
 
 # 한 쪽에 들어갈 수 없는 시험지도 글자 크기와 문항별 풀이 자리를 유지한다.
 written = []
