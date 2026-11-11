@@ -42,5 +42,5 @@ The selectable GPT models are gpt-6.1-terra, gpt-6.1-sol, and gpt-6-astra. No au
 
 ## Validation status
 
-Implementation complete; automated CI/build verification pending. Network-isolated regression tests use synthetic keys and mocked SSE. No actual user API key or paid GPT inference was used. Same-page quality evaluation remains for the user after registering the key.
+Implementation verified: GitHub Actions run 42993784458 passed all type, AI, cost/layout, graphics, key isolation, storage and HWPX regressions on aebabb7e37897849d7d063cb9f88febf32a060bb. Vercel preview dpl_8Qrf2A5ZjD8X2T4hrdfrVA5Uqb9i completed the Next.js/Python production build. exam-gateway version 6 is active and matches the reviewed two-line compatibility change. Network-isolated regression tests use synthetic keys and mocked SSE. No actual user API key or paid GPT inference was used. Same-page quality evaluation remains for the user after registering the key.
 
