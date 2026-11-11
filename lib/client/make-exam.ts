@@ -269,7 +269,7 @@ async function run(
     }
 
     // 그림: 지금 쪽 그림에서 잘라 두고, 읽기는 뒤에서 동시에
-    const jobs = figureJobs(page, res.reading);
+    const jobs = figureJobs(page, res.reading, { width: image.width, height: image.height });
     tell({ figuresTotal: progress.figuresTotal + jobs.length });
     for (const job of jobs) {
       // AI 에게 보낼 그림 사진 (읽기에만 쓴다. 한글 파일에는 원본을 잘라 붙이지 않는다)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import copy
 import io
+import math
 import re
 import struct
 import zipfile
@@ -690,10 +691,17 @@ class ExamBuilder:
         return n in (4, 5) and "?" in stem and not item.get("label")
 
     def build_choice_figures(self, figures: list, no, choices: list | None = None):
-        """선택지 그림 ①~⑤ 를 테두리 없는 2열 표에 차례로 넣는다. 칸마다 번호 줄, 그 아래 그림,
+        """선택지 그림 ①~⑤ 를 테두리 없는 표에 차례로 넣는다. 칸마다 번호 줄, 그 아래 그림,
         선택지 글이 있으면 그 아래 가운데에 (원본의 그림 밑 설명처럼)."""
         t = self.tpl
-        cols = 2
+        size = t["sizes"]["choice"]
+        column_mm = self.column_width() / MM
+        captions = [self.split_paragraphs(c) if c else [] for c in choices or []]
+        # 긴 설명을 좁은 칸에 끼워 넣으면 수식이나 글이 옆 칸과 닿을 수 있다.
+        cols = 1 if any(
+            self.piece_width_mm(line, size) > column_mm / 2 - 4.5
+            for caption in captions for line in caption
+        ) else 2
         rows = (len(figures) + cols - 1) // cols
         p_anchor = self.doc.add_paragraph("")
         none = self.border(None, None, None, None)
@@ -701,14 +709,15 @@ class ExamBuilder:
         for r in range(rows):
             for c in range(cols):
                 table.set_cell_border_fill(r, c, none)
-        cell_mm = self.column_width() / MM / cols
-        size = t["sizes"]["choice"]
+        cell_mm = column_mm / cols
+        row_heights = [0] * rows
         for i, fig in enumerate(figures):
             cell = table.cell(i // cols, i % cols)
             label = cell.paragraphs[0]
             mark = CHOICE_MARKS[i] if i < len(CHOICE_MARKS) else f"({i + 1})"
             label.add_run(mark, char_pr_id_ref=self.run_style(size=size))
             self.para_format(label, alignment="LEFT", line_spacing_percent=100, indent_left_mm=0, first_line_indent_mm=0)
+            height = int(round(size * 100))
             p = cell.add_paragraph("")
             png = self.figure_png(fig)
             if png is None:
@@ -717,6 +726,7 @@ class ExamBuilder:
                 p.add_run(str(fig.get("placeholder_note") or "(그림 자리)"), char_pr_id_ref=self.run_style(size=t["sizes"]["box"]))
                 self.para_format(p, alignment="CENTER", line_spacing_percent=100, indent_left_mm=0, first_line_indent_mm=0,
                                  spacing_after_pt=4)
+                height += int(round((t["sizes"]["box"] + 4) * 100))
             else:
                 px_w, px_h = png_size(png)
                 w_mm = min(float(fig.get("width_mm") or (fig.get("size_mm") or [cell_mm])[0]), cell_mm - 4)
@@ -725,13 +735,19 @@ class ExamBuilder:
                 hancom_picture_sizes(pic.element, png)
                 self.para_format(p, alignment="CENTER", line_spacing_percent=100, indent_left_mm=0, first_line_indent_mm=0,
                                  spacing_after_pt=2)
-            caption = (choices or [])[i] if i < len(choices or []) else []
-            if caption:
-                for j, part in enumerate(self.split_paragraphs(caption)):
-                    cp = cell.add_paragraph("")
-                    self.add_pieces(cp, part, size=size, where=f"{no}번 선택지 {i + 1}")
-                    self.para_format(cp, alignment="CENTER", line_spacing_percent=t["line_spacing"]["choice"],
-                                     indent_left_mm=0, first_line_indent_mm=0, spacing_after_pt=4 if j == len(self.split_paragraphs(caption)) - 1 else 0)
+                height += mm(h_mm) + 200
+            caption = captions[i] if i < len(captions) else []
+            for j, part in enumerate(caption):
+                cp = cell.add_paragraph("")
+                self.add_pieces(cp, part, size=size, where=f"{no}번 선택지 {i + 1}")
+                last = j == len(caption) - 1
+                self.para_format(cp, alignment="CENTER", line_spacing_percent=t["line_spacing"]["choice"],
+                                 indent_left_mm=0, first_line_indent_mm=0, spacing_after_pt=4 if last else 0)
+                lines = max(1, math.ceil(self.piece_width_mm(part, size) / (cell_mm - 4.5)))
+                height += lines * self.choice_line_height(cp, size) + (400 if last else 0)
+            row = i // cols
+            row_heights[row] = max(row_heights[row], height)
+        self.set_choice_table_heights(table, row_heights)
         self.para_format(p_anchor, alignment="LEFT", line_spacing_percent=100, indent_left_mm=0, first_line_indent_mm=0,
                          spacing_before_pt=4, spacing_after_pt=2)
 
@@ -805,6 +821,17 @@ class ExamBuilder:
         picture_choices = self.picture_choices(item, figures)
         # 문제 글은 왼쪽 정렬 (2026-11-01 사용자 요청). 양쪽 정렬이면 수식이 든 줄·그림 옆 좁은 줄에서 낱말 사이가 크게 벌어졌다
         align = "LEFT"
+        right_count = sum(figure.get("place") == "right" and bool(figure.get("png")) for figure in figures)
+        widest_word = 0.0
+        if right_count and not picture_choices:
+            # 오른쪽 그림 옆에는 수식 개체나 한 어절이 온전히 들어갈 폭이 필요하다.
+            for pieces in paragraphs:
+                for piece in pieces:
+                    if not isinstance(piece, dict):
+                        piece = {"t": piece}
+                    words = [piece] if "m" in piece else [{"t": word} for word in str(piece.get("t") or "").split()]
+                    for word in words:
+                        widest_word = max(widest_word, self.piece_width_mm([word], size))
 
         def put_figures():
             if picture_choices:
@@ -814,6 +841,11 @@ class ExamBuilder:
                 spec = self.native_table_of(figure)
                 if spec and self.build_native_table(spec, self.figure_width_mm(figure), no):
                     continue
+                if figure.get("place") == "right" and figure.get("png"):
+                    # 내어쓰기 5.5 mm와 그림 왼쪽 바깥 여백 3 mm를 뺀 폭이다.
+                    beside = self.column_width() / MM - self.figure_width_mm(figure) - 8.5
+                    if right_count > 1 or widest_word > beside:
+                        figure = {**figure, "place": "below"}
                 self.build_figure({**item, "figure": figure}, first)
 
         for k, pieces in enumerate(paragraphs):
@@ -890,12 +922,34 @@ class ExamBuilder:
         size = self.tpl["sizes"]["choice"]
         widest = max(self.piece_width_mm(c, size) for c in choices)
         col_mm = self.column_width() / MM
-        mark_mm = 6.5  # "①  " 와 칸 사이 여백
+        mark_mm = 6.5  # "①  " 너비와 선택지 사이 여유
         tries = (n, 3, 2) if layout == "row" else (3, 2)
         for cols in tries:
-            if 2 <= cols <= n and widest + mark_mm <= col_mm / cols - 1.5:
+            if 2 <= cols <= n and widest + mark_mm <= col_mm / cols - 3.6:
                 return cols
         return 1
+
+    def choice_line_height(self, paragraph, size: float) -> int:
+        """한 줄에 든 글자와 수식 개체의 높이, 선택지 줄 간격까지 HWPUNIT으로 계산한다."""
+        text_height = int(round(size * 100))
+        object_height = max(
+            (int(box.get("height", "0")) for box in paragraph.element.iterfind(f".//{_HP}equation/{_HP}sz")),
+            default=0,
+        )
+        leading = text_height * (self.tpl["line_spacing"]["choice"] - 100) / 100
+        return math.ceil(max(text_height, object_height) + leading)
+
+    @staticmethod
+    def set_choice_table_heights(table, row_heights: list[int]):
+        # python-hwpx의 새 표 행은 약 1 mm로 저장된다. 한글처럼 행을 자동으로 늘리지 않는
+        # 뷰어에서도 다음 행의 번호·수식·그림이 겹치지 않도록 실제 높이를 적는다.
+        margin = table.element.find(f"{_HP}inMargin")
+        padding = int(margin.get("top", "0")) + int(margin.get("bottom", "0")) if margin is not None else 0
+        heights = [height + padding for height in row_heights]
+        for row, height in enumerate(heights):
+            for col in range(table.column_count):
+                table.cell(row, col).set_size(height=height)
+        table.element.find(f"{_HP}sz").set("height", str(sum(heights)))
 
     def build_choices(self, choices: list, no, layout: str | None = None):
         """선택지: 원본에서 나란히 있던 것은 나란히(한 줄 또는 여러 줄), 아니면 한 줄에 하나씩."""
@@ -918,6 +972,7 @@ class ExamBuilder:
         p_anchor = self.doc.add_paragraph("")
         none = self.border(None, None, None, None)
         table = p_anchor.add_table(rows, cols, width=self.column_width(), border_fill_id_ref=none)
+        row_heights = [0] * rows
         for r in range(rows):
             for c in range(cols):
                 table.set_cell_border_fill(r, c, none)
@@ -928,6 +983,9 @@ class ExamBuilder:
             self.add_pieces(cp, choice, size=size, where=f"{no}번 선택지 {i + 1}")
             self.para_format(cp, alignment="LEFT", line_spacing_percent=t["line_spacing"]["choice"],
                              indent_left_mm=0, first_line_indent_mm=0)
+            row = i // cols
+            row_heights[row] = max(row_heights[row], self.choice_line_height(cp, size))
+        self.set_choice_table_heights(table, row_heights)
         self.para_format(p_anchor, alignment="LEFT", line_spacing_percent=100, indent_left_mm=0, first_line_indent_mm=0,
                          spacing_before_pt=4, spacing_after_pt=0)
 

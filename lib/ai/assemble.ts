@@ -4,10 +4,12 @@
 
 import type { FigureRegion, ItemReading, PageReading, Piece, Region } from "./page-schema";
 import type { FigureReading } from "./read-figure";
+import { figureRegionKey, validFigureRegion, type Size } from "./image-geometry";
 import { itemFigures } from "@/lib/figure/item-figures";
 import {
   degreeMismatches,
   degreeMismatchNote,
+  overlappingLabels,
   repairDegrees,
   SHAPE_DEVIATION_LIMIT,
   shapeDeviation,
@@ -108,15 +110,37 @@ export function figureKey(page: number, section: number, item: number, figure: n
   return `${page}-${section}-${item}-${figure}`;
 }
 
+/** 범위를 확인한 그림만 원래 순서로 읽고, 건너뛴 사각형은 문항의 확인할 곳에 표시한다. */
+function figureRegions(figures: FigureRegion[], image?: Size) {
+  const seen = new Set<string>();
+  const regions: { region: FigureRegion; index: number }[] = [];
+  let invalid = 0;
+  let duplicate = 0;
+  figures.forEach((region, index) => {
+    if (!validFigureRegion(region, image)) {
+      invalid++;
+      return;
+    }
+    const key = figureRegionKey(region);
+    if (seen.has(key)) {
+      duplicate++;
+      return;
+    }
+    seen.add(key);
+    regions.push({ region, index });
+  });
+  return { regions, invalid, duplicate };
+}
+
 /** 쪽마다 읽을 그림 목록 (그림 읽기에 넘길 것) */
-export function figureJobs(page: number, reading: PageReading) {
+export function figureJobs(page: number, reading: PageReading, image?: Size) {
   const jobs: { key: string; region: FigureRegion; item: ItemReading }[] = [];
   reading.sections.forEach((section, s) =>
-    section.items.forEach((item, i) =>
-      item.figures.forEach((region, f) => {
-        if (!SKIP_KINDS.has(region.kind) && region.w > 2 && region.h > 2) jobs.push({ key: figureKey(page, s, i, f), region, item });
-      }),
-    ),
+    section.items.forEach((item, i) => {
+      for (const { region, index } of figureRegions(item.figures, image).regions) {
+        if (!SKIP_KINDS.has(region.kind)) jobs.push({ key: figureKey(page, s, i, index), region, item });
+      }
+    }),
   );
   return jobs;
 }
@@ -217,6 +241,7 @@ export function assembleExam(
 
   for (const { meta, reading } of pages) {
     const mmPerPx = mmPerOriginalPx(reading, meta, layout);
+    const image = { width: Math.round(meta.original.width * meta.scale), height: Math.round(meta.original.height * meta.scale) };
     for (const u of reading.unsure) unsure.push(`${meta.page}쪽: ${u}`);
     const pageItems: { it: ItemReading; item: any }[] = [];
     reading.sections.forEach((section, s) => {
@@ -234,12 +259,16 @@ export function assembleExam(
         const bogi = it.bogi.map(toExamPieces).filter((line) => line.length);
         if (bogi.length) item.bogi = bogi;
         const itemUnsure = [...it.unsure];
+        const { regions, invalid, duplicate } = figureRegions(it.figures, image);
+        if (invalid) {
+          itemUnsure.push("원본에서 범위를 확인하지 못한 그림이 있습니다");
+        }
+        if (duplicate) itemUnsure.push("같은 위치로 읽은 그림이 있어 원본을 확인해 주세요");
 
         // 그림이 여럿이면 모두 넣는다 (첫 그림은 figure, 나머지는 extra_figures. 선택지가 모두 그림이면 한글 파일에서 ①~⑤ 를 붙여 나란히 둔다)
-        const all = it.figures
-          .map((f, idx) => ({ f, idx }))
-          .filter(({ f }) => f.w > 2 && f.h > 2)
-          .map(({ f, idx }) => makeFigure(f, figures.get(figureKey(meta.page, s, i, idx)), meta, mmPerPx, layout, itemUnsure));
+        const all = regions.map(({ region, index }) =>
+          makeFigure(region, figures.get(figureKey(meta.page, s, i, index)), meta, mmPerPx, layout, itemUnsure),
+        );
         if (all.length) item.figure = all[0];
         if (all.length > 1) item.extra_figures = all.slice(1);
         item.choices = it.choices.map(toExamPieces);
@@ -371,7 +400,7 @@ export function reviewFigures(exam: any): FigureSuspect[] {
           void err;
         }
         // 같은 문제로 이미 다시 읽었는데 그대로면 또 권하지 않는다 (원본 그림 자체가 그렇게 생긴 경우. 또 읽어도 같은 답이 나온다)
-        if (reasons.length && fig.reread?.hint && fig.reread.hint === reasons.join(" / ")) reasons = [];
+        if (reasons.length && !fig.render_error && fig.reread?.hint && fig.reread.hint === reasons.join(" / ")) reasons = [];
         if (reasons.length) {
           const name = it.label ? String(it.label).trim() : `${it.no}번`;
           suspects.push({ section, index, figureIndex, name: figureIndex ? `${name} (그림 ${figureIndex + 1})` : name, reasons });
@@ -385,11 +414,12 @@ export function reviewFigures(exam: any): FigureSuspect[] {
 /** 그림 하나 살피기 (고칠 수 있으면 고치고, 남은 문제를 돌려준다) */
 function reviewOne(fig: any, upright: boolean): string[] {
   const reasons: string[] = [];
+  if (fig.render_error && fig.box) reasons.push(`그림을 그리지 못했습니다: ${String(fig.render_error).slice(0, 80)}`);
   if (fig.commands && typeof fig.commands === "object") {
     const check = checkFigureSpec(fig.commands);
     if (!check.spec) {
       // AI 의 마지막 답이 검사를 통과하지 못한 그림 (그리지 못하거나 일부만 그려진다)
-      if (fig.box) reasons.push("그림 명령에 고칠 곳이 남아 그리지 못했을 수 있습니다");
+      if (fig.box && !fig.render_error) reasons.push("그림 명령에 고칠 곳이 남아 그리지 못했을 수 있습니다");
       return reasons;
     }
     const anchors: Anchor[] = Array.isArray(fig.anchors) ? fig.anchors.filter((a: any) => a && Array.isArray(a.px) && a.px.length === 2) : [];
@@ -412,8 +442,8 @@ function reviewOne(fig: any, upright: boolean): string[] {
     const shape = anchors.length ? shapeDeviation(fig.commands, anchors) : undefined;
     for (const m of withShape(degreeMismatches(fig.commands), shape)) if (worthReporting(m, fig.notes, shape)) reasons.push(degreeMismatchNote(m));
     if (shape && shape.worst > SHAPE_DEVIATION_LIMIT && (upright || Math.abs(shape.rotation) <= 45)) reasons.push(shapeDeviationNote(shape));
-    if (fig.render_error) reasons.push(`그림을 그리지 못했습니다: ${String(fig.render_error).slice(0, 80)}`);
-  } else if (!fig.graphic && fig.asset_kind !== "photo" && fig.placeholder_note !== "사진 자리" && fig.box) {
+    if (fig.box) reasons.push(...overlappingLabels(fig.commands));
+  } else if (!fig.render_error && !fig.graphic && fig.asset_kind !== "photo" && fig.placeholder_note !== "사진 자리" && fig.box) {
     reasons.push("그림을 읽지 못해 빈 자리로 두었습니다");
   }
   return reasons;
@@ -423,7 +453,8 @@ function reviewOne(fig: any, upright: boolean): string[] {
 export function usableReading(result: FigureResult, kind: string): boolean {
   const r = result.reading;
   if (result.error || !r) return false;
-  return kind !== "diagram" ? !!r.graphic : !!r.commands && !r.errors.length;
+  if (r.errors.length) return false;
+  return kind !== "diagram" ? !!r.graphic && r.graphic.kind !== "photo" : !!r.commands?.elements?.length;
 }
 
 /** 지난 읽기의 '그림' 확인할 곳 문장인지 (문항 전체의 알림 '그림이 5개 있어 …' 같은 것은 아니다) */
@@ -499,6 +530,10 @@ function makeFigure(
     fig.placeholder_note = "그림 자리";
   }
   const notes = result ? figureNotes(fig, result, region.kind) : [];
+  if (!result && !SKIP_KINDS.has(region.kind)) {
+    fig.placeholder_note = "그림 자리";
+    notes.push("그림 읽기 결과가 없어 자리를 비워 두었습니다");
+  }
   for (const n of notes) itemUnsure.push(n);
   if (notes.length) fig.unsure_notes = notes;
   return fig;
@@ -527,6 +562,7 @@ function figureNotes(fig: any, result: FigureResult, kind: string): string[] {
   if (r.commands) fig.commands = r.commands;
   else {
     fig.commands = r.rawCommands;
+    fig.placeholder_note = "그림 자리";
     notes.push(`그림 명령에 고칠 곳이 남아 있습니다: ${r.errors.slice(0, 3).join(" / ")}`);
   }
   // 겹쳐 보기 기준점: 원본 사진 픽셀로

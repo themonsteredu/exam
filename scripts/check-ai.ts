@@ -257,6 +257,22 @@ console.log("5) 조각 정리, AI 답 읽기, 사진 크기");
   ok(answer.anchors.length === 1 && answer.anchors[0].at === "A", "없는 점과 사진 밖 기준점은 뺌");
   ok(answer.contentBox?.x === 0 && answer.contentBox?.w === 45, "그림 사각형을 사진 안으로 줄임");
   ok(judge("죄송합니다", { width: 1, height: 1 }).errors.length === 1, "JSON 이 없으면 고칠 곳으로 알림");
+  const crop = { width: 240, height: 160 };
+  const blank = judge(JSON.stringify({ commands: { base: 10, points: [{ id: "A", at: [0, 0] }], elements: [] } }), crop);
+  ok(!blank.commands && blank.errors.some((e) => e.includes("그릴 선")), "점 정의만 있고 빈 도형은 성공으로 처리하지 않음");
+  const withLabels = {
+    base: 10,
+    bbox: [100, 101, 101, 100],
+    elements: [
+      { type: "segment", points: [[0, 0], [10, 0]] },
+      { type: "label", at: [0, 0], text: "A", dir: 0 },
+      { type: "label", at: [0, 0], text: "A", dir: "E" },
+      { type: "label", at: [0, 0], text: "B" },
+    ],
+  };
+  const labels = judge(JSON.stringify({ commands: withLabels }), crop);
+  ok(!!labels.commands && !labels.commands.bbox, "AI 가 붙인 범위에 그림이 잘리지 않도록 자동 범위 사용");
+  ok(labels.advice?.length === 1 && labels.advice[0].includes("두 번"), "같은 위치의 글자만 다시 확인하도록 알림");
 
   const big = fitForClaude(3024, 4032);
   ok(big.width * big.height <= 3_700_000 && Math.max(big.width, big.height) <= 2576, `휴대폰 사진 줄이기 ${big.width}×${big.height}`);

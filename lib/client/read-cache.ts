@@ -2,7 +2,7 @@ import { postJson } from "./api";
 import type { Usage } from "@/lib/ai/claude";
 
 // Changing OCR instructions or the result format must change this revision.
-export const READ_CACHE_REVISION = "two-column-v7-pencil";
+export const READ_CACHE_REVISION = "two-column-v8-figure-review";
 const DB_NAME = "exam-reading-cache";
 const MAX_AGE = 30 * 24 * 60 * 60 * 1000;
 type Entry = { key: string; at: number; value: any };
@@ -64,8 +64,9 @@ export async function readingCacheKey(kind: string, body: Record<string, unknown
   return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, "0")).join("");
 }
 function reusable(kind: string, value: any): boolean {
-  return kind === "page" ? Array.isArray(value?.reading?.sections)
-    : !!(value?.figure?.commands || value?.figure?.graphic) && !value.figure.errors?.length;
+  return kind === "page" ? Array.isArray(value?.reading?.sections) && !value.figureReviewNeeded
+    : !!(value?.figure?.commands?.elements?.length || (value?.figure?.graphic && value.figure.graphic.kind !== "photo"))
+      && !value.figure.errors?.length;
 }
 function reused<T>(value: T): T & { cached: boolean } {
   const copy = structuredClone(value) as any;

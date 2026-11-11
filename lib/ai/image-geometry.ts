@@ -10,6 +10,18 @@ export const MAX_PIXELS = 3_700_000;
 
 export type Size = { width: number; height: number };
 
+/** AI 좌표가 보낸 사진의 픽셀 범위인지 확인한다. 자르면서 반올림되는 2px 정도는 허용한다. */
+export function validFigureRegion(box: Region, image?: Size): boolean {
+  if (![box.x, box.y, box.w, box.h].every(Number.isFinite)) return false;
+  if (box.w <= 2 || box.h <= 2 || box.x < -2 || box.y < -2) return false;
+  return !image || (box.x + box.w <= image.width + 2 && box.y + box.h <= image.height + 2);
+}
+
+/** 같은 쪽의 문항에서 같은 사각형을 두 번 받았는지 확인하는 값. */
+export function figureRegionKey(box: Region): string {
+  return [box.x, box.y, box.w, box.h].join(",");
+}
+
 /** 쪽 사진을 AI 에게 보낼 크기. 줄이기만 하고 키우지는 않는다. scale = 보낸 크기 / 원본 크기 */
 export function fitForClaude(width: number, height: number): Size & { scale: number } {
   const scale = Math.min(1, MAX_EDGE / Math.max(width, height), Math.sqrt(MAX_PIXELS / (width * height)));
