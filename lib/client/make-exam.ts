@@ -528,8 +528,9 @@ async function finishExam(o: FinishOptions, work: Recovery, signal: AbortSignal,
   const problems: string[] = [];
   // 원본 보관이 실패해도 한글 파일과 시험지 데이터는 따로 보관한다
   let originalsError = "";
+  let originals: FileRef[] | undefined;
   try {
-    if (uploads) await uploads;
+    if (uploads) originals = await uploads;
   } catch (err) {
     originalsError = err instanceof Error ? err.message : String(err);
     problems.push(`원본 파일을 보관하지 못했습니다 (${originalsError})`);
@@ -539,6 +540,7 @@ async function finishExam(o: FinishOptions, work: Recovery, signal: AbortSignal,
     await patchJson(`/api/documents/${docId}`, {
       hwpx_path: res.path,
       status: "done",
+      ...(originals ? { original_files: originals } : {}),
       cost_usd: progress.usd,
       item_count: items,
       note: originalsError ? `원본을 보관하지 못했습니다: ${originalsError}`.slice(0, 500) : null,

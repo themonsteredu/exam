@@ -34,6 +34,10 @@ export async function PATCH(req: Request, { params }: Ctx) {
   }
   const patch: DocPatch = {};
   const ownPath = (p: unknown) => typeof p === "string" && isAllowedPath(p) && p.split("/")[1] === id;
+  const originalRefs = (files: unknown[]): FileRef[] => files.filter(
+    (f): f is FileRef => !!f && typeof f === "object" && ownPath((f as FileRef).path) &&
+      (f as FileRef).path.startsWith("originals/") && typeof (f as FileRef).name === "string",
+  ).map((f) => ({ path: f.path, name: f.name.slice(0, 200), size: Number(f.size) || 0, type: String(f.type || "") }));
   if (typeof body.title === "string") patch.title = body.title.trim().slice(0, 200) || "제목 없는 시험지";
   if (typeof body.status === "string" && STATUS.has(body.status)) patch.status = body.status as DocPatch["status"];
   if (typeof body.note === "string" || body.note === null) patch.note = body.note === null ? null : String(body.note).slice(0, 2000);
@@ -41,10 +45,7 @@ export async function PATCH(req: Request, { params }: Ctx) {
   if (typeof body.item_count === "number" && Number.isInteger(body.item_count) && body.item_count >= 0) patch.item_count = body.item_count;
   if (body.hwpx_path === null || ownPath(body.hwpx_path)) patch.hwpx_path = (body.hwpx_path as string | null) ?? null;
   if (Array.isArray(body.original_files)) {
-    const files = body.original_files.filter(
-      (f): f is FileRef => !!f && typeof f === "object" && ownPath((f as FileRef).path) && typeof (f as FileRef).name === "string",
-    );
-    patch.original_files = files.map((f) => ({ path: f.path, name: f.name.slice(0, 200), size: Number(f.size) || 0, type: String(f.type || "") }));
+    patch.original_files = originalRefs(body.original_files);
   }
   if (body.exam_json !== undefined) {
     const text = JSON.stringify(body.exam_json);
@@ -52,7 +53,21 @@ export async function PATCH(req: Request, { params }: Ctx) {
     patch.exam_json = body.exam_json;
   }
   try {
-    return Response.json({ doc: await getStore().updateDoc(id, patch) });
+    const store = getStore();
+    if (body.attach_originals !== undefined) {
+      const refs = Array.isArray(body.attach_originals) ? originalRefs(body.attach_originals) : [];
+      if (!Array.isArray(body.attach_originals) || !refs.length || refs.length !== body.attach_originals.length) {
+        return Response.json({ error: "추가할 원본 파일을 확인해 주세요." }, { status: 400 });
+      }
+      const doc = await store.getDoc(id);
+      if (!doc) return Response.json({ error: "문서를 찾지 못했습니다." }, { status: 404 });
+      if (doc.original_files.length || !doc.hwpx_path) {
+        return Response.json({ error: "이미 원본이 있거나 한글 파일을 아직 만들지 않았습니다. 보관함을 새로고침해 주세요." }, { status: 409 });
+      }
+      const note = doc.note?.startsWith("원본을 보관하지 못했습니다:") ? null : doc.note;
+      return Response.json({ doc: await store.updateDoc(id, { original_files: refs, status: "done", note }) });
+    }
+    return Response.json({ doc: await store.updateDoc(id, patch) });
   } catch {
     return Response.json({ error: "문서를 고치지 못했습니다." }, { status: 503 });
   }
