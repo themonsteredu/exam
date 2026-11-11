@@ -1,4 +1,5 @@
 """한글 문항의 강조·배점·삼각형 수식이 보존되는지 확인한다."""
+import base64
 import io
 import pathlib
 import sys
@@ -72,4 +73,48 @@ starts = [p for p in sec if p.tag == hp + 'p' and ''.join(t.text or '' for t in 
 assert len(starts) == 2 and all(prev_of(p) > 1200 * 5 for p in starts), [prev_of(p) for p in starts]
 from exam_hwpx.builder import estimated_pages  # noqa: E402
 assert estimated_pages(spaced_data) == 2, estimated_pages(spaced_data)
-print('한글 문항 강조, 배점, 삼각형 수식, B4 용지, 조건 수식 나누기, 단 아래 빈 곳 나누기 확인 완료')
+
+# ①②③ / ④⑤처럼 둘째 행이 있는 선택지 표에는 뷰어가 그대로 쓸 수 있는 행 높이를 저장한다.
+# 분수가 들어간 첫 행은 숫자만 있는 둘째 행보다 높아야 한다.
+choices = [[{'m': r'\frac{1}{2}'}], [{'m': '2'}], [{'t': '세 번째'}], [{'m': '4'}], [{'m': '5'}]]
+grid, _ = build_exam({'sections': [{'items': [
+    {'no': 1, 'stem': [{'t': '다음 중 옳은 것은?'}], 'choice_layout': 'grid', 'choices': choices},
+]}]})
+with zipfile.ZipFile(io.BytesIO(grid)) as z:
+    sec = ET.fromstring(z.read('Contents/section0.xml'))
+table = next(tbl for tbl in sec.iter(hp + 'tbl')
+             if tbl.get('rowCnt') == '2' and tbl.get('colCnt') == '3'
+             and '①  ' in ''.join(t.text or '' for t in tbl.iter(hp + 't')))
+rows = table.findall(hp + 'tr')
+heights = [[int(cell.find(hp + 'cellSz').get('height')) for cell in row] for row in rows]
+assert heights[0][0] > heights[1][0] >= 1760, heights
+assert all(len(set(row)) == 1 for row in heights), heights
+assert int(table.find(hp + 'sz').get('height')) == sum(row[0] for row in heights), heights
+assert len(list(table.iter(hp + 'equation'))) == 4, '선택지 수식은 개체로 남긴다'
+assert [''.join(t.text or '' for t in row.iter(hp + 't')) for row in rows] == ['①  ②  ③  세 번째', '④  ⑤  ']
+
+# 오른쪽에 떠 있는 그림이 긴 수식 개체의 폭을 침범하거나 같은 자리에 둘 이상 겹치지 않게 한다.
+png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jrGQAAAAASUVORK5CYII=')
+right = {'place': 'right', 'width_mm': 40, 'png': png}
+positions, _ = build_exam({'sections': [{'items': [
+    {'no': 1, 'stem': [{'t': '그림을 보시오.'}], 'figure': right},
+    {'no': 2, 'stem': [{'m': 'x+y+z+a+b+c+d+e+f=0'}, {'t': '일 때의 그림.'}], 'figure': right},
+    {'no': 3, 'stem': [{'t': '두 그림을 보시오.'}], 'figure': right, 'extra_figures': [right]},
+]}]})
+with zipfile.ZipFile(io.BytesIO(positions)) as z:
+    sec = ET.fromstring(z.read('Contents/section0.xml'))
+assert [pic.find(hp + 'pos').get('treatAsChar') for pic in sec.iter(hp + 'pic')] == ['0', '1', '1', '1']
+
+picture_grid, _ = build_exam({'sections': [{'items': [
+    {'no': 1, 'stem': [{'t': '다음 중 옳은 것은?'}], 'figure': right, 'extra_figures': [right, right, right, right],
+     'choices': [[] for _ in range(5)]},
+]}]})
+with zipfile.ZipFile(io.BytesIO(picture_grid)) as z:
+    sec = ET.fromstring(z.read('Contents/section0.xml'))
+table = next(tbl for tbl in sec.iter(hp + 'tbl') if tbl.get('rowCnt') == '3' and tbl.get('colCnt') == '2')
+assert len(list(table.iter(hp + 'pic'))) == 5, '그림 선택지 다섯 개를 모두 보존한다'
+for cell in table.iter(hp + 'tc'):
+    pic = next(cell.iter(hp + 'pic'), None)
+    if pic is not None:
+        assert int(cell.find(hp + 'cellSz').get('height')) >= int(pic.find(hp + 'sz').get('height')) + 1100
+print('한글 문항 강조, 배점, 수식, B4 용지, 단 아래 빈 곳, 선택지 행 높이, 그림 배치 확인 완료')

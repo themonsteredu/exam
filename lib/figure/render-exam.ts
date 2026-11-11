@@ -8,6 +8,7 @@
 import { loadFigureFonts, pxForPrint, renderFigurePng } from "./engine";
 import { itemFigures } from "./item-figures";
 import type { FigureSpec } from "./types";
+import { checkFigureSpec } from "./validate";
 import { renderGraphicPng } from "@/lib/graphic/render";
 import type { GraphicSpec } from "@/lib/graphic/schema";
 
@@ -56,7 +57,7 @@ const base64Of = (dataUrl: string) => dataUrl.slice(dataUrl.indexOf(",") + 1);
 /**
  * 문항의 그림마다 PNG 를 만든다. 그리지 못한 그림은 error 에 까닭을 적는다.
  * 그림 명령이 없거나 모양이 틀린 그림도 error 로 돌려준다 (예전에 만든 PNG 가 남아 들어가지 않게).
- * 처음부터 빈 자리로 둔 그림(placeholder_note 가 있고 그릴 명령이 없음)은 알림 없이 빈 자리로 둔다.
+ * 다시 그리기 대상이 아닌 사진은 알림 없이 빈 자리로 둔다.
  */
 export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGURE_DPI): Promise<FigureRenderResult[]> {
   await loadFigureFonts();
@@ -78,16 +79,21 @@ export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGUR
           }
           continue;
         }
-        if (!fig.commands) {
-          results.push(fig.placeholder_note ? { ...base } : { ...base, error: "그림 명령이 없습니다" });
+        if (!fig.commands && (fig.asset_kind === "photo" || fig.placeholder_note === "사진 자리")) {
+          results.push(base);
           continue;
         }
-        if (!Array.isArray(fig.commands.elements)) {
-          results.push({ ...base, error: "그림 명령에 그릴 것 목록(elements)이 없습니다" });
+        if (!fig.commands) {
+          results.push({ ...base, error: "그림을 읽지 못했습니다" });
+          continue;
+        }
+        const checked = checkFigureSpec(fig.commands);
+        if (!checked.spec) {
+          results.push({ ...base, error: checked.errors.slice(0, 3).join(" / ") });
           continue;
         }
         try {
-          const out = await renderFigurePng(JXG, fig.commands, {
+          const out = await renderFigurePng(JXG, checked.spec, {
             widthPx: pxForPrint(figureWidthMm(fig), dpi),
             gliders: fig.gliders,
             // 인쇄될 크기에 맞춰 그림 글자 크기를 고른다 (너무 크거나 작은 글자)
@@ -123,6 +129,7 @@ export function attachFigurePngs(exam: any, results: FigureRenderResult[]): any 
     if (r.png) {
       fig.png = r.png;
       fig.png_size = r.size;
+      delete fig.placeholder_note;
       delete fig.render_error;
     } else {
       delete fig.png;

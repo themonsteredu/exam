@@ -192,6 +192,9 @@ export function checkFigureSpec(input: unknown): FigureCheck {
   }
   const points = top.data.points ?? [];
   const elements = top.data.elements;
+  if (!elements.length) {
+    return { errors: ["그릴 선·도형·글자가 없습니다. 원본의 인쇄된 그림을 그려 주세요"], warnings };
+  }
 
   // 점: 만드는 방법이 꼭 하나
   const ids = new Set<string>();

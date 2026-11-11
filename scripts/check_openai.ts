@@ -12,7 +12,7 @@ import { pageReadingJsonSchema } from "@/lib/ai/page-schema";
 import { validApiKeyFormat } from "@/lib/ai/models";
 
 const page = fakePage().reading;
-const image = { data: "dGVzdA==", mediaType: "image/png" as const, width: 1000, height: 1500 };
+const image = { data: "dGVzdA==", mediaType: "image/png" as const, width: 1126, height: 1661 };
 const gptKey = "sk-proj-fixture-only-" + "a".repeat(40);
 const claudeKey = "sk-ant-api03-fixture-only-" + "b".repeat(40);
 const reasoning = { type: "reasoning", id: "rs_fixture", summary: [], encrypted_content: "fixture-encrypted-reasoning" };
@@ -84,6 +84,35 @@ try {
   assert.deepEqual(calls[1].body.input[1], calls[0].body.input[1], "Keep source image in repair");
   assert.equal(repaired.usage.output, 1000);
   assert.equal(repaired.usage.usd, 0.01354);
+
+  // A page can pass the JSON schema while returning only ①'s diagram for five picture choices.
+  const diagramChoices = structuredClone(page);
+  const question = diagramChoices.sections[0].items[0];
+  question.choices = [[], [], [], [], []];
+  question.figures = Array.from({ length: 5 }, (_, i) => ({
+    x: 40 + (i % 2) * 140, y: 330 + Math.floor(i / 2) * 100, w: 100, h: 70,
+    place: "below" as const, kind: "diagram" as const,
+  }));
+  const partialChoices = structuredClone(diagramChoices);
+  partialChoices.sections[0].items[0].figures.splice(1);
+  calls = [];
+  respond = n => stream(completed(JSON.stringify(n === 1 ? partialChoices : diagramChoices)));
+  const choiceRepair = await read();
+  assert.equal(choiceRepair.reading.sections[0].items[0].figures.length, 5);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].body.input.at(-1).content, /선택지 5개.*그림 영역이 1개/);
+
+  const wrongCoordinates = structuredClone(diagramChoices);
+  wrongCoordinates.sections[0].items[0].figures[0] = {
+    ...question.figures[0], x: 0.1, y: 0.2, w: 0.2, h: 0.1,
+  };
+  calls = [];
+  respond = n => n === 1 ? stream(completed(JSON.stringify(wrongCoordinates))) : rejected(400, "invalid_image");
+  const retained = await read();
+  assert.equal(retained.reading.sections[0].items[0].choices.length, 5);
+  assert.equal(retained.figureReviewNeeded, true);
+  assert.match(retained.reading.sections[0].items[0].unsure.join(" "), /픽셀 범위/);
+  assert.equal(calls.length, 2);
 
   calls = [];
   respond = n => n === 1 ? rejected(400, "invalid_json_schema", "text.format schema unsupported") : stream();

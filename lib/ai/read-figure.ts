@@ -9,6 +9,7 @@ import {
   degreeMismatches,
   degreeMismatchNote,
   degreeMismatchText,
+  overlappingLabels,
   repairDegrees,
   SHAPE_DEVIATION_LIMIT,
   shapeDeviation,
@@ -133,14 +134,16 @@ export async function readFigure(
     }
     usage = addUsage(usage, call.usage);
     result = judge(call.text, image, attempt, o.pageUpright !== false);
-    if (result.commands && !result.errors.length) lastDrawable = result;
+    if (result.commands && !result.errors.length && (!lastDrawable || (result.advice?.length ?? 0) <= (lastDrawable.advice?.length ?? 0))) {
+      lastDrawable = result;
+    }
     if ((!result.errors.length && !result.advice?.length) || attempt === maxAttempts) break;
     // 고쳐 받을 시간이 모자라면 그대로 돌려준다 (서버 함수 시간 한도를 넘겨 이미 받은 답까지 잃지 않게)
     if (o.deadline && o.deadline - Date.now() < 120_000) break;
     messages.push(assistantTurn(call.message), { role: "user", content: figureRepairText(result.errors, result.advice ?? [], result.fixes ?? []) });
   }
-  // 살펴 달라고 다시 물었는데 고친 답에 고칠 곳(오류)이 생겼으면, 그릴 수 있었던 앞 답을 쓴다 (그려지던 그림이 빈 자리가 되지 않게)
-  if (result!.errors.length && lastDrawable) result = { ...lastDrawable, attempts: result!.attempts };
+  // 다시 받은 답에 오류가 생기거나 살필 곳이 늘었으면 앞의 그림을 쓴다.
+  if (lastDrawable && lastDrawable !== result) result = { ...lastDrawable, attempts: result!.attempts };
   // 끝까지 남은 살필 곳은 확인할 곳에 짧게 남긴다 (그림은 그대로 쓴다)
   if (result!.adviceNotes?.length) result!.unsure = [...result!.unsure, ...result!.adviceNotes];
   return { figure: result!, usage: usage! };
@@ -158,7 +161,13 @@ export function judge(text: string, image: { width: number; height: number }, at
   const answer = AnswerS.safeParse(json);
   if (!answer.success) return { ...base, errors: ["답은 {\"commands\": …, \"anchors\": …} 모양의 JSON 이어야 합니다"] };
   const a = answer.data;
-  const check = checkFigureSpec(a.commands);
+  // AI가 별도로 붙인 범위는 그림을 화면 밖으로 잘라낼 수 있다. 엔진이 요소를 보고 범위를 잡는다.
+  let commands = a.commands;
+  if (commands && typeof commands === "object" && !Array.isArray(commands) && "bbox" in commands) {
+    const { bbox: _ignored, ...autoBounds } = commands;
+    commands = autoBounds;
+  }
+  const check = checkFigureSpec(commands);
   const ids = new Set(((check.spec?.points ?? []) as { id: string }[]).map((p) => p.id));
   const anchors: Anchor[] = [];
   const warnings = [...check.warnings];
@@ -206,11 +215,15 @@ export function judge(text: string, image: { width: number; height: number }, at
       advice.push(shapeDeviationText(shape));
       adviceNotes.push(`그림: ${shapeDeviationNote(shape)}`);
     }
+    for (const overlap of overlappingLabels(spec)) {
+      advice.push(`${overlap}. 원본에서 각각 놓인 자리를 다시 확인하고 글자가 포개지지 않게 표시하세요.`);
+      adviceNotes.push(`그림: ${overlap}`);
+    }
   }
   return {
     ...base,
     commands: spec,
-    rawCommands: check.spec ? undefined : a.commands,
+    rawCommands: check.spec ? undefined : commands,
     anchors,
     contentBox,
     unsure: a.unsure,

@@ -1,6 +1,6 @@
 // 1차 읽기: 시험지 한 쪽 사진 → 머리 표, 안내 상자, 문항, 그림 위치.
 // 받는 것: { image: data URL 또는 base64 (긴 변 2576px, 370만 픽셀 이하), page, total, before?, docId?, model? (claude.ts 의 MODELS 가운데, 시험용) }
-// 돌려주는 것: { reading, usage } 또는 { error }
+// 돌려주는 것: { reading, usage, figureReviewNeeded } 또는 { error }
 // API 키와 모델은 이 기기(브라우저)의 설정에 저장한 것을 쓰고, 쓴 요금을 그 열쇠의 월별 기록에 남긴다.
 import { readPage } from "@/lib/ai/read-page";
 import { ReadError } from "@/lib/ai/claude";
@@ -46,7 +46,7 @@ export async function POST(req: Request) {
     return Response.json(fake);
   }
   try {
-    const { reading, usage } = await readPage(image, {
+    const { reading, usage, figureReviewNeeded } = await readPage(image, {
       page,
       total,
       before: typeof body.before === "string" ? body.before.slice(0, 300) : undefined,
@@ -56,7 +56,7 @@ export async function POST(req: Request) {
       deadline,
     });
     await logUsage("page", usage, docId, config.keyTag);
-    return Response.json({ reading, usage });
+    return Response.json({ reading, usage, figureReviewNeeded });
   } catch (err) {
     if (err instanceof ReadError) await logUsage("page", err.usage, docId, config.keyTag);
     return failFrom(err);

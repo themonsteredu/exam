@@ -459,7 +459,7 @@ export class FigureRenderer {
       case "label": {
         const at = this.pt(el.at);
         const size = L * (el.size ?? 1);
-        const c = el.dir ? add(at, mul(dirVec(el.dir), size * (el.offset ?? 0.75))) : at;
+        const c = el.dir !== undefined ? add(at, mul(dirVec(el.dir), size * (el.offset ?? 0.75))) : at;
         return box(c, size * 0.3 * Math.max(1, el.text.length), size * 0.5);
       }
       case "dimension": {
@@ -808,13 +808,13 @@ export class FigureRenderer {
         if (serif && isMathLabel(el.text)) {
           this.mathLabel(() => {
             const at = this.pt(el.at);
-            return el.dir ? add(at, mul(dirVec(el.dir), size * (el.offset ?? 0.75))) : at;
+            return el.dir !== undefined ? add(at, mul(dirVec(el.dir), size * (el.offset ?? 0.75))) : at;
           }, el.text, size * this.pxPerUnit, el.color);
           return;
         }
         this.text(() => {
           const at = this.pt(el.at);
-          return el.dir ? add(at, mul(dirVec(el.dir), size * (el.offset ?? 0.75))) : at;
+          return el.dir !== undefined ? add(at, mul(dirVec(el.dir), size * (el.offset ?? 0.75))) : at;
         }, el.text, {
           sizePx: size * this.pxPerUnit,
           family: serif ? FONT_SERIF : FONT_SANS,
@@ -1069,6 +1069,7 @@ export async function renderFigurePng(
   opts: { widthPx: number; gliders?: Record<string, number>; printWidthMm?: number },
 ): Promise<{ dataUrl: string; width: number; height: number; warnings: string[]; labelMm?: number; labelFit?: number; lineMm?: number; lineFit?: number }> {
   if (!(opts.widthPx > 0)) throw new Error("그림의 가로 크기(width_mm)가 올바르지 않습니다");
+  if (!spec.elements.length) throw new Error("그릴 선·도형·글자가 없습니다");
   await loadFigureFonts();
   const holder = document.createElement("div");
   holder.style.cssText = "position:fixed;left:-100000px;top:0;";
@@ -1082,6 +1083,7 @@ export async function renderFigurePng(
     if (r.issues.length) throw new Error(`그림을 다 그리지 못했습니다: ${r.issues.join(" / ")}`);
     r.board.fullUpdate();
     const src: HTMLCanvasElement = r.board.renderer.canvasRoot;
+    if (!src?.width || !src.height) throw new Error("그림을 그릴 공간을 만들지 못했습니다");
     // 캔버스는 화면 배율만큼 크게 그려지므로, 원하는 픽셀 수로 맞춰 흰 바탕에 합친다
     const out = document.createElement("canvas");
     out.width = opts.widthPx;
@@ -1092,6 +1094,9 @@ export async function renderFigurePng(
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(src, 0, 0, out.width, out.height);
     const dataUrl = out.toDataURL("image/png");
+    if (!dataUrl.startsWith("data:image/png;base64,") || dataUrl.length <= "data:image/png;base64,".length) {
+      throw new Error("그림을 PNG로 저장하지 못했습니다");
+    }
     return { dataUrl, width: out.width, height: out.height, warnings: r.fontWarnings(), labelMm: r.naturalLabelMm, labelFit: r.labelFit, lineMm: r.naturalLineMm, lineFit: r.lineFit };
   } finally {
     r?.destroy();

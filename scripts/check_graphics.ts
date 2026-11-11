@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import sample from "@/data/graphic_example.json";
 import { checkGraphic } from "@/lib/graphic/schema";
 import { judgeGraphic } from "@/lib/ai/read-graphic";
-import { assembleExam, figureJobs, figureKey } from "@/lib/ai/assemble";
+import { assembleExam, figureJobs, figureKey, reviewFigures } from "@/lib/ai/assemble";
 import { tableCells } from "@/lib/graphic/render";
-import { attachFigurePngs } from "@/lib/figure/render-exam";
+import { attachFigurePngs, renderExamFigures } from "@/lib/figure/render-exam";
 import type { PageReading } from "@/lib/ai/page-schema";
 
 const r = judgeGraphic(JSON.stringify({ graphic: sample, unsure: ["도로 형태 확인", 123], notes: "test" }));
@@ -38,5 +38,16 @@ const drawn=attachFigurePngs(exam,[{section:0,index:0,figureIndex:0,no:10,png:"r
 assert.equal(drawn.sections[0].items[0].figure.png,"redraw");
 const broken=attachFigurePngs(exam,[{section:0,index:0,figureIndex:0,no:10,error:"bad"}]);
 assert.equal(broken.sections[0].items[0].figure.placeholder_note,"그림 자리");
+assert.match(reviewFigures(broken)[0].reasons[0], /bad/, "자료 그림도 렌더링 실패 시 다시 읽기 목록에 표시");
+const missing = await renderExamFigures(undefined, failed);
+assert.match(missing[0].error ?? "", /읽지 못했습니다/, "읽지 못한 그림을 성공한 빈 자리로 세지 않는다");
+const photos = await renderExamFigures(undefined, assembleExam([{ meta:args[0].meta, reading:photoPage }],new Map()));
+assert.equal(photos[0].error, undefined, "원래 사진 자리는 실패로 세지 않는다");
+const tinyPage: PageReading = {
+  ...reading,
+  sections: [{ title: "", items: [{ ...reading.sections[0].items[0], figures: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.2, kind: "diagram", place: "below" }] }] }],
+};
+const tiny = assembleExam([{ meta: args[0].meta, reading: tinyPage }], new Map());
+assert.match(tiny.sections[0].items[0].unsure[0], /범위를 확인하지 못한 그림/, "잘못된 작은 그림 좌표가 말없이 빠지지 않는다");
 assert.equal(fig.png,undefined);
 console.log("지도/표 다시 그리기·필수 표기·사진은 빈 자리·읽기 실패는 빈 자리·원본 조각 없음 검사 통과");

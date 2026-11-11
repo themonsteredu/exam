@@ -6,7 +6,7 @@
 //    35° 글자는 angle 요소의 label 이 아니라 따로 둔 글자(label 요소)라 예전 검사가 보지 못했다.
 //  - 서답형 2: 3x°, 2x° 의 x 를 풀어(18) 그려 그림이 원본보다 크게 눕고 길어졌다 (점 E 가 원본 자리에서 크게 벗어남).
 
-import { add, angleAt, fromAngle, mul, v, type Vec } from "./geometry";
+import { add, angleAt, bisectorDir, fromAngle, mul, v, type Vec } from "./geometry";
 import { PointBook } from "./points";
 import { checkFigureSpec } from "./validate";
 import type { FigureSpec, LabelSpec, PointRef } from "./types";
@@ -58,6 +58,39 @@ function labelCenter(el: LabelSpec, book: PointBook, spec: FigureSpec): Vec {
   const size = spec.base * 0.15 * (spec.style?.labelScale ?? 1) * (el.size ?? 1);
   const ang = typeof el.dir === "number" ? el.dir : DIRS[el.dir] ?? 90;
   return add(at, mul(fromAngle(ang), size * (el.offset ?? 0.75)));
+}
+
+/** 글자 중심이 거의 같은 경우만 표시한다. 원본을 대조해 고칠 수 있도록 위치는 바꾸지 않는다. */
+export function overlappingLabels(spec: FigureSpec): string[] {
+  const book = new PointBook(spec.points ?? []);
+  const labelUnits = spec.base * 0.15 * (spec.style?.labelScale ?? 1);
+  const labels: { text: string; at: Vec; size: number }[] = [];
+  for (const el of spec.elements) {
+    if (el.type === "label" && el.text.trim()) {
+      labels.push({ text: el.text.trim(), at: labelCenter(el, book, spec), size: labelUnits * (el.size ?? 1) });
+    } else if (el.type === "angle" && el.label?.trim()) {
+      const [a, o, b] = el.points.map((p) => book.pt(p));
+      const distance = el.labelDist ?? (el.radius ?? spec.base * 0.07) * 1.9;
+      labels.push({
+        text: el.label.trim(),
+        at: add(o, mul(bisectorDir(a, o, b), distance)),
+        size: labelUnits * (el.labelSize ?? 0.8),
+      });
+    }
+  }
+  const notes = new Set<string>();
+  for (let i = 0; i < labels.length; i++) {
+    const first = labels[i];
+    for (let j = i + 1; j < labels.length; j++) {
+      const second = labels[j];
+      const separation = Math.hypot(first.at.x - second.at.x, first.at.y - second.at.y);
+      if (separation > Math.min(first.size, second.size) * 0.25) continue;
+      const a = first.text.slice(0, 40), b = second.text.slice(0, 40);
+      notes.add(a === b ? `글자 ‘${a}’가 같은 자리에 두 번 들어갔습니다` : `글자 ‘${a}’와 ‘${b}’가 거의 같은 자리에 겹칩니다`);
+      if (notes.size >= 6) return [...notes];
+    }
+  }
+  return [...notes];
 }
 
 /** 숫자 각 글자와 그 글자가 가리키는 각 표시의 세 점 (짝지은 것만) */
