@@ -504,7 +504,7 @@ class ExamBuilder:
             separator_width=c["separator_width"], separator_color="#000000", paragraph=p,
         )
 
-    def build_box(self, box: dict, anchor=None, *, width: int | None = None):
+    def build_box(self, box: dict, anchor=None, *, width: int | None = None, spacing_before_pt: float = 0):
         """안내 상자 (유의 사항 / 문항 배점 안내). framed 가 False 면 테두리 없이 안내 줄만 (원본에 테두리가 없던 ※ 줄)."""
         t = self.tpl
         size = t["sizes"]["box"]
@@ -532,10 +532,12 @@ class ExamBuilder:
                 line_spacing_percent=t["line_spacing"]["box"],
                 indent_left_mm=0,
                 first_line_indent_mm=-3.5 if hanging else 0,
+                spacing_before_pt=0,
             )
         if table is not None:
-            self.para_format(p_anchor, line_spacing_percent=100, spacing_after_pt=3)
+            self.para_format(p_anchor, line_spacing_percent=100, spacing_before_pt=spacing_before_pt, spacing_after_pt=3)
         else:
+            self.para_format(p_anchor, spacing_before_pt=spacing_before_pt)
             self.para_format(paragraphs[-1], spacing_after_pt=6)
         return table
 
@@ -918,9 +920,7 @@ class ExamBuilder:
 
         # 문항 뒤의 안내 상자 (마지막 쪽의 저작권 안내 같은 것)
         for box in item.get("boxes_after") or []:
-            pa = self.doc.add_paragraph("")
-            self.para_format(pa, spacing_before_pt=8)
-            self.build_box(box, anchor=pa)
+            self.build_box(box, spacing_before_pt=8)
 
     # ------------------------------------------------------------------ 선택지
     def piece_width_mm(self, pieces: list, size: float) -> float:
