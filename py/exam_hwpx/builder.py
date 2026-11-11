@@ -496,18 +496,15 @@ class ExamBuilder:
                     sz.set("height", str(height))
         table.mark_dirty()
 
-    def start_columns(self):
+    def start_columns(self, p):
         """여기서부터 2단. 가운데 세로 구분선."""
         c = self.tpl["columns"]
-        p = self.doc.add_paragraph("")
         self.doc.page.set_columns(
             c["count"], same_gap=mm(c["gap_mm"]), separator_type=c["separator"],
             separator_width=c["separator_width"], separator_color="#000000", paragraph=p,
         )
-        self.para_format(p, line_spacing_percent=100)
-        return p
 
-    def build_box(self, box: dict, anchor=None):
+    def build_box(self, box: dict, anchor=None, *, width: int | None = None):
         """안내 상자 (유의 사항 / 문항 배점 안내). framed 가 False 면 테두리 없이 안내 줄만 (원본에 테두리가 없던 ※ 줄)."""
         t = self.tpl
         size = t["sizes"]["box"]
@@ -517,7 +514,8 @@ class ExamBuilder:
         if box.get("framed") is False:
             paragraphs = [p_anchor] + [self.doc.add_paragraph("") for _ in lines[1:]]
         else:
-            table = p_anchor.add_table(1, 1, width=self.column_width(), border_fill_id_ref=self.border("0.12 mm", "0.12 mm", "0.12 mm", "0.12 mm"))
+            table = p_anchor.add_table(1, 1, width=width or self.column_width(),
+                                       border_fill_id_ref=self.border("0.12 mm", "0.12 mm", "0.12 mm", "0.12 mm"))
             cell = table.cell(0, 0)
             paragraphs = [cell.paragraphs[0]]
             for _ in lines[1:]:
@@ -575,11 +573,13 @@ class ExamBuilder:
         limit = column_mm * self.tpl["figure"]["right_max_ratio"] if fig.get("place") == "right" else column_mm - 1
         return min(self.scaled_figure_width_mm(fig), limit)
 
-    def figure_height_budget_mm(self) -> float:
+    def body_height_mm(self) -> float:
         margins = self.tpl["margins_mm"]
-        body_height = self.tpl["paper"]["height_mm"] - sum(margins.get(k, 0) for k in ("top", "bottom", "header", "footer"))
+        return self.tpl["paper"]["height_mm"] - sum(margins.get(k, 0) for k in ("top", "bottom", "header", "footer"))
+
+    def figure_height_budget_mm(self) -> float:
         work_space = max(self.tpl.get("work_space_mm", {}).values(), default=0)
-        return max(20, body_height - work_space - 20)  # 문제 글과 풀이 공간을 위한 자리
+        return max(20, self.body_height_mm() - work_space - 20)  # 문제 글과 풀이 공간을 위한 자리
 
     @staticmethod
     def fit_picture_size(png: bytes, width_mm: float, height_limit_mm: float) -> tuple[float, float]:
@@ -785,11 +785,6 @@ class ExamBuilder:
                 paragraphs[-1].append(piece)
         return [p for p in paragraphs if p] or [[]]
 
-    @staticmethod
-    def extra_before_pt(item: dict) -> float:
-        extra = item.get("_extra_before_mm")
-        return extra * 72 / 25.4 if isinstance(extra, (int, float)) and extra > 0 else 0.0
-
     def build_item(self, item: dict, is_first: bool, section_title: str = ""):
         """문항 하나. 문항의 문단들은 '다음 문단과 함께'·'문단 보호'로 묶어 단·쪽 사이에서 잘리지 않게 한다."""
         start = len(self.doc.paragraphs)
@@ -819,7 +814,6 @@ class ExamBuilder:
         first = None
         brk = item.get("break_before")
         boxes_before = item.get("boxes_before") or []
-        extra_pt = 0 if is_first or brk else self.extra_before_pt(item)
         # 문항 앞의 안내 상자 (쪽 중간의 "서술형 유의사항" 같은 것). 단·쪽 나눔은 상자 앞에서 한다
         for b, box in enumerate(boxes_before):
             pa = self.doc.add_paragraph("")
@@ -827,9 +821,6 @@ class ExamBuilder:
                 self.set_break(pa, brk)
                 brk = None
             self.build_box(box, anchor=pa)
-            if b == 0 and extra_pt:
-                # 풀이 여백을 안내 상자와 문항 사이에 끼워 넣지 않는다.
-                self.para_format(pa, spacing_before_pt=round(extra_pt, 1))
         figures = [f for f in [item.get("figure"), *(item.get("extra_figures") or [])] if f]
         # 선택지를 표로 인쇄한 문항(번호 ①~⑤ 가 든 표): 그 표가 곧 선택지라 선택지 자리에 한글 표로 넣는다
         dup = [f for f in figures if self.is_choice_table(f, item)]
@@ -888,10 +879,7 @@ class ExamBuilder:
                     # 내어쓰기: 첫 줄(문제 번호)은 단 왼쪽 끝에서, 다음 줄부터 5.5mm 들여 시작한다.
                     # 한글은 왼쪽 여백에서 첫 줄을 시작하고 내어쓰기 값만큼 나머지 줄을 민다 (왼쪽 여백 0 이어야 번호가 선택지 번호와 같은 세로줄에 선다)
                     indent_left_mm=0, first_line_indent_mm=-5.5,
-                    # 문항 사이: 양식 간격 + 원본처럼 풀이 공간 (balance_columns 가 단의 빈 곳을 나눠 준 만큼)
-                    spacing_before_pt=0 if (is_first or item.get("break_before")) else round(
-                        t["item_gap_pt"] + (0 if boxes_before else extra_pt), 1
-                    ),
+                    spacing_before_pt=0 if (is_first or item.get("break_before")) else t["item_gap_pt"],
                 )
             else:
                 # 둘째 문단부터는 번호 다음 글자와 같은 세로줄에서 시작한다
@@ -918,6 +906,9 @@ class ExamBuilder:
         kind = "choice" if not written and (picture_choices or choice_table or item.get("choices")) else "written"
         work_mm = t.get("work_space_mm", {}).get(kind, 0)
         if work_mm > 0:
+            extra = item.get("_extra_work_mm")
+            if isinstance(extra, (int, float)) and extra > 0:
+                work_mm += extra
             if item.get("split_ok"):
                 self.para_format(self.doc.paragraphs[-1], keep_with_next=True)
             p = self.doc.add_paragraph("", include_run=False)
@@ -1213,17 +1204,22 @@ class ExamBuilder:
     def build(self) -> bytes:
         self.setup_page()
         self.build_header_table()
-        first_col_para = self.start_columns()
-        boxes = self.exam.get("boxes", [])
-        for i, box in enumerate(boxes):
-            self.build_box(box, anchor=first_col_para if i == 0 else None)
+        # 공통 안내문은 제목 아래 전폭에 두고, 두 단 모두 안내문 다음 높이에서 시작한다.
+        for box in self.exam.get("boxes", []):
+            self.build_box(box, width=self.text_width())
+        body_start = len(self.doc.paragraphs)
         for si, section in enumerate(self.exam.get("sections", [])):
             if section.get("title"):
                 self.build_section_title(section["title"], section.get("break_before"))
+                if si == 0 and not section.get("break_before"):
+                    body_start = len(self.doc.paragraphs)
             for j, item in enumerate(section.get("items", [])):
                 start = len(self.doc.paragraphs)
                 self.build_item(item, is_first=(j == 0), section_title=section.get("title") or "")
                 self.item_spans.append((si, j, start, len(self.doc.paragraphs)))
+        # 첫 문항에 단 설정을 붙여 왼쪽 단에 빈 문단이 하나 더 생기지 않게 한다.
+        if body_start < len(self.doc.paragraphs):
+            self.start_columns(self.doc.paragraphs[body_start])
         note = self.exam.get("page_end_note")
         if note:
             p = self.doc.add_paragraph("")
@@ -1321,11 +1317,70 @@ def _item_columns(builder: "ExamBuilder", est) -> list[dict]:
     return out
 
 
+def rebalance_column_breaks(builder: "ExamBuilder", est):
+    """같은 쪽의 문항들을 양쪽 단에 나눌 때, 문항 높이 차이가 크게 줄어드는 경계를 찾는다."""
+    items = _item_columns(builder, est)
+    expected = {(it["si"], it["j"]): it["columns"] for it in items}
+    pages: dict[int, list[dict]] = {}
+    for it in items:
+        for page in dict.fromkeys(col[0] for col in it["columns"]):
+            pages.setdefault(page, []).append(it)
+    t = builder.tpl
+    line = int(t["sizes"]["body"] * t["line_spacing"]["body"])
+    gap = round(t["item_gap_pt"] * 100)
+    limit = mm(builder.body_height_mm()) - line
+    cuts: list[tuple[list[dict], int]] = []
+    for group in pages.values():
+        if len(group) < 3 or any(len(it["columns"]) != 1 for it in group) or any(it["j"] == 0 for it in group[1:]):
+            continue  # 단에 걸친 문항과 부분 제목의 자리는 유지한다.
+        columns = sorted({it["col"] for it in group})
+        if len(columns) != 2:
+            continue
+        original_cut = sum(it["col"] == columns[0] for it in group)
+        heights = [it["bottom"] - it["top"] + line for it in group]
+        left_top, right_top = group[0]["top"], group[original_cut]["top"]
+
+        def ends(cut: int) -> tuple[int, int]:
+            return (left_top + sum(heights[:cut]) + gap * (cut - 1),
+                    right_top + sum(heights[cut:]) + gap * (len(group) - cut - 1))
+
+        left, right = ends(original_cut)
+        best, difference = original_cut, abs(left - right)
+        for cut in range(1, len(group)):
+            a, b = ends(cut)
+            if max(a, b) <= limit and abs(a - b) + mm(10) < difference:
+                best, difference = cut, abs(a - b)
+        if best != original_cut:
+            cuts.append((group, best))
+            for i, it in enumerate(group):
+                expected[(it["si"], it["j"])] = (columns[0 if i < best else 1],)
+
+    if not cuts:
+        return None
+    exam = copy.deepcopy(builder.exam)
+    for group, cut in cuts:
+        for i, it in enumerate(group[1:], start=1):
+            item = exam["sections"][it["si"]]["items"][it["j"]]
+            if i == cut:
+                item["break_before"] = "column"
+            elif item.get("break_before") == "column":
+                item.pop("break_before")
+    again = ExamBuilder(exam, t)
+    data = again.build()
+    checked = page_estimate(data)
+    if not checked or checked.pages != est.pages:
+        return None
+    actual = {(it["si"], it["j"]): it["columns"] for it in _item_columns(again, checked)}
+    if actual != expected:
+        return None
+    again.warnings = list(dict.fromkeys(builder.warnings + again.warnings))
+    return again, data, checked
+
+
 def balance_columns(builder: "ExamBuilder", est):
     """완성된 각 단의 여백을 문항 사이에 나누고, 두 문항씩이면 아래 문항의 시작 높이를 맞춘다."""
     exam, t = builder.exam, builder.tpl
-    m = t["margins_mm"]
-    body = mm(t["paper"]["height_mm"] - m["top"] - m["bottom"] - m.get("header", 0) - m.get("footer", 0))
+    body = mm(builder.body_height_mm())
     line = mm(t["sizes"]["body"] * t["line_spacing"]["body"] / 100 * 25.4 / 72)
     items = _item_columns(builder, est)
     groups: dict[tuple, list] = {}
@@ -1342,8 +1397,9 @@ def balance_columns(builder: "ExamBuilder", est):
     def can_add_space(it: dict) -> bool:
         return it["j"] > 0 and not sections[it["si"]]["items"][it["j"]].get("break_before")
 
-    # 문항 앞 간격으로 빈 곳을 나눠 주고 마지막 문항 밑에도 한 몫을 남긴다.
+    # 빈 곳을 앞 문항의 풀이 자리로 합친다. 뷰어에서 줄바꿈이 달라져도 다음 문항 위에 큰 여백이 붙지 않는다.
     extra: dict[tuple[int, int], float] = {}
+    previous: dict[tuple[int, int], tuple[int, int]] = {}
     pairs: dict[int, list[tuple[dict, float]]] = {}
     for col, group in groups.items():
         if len(group) < 2 or col in split_columns:
@@ -1352,9 +1408,11 @@ def balance_columns(builder: "ExamBuilder", est):
         free = max(0, body - end - line)
         budget = min(free * 0.9, mm(100) * len(group))
         share = budget / len(group) if free >= mm(20) else 0.0
-        for g in group[1:]:
+        for prev, g in zip(group, group[1:]):
             if can_add_space(g):
-                extra[(g["si"], g["j"])] = share
+                key = (g["si"], g["j"])
+                extra[key] = share
+                previous[key] = (prev["si"], prev["j"])
         if len(group) == 2 and can_add_space(group[1]):
             second = group[1]
             if not sections[second["si"]]["items"][second["j"]].get("boxes_before"):
@@ -1373,8 +1431,9 @@ def balance_columns(builder: "ExamBuilder", est):
     if not any(extra.values()):
         return None
     spaced = copy.deepcopy(exam)
-    for (si, j), value in extra.items():
-        spaced["sections"][si]["items"][j]["_extra_before_mm"] = value / MM
+    for key, value in extra.items():
+        si, j = previous[key]
+        spaced["sections"][si]["items"][j]["_extra_work_mm"] = value / MM
     again = ExamBuilder(spaced, t)
     data2 = again.build()
     est2 = page_estimate(data2)
@@ -1421,7 +1480,9 @@ def build_exam(exam: dict, template: dict | None = None) -> tuple[bytes, list[st
             est = page_estimate(data)
             builder.warnings.append("글자 크기와 풀이 공간을 확보하기 위해 문항을 다음 단과 쪽으로 이어 배치했습니다.")
 
-    # 원본 위치에서 나눈 단과 자연스럽게 흘러 들어간 단 모두에서 여백을 살핀다.
+    # 같은 쪽 안에서 먼저 문항을 고르게 나눈 뒤, 남은 공간을 풀이 자리에 더한다.
+    if est and (rebalanced := rebalance_column_breaks(builder, est)):
+        builder, data, est = rebalanced
     if est and (spaced := balance_columns(builder, est)):
         data, again = spaced
         return data, builder.warnings + [w for w in again.warnings if w not in builder.warnings]

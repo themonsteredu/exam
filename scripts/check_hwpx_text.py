@@ -67,11 +67,21 @@ with zipfile.ZipFile(io.BytesIO(spaced_data)) as z:
     head = ET.fromstring(z.read('Contents/header.xml'))
 hc = '{http://www.hancom.co.kr/hwpml/2011/core}'
 pp = {e.get('id'): e for e in head.iter(hh + 'paraPr')}
+
+
 def prev_of(para, styles):
     margin = styles[para.get('paraPrIDRef')].find('.//' + hh + 'margin')
     return int(margin.find(hc + 'prev').get('value'))
-starts = [p for p in sec if p.tag == hp + 'p' and ''.join(t.text or '' for t in p.iter(hp + 't')).startswith(('2.', '4.'))]
-assert len(starts) == 2 and all(prev_of(p, pp) > 1200 * 5 for p in starts), [prev_of(p, pp) for p in starts]
+
+
+def text_of(node):
+    return ''.join(t.text or '' for t in node.iter(hp + 't'))
+
+
+starts = [p for p in sec.findall(hp + 'p') if text_of(p).startswith(('2. ', '4. '))]
+assert len(starts) == 2 and all(prev_of(p, pp) == 1200 for p in starts), [prev_of(p, pp) for p in starts]
+work = [p for p in sec.findall(hp + 'p') if text_of(p) == '\u00a0']
+assert len(work) == 6 and all(prev_of(work[i], pp) >= mm(22) for i in (0, 2)), [prev_of(p, pp) for p in work]
 assert estimated_pages(spaced_data) == 2, estimated_pages(spaced_data)
 
 
@@ -82,7 +92,7 @@ def question_starts(data):
     assert estimate is not None, '시험지의 쪽·단 위치를 확인할 수 있어야 한다'
     starts = {}
     for index, paragraph in enumerate(section.findall(hp + 'p')):
-        text = ''.join(t.text or '' for t in paragraph.iter(hp + 't'))
+        text = text_of(paragraph)
         number, dot, rest = text.partition('.')
         if dot and number.isdecimal() and rest.startswith(' '):
             line = estimate.lines[index][0]
@@ -107,6 +117,32 @@ assert after[7][:2] == after[8][:2] and after[9][:2] == after[10][:2] and after[
 assert abs(after[8][2] - after[10][2]) <= mm(1), after
 assert min(after[8][2] - before[8][2], after[10][2] - before[10][2]) > mm(1), (before, after)
 
+# 시험 전체 안내는 두 단 위에 두고, 한 쪽 안에서만 단 경계를 옮긴다.
+tall = q(3)
+for i in range(12):
+    tall['stem'].extend([{'t': '\n'}, {'t': f'{i + 1}) 각의 크기를 구하시오.'}])
+uneven = {
+    'source_pages': [{'page': 1, 'width': 1000, 'height': 1414}],
+    'boxes': [{'kind': 'notice', 'lines': ['시험 전체 유의사항']}],
+    'sections': [{'items': [q(1), q(2, 'column'), tall]}],
+}
+original = ExamBuilder(uneven)
+_, before = question_starts(original.build())
+assert before[1][1] != before[2][1] == before[3][1], before
+even_data, _ = build_exam(uneven)
+pages, after = question_starts(even_data)
+assert pages == 1 and list(after) == [1, 2, 3], (pages, after)
+assert after[1][1] == after[2][1] != after[3][1], after
+assert abs(after[1][2] - after[3][2]) <= mm(1), '공통 안내문 아래의 좌우 첫 문항 높이'
+with zipfile.ZipFile(io.BytesIO(even_data)) as z:
+    sec = ET.fromstring(z.read('Contents/section0.xml'))
+paras = sec.findall(hp + 'p')
+notice_index = next(i for i, p in enumerate(paras) if '시험 전체 유의사항' in text_of(p))
+columns_index = next(i for i, p in enumerate(paras) if any(c.get('colCount') == '2' for c in p.iter(hp + 'colPr')))
+assert notice_index < columns_index, '시험 전체 유의사항은 2단 위에 둔다'
+notice_size = next(paras[notice_index].iter(hp + 'tbl')).find(hp + 'sz')
+assert int(notice_size.get('width')) == original.text_width(), '유의사항 표는 본문 전체 너비'
+
 # 원본 쪽·단 나눔이 없는 마지막 단에서도 아래 문항 앞에 풀이 공간을 나눈다.
 with_notice = {**q(2), 'boxes_before': [{'kind': 'notice', 'framed': False, 'lines': ['※ 두 번째 문제 안내']}]}
 unforced = {'sections': [{'items': [q(1), with_notice]}]}
@@ -119,11 +155,13 @@ with zipfile.ZipFile(io.BytesIO(unforced_data)) as z:
     unforced_sec = ET.fromstring(z.read('Contents/section0.xml'))
     unforced_styles = {e.get('id'): e for e in ET.fromstring(z.read('Contents/header.xml')).iter(hh + 'paraPr')}
 for p in unforced_sec.findall(hp + 'p'):
-    text = ''.join(t.text or '' for t in p.iter(hp + 't'))
+    text = text_of(p)
     if text.startswith('※ 두 번째 문제 안내'):
-        assert prev_of(p, unforced_styles) >= mm(10), '풀이 여백은 안내문 앞에 둔다'
+        assert prev_of(p, unforced_styles) < mm(5), '안내문에 추가 여백을 붙이지 않는다'
     if text.startswith('2. '):
         assert prev_of(p, unforced_styles) == 1200, '안내문과 문제 사이는 기본 간격'
+first_work = next(p for p in unforced_sec.findall(hp + 'p') if text_of(p) == '\u00a0')
+assert prev_of(first_work, unforced_styles) >= mm(22), '풀이 여백은 앞 문항의 풀이 칸으로 들어간다'
 
 # 한 쪽에 들어갈 수 없는 시험지도 글자 크기와 문항별 풀이 자리를 유지한다.
 written = []
@@ -143,9 +181,6 @@ with zipfile.ZipFile(io.BytesIO(roomy)) as z:
     head = ET.fromstring(z.read('Contents/header.xml'))
 assert (estimated_pages(roomy) or 0) > 1, '풀이 공간이 한 쪽에 들어가지 않으면 쪽 수를 늘린다'
 assert any(c.get('colCount') == '2' for c in sec.iter(hp + 'colPr')), '시험지 본문은 2단'
-
-def text_of(node):
-    return ''.join(t.text or '' for t in node.iter(hp + 't'))
 
 styles = {e.get('id'): e for e in head.iter(hh + 'paraPr')}
 font_heights = {e.get('id'): int(e.get('height')) for e in head.iter(hh + 'charPr')}
