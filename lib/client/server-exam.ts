@@ -26,6 +26,10 @@ export async function submitExam(o: { files: File[]; title: string; saved?: Reco
   try {
     await postJson("/api/jobs", { docId: id, mode, targets: o.targets });
   } catch (err) {
+    if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+      localStorage.removeItem("exam-server-job"); localStorage.removeItem("exam-server-mode"); localStorage.removeItem("exam-server-targets");
+      throw err;
+    }
     // 응답 유실 가능성: 문서를 새로 만들지 않고 같은 접수를 조회·재시도한다.
     o.onQueued(id);
     throw err;

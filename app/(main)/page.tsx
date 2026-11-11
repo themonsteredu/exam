@@ -119,7 +119,12 @@ export default function MakePage() {
         setTitle(doc.title);
         setServerAccepted(!!job);
         if (!job && doc.status === "reading") {
-          await postJson("/api/jobs", { docId: serverDocId, mode: localStorage.getItem("exam-server-mode") || "create", targets: JSON.parse(localStorage.getItem("exam-server-targets") || "[]") });
+          if (localStorage.getItem("exam-server-job") === serverDocId && localStorage.getItem("exam-server-mode")) {
+            await postJson("/api/jobs", { docId: serverDocId, mode: localStorage.getItem("exam-server-mode"), targets: JSON.parse(localStorage.getItem("exam-server-targets") || "[]") });
+          } else {
+            setError("서버에 접수된 작업이 없습니다. 원본을 선택해 제작을 시작해 주세요.");
+            setBusy(false); setServerDocId(null); return;
+          }
         }
         if (job?.progress) setProgress(job.progress);
         if (job?.status === "completed" || (!job && doc.status === "done" && doc.hwpx_path)) {
@@ -142,6 +147,10 @@ export default function MakePage() {
           return;
         }
       } catch (err) {
+        if (!stopped && err instanceof ApiError && [400, 404].includes(err.status)) {
+          setError(err.message); setBusy(false); setServerDocId(null);
+          localStorage.removeItem("exam-server-job"); return;
+        }
         if (!stopped) setError("진행 상태를 다시 연결하고 있습니다. 접수된 서버 작업은 계속됩니다.");
       }
       if (!stopped) timer = setTimeout(poll, 4000);

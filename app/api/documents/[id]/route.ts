@@ -55,6 +55,7 @@ export async function PATCH(req: Request, { params }: Ctx) {
   }
   try {
     const store = getStore();
+    if ((await getJob(id))?.status === "running") return Response.json({ error: "서버에서 제작 중인 문서입니다. 진행 상태를 확인해 주세요." }, { status: 409 });
     if (body.attach_originals !== undefined) {
       const refs = Array.isArray(body.attach_originals) ? originalRefs(body.attach_originals) : [];
       if (!Array.isArray(body.attach_originals) || !refs.length || refs.length !== body.attach_originals.length) {
