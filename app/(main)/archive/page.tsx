@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, downloadStored, patchJson, uploadFile, won, type FileRef } from "@/lib/client/api";
-import { groupArchivedDocuments, isArchived, type ArchiveDocument } from "@/lib/client/archive-tree";
+import { archiveDisplayTitle, groupArchivedDocuments, isArchived, type ArchiveClassPath, type ArchiveDocument } from "@/lib/client/archive-tree";
 import { precheckFiles } from "@/lib/client/pages";
 
 const BATCH_SIZE = 100;
@@ -100,8 +100,8 @@ export default function ArchivePage() {
     }
   }
 
-  const row = (doc: ArchiveDocument) => (
-    <ArchiveRow key={doc.id} doc={doc} busy={busy === doc.id} locked={busy !== null}
+  const row = (doc: ArchiveDocument, group?: ArchiveClassPath) => (
+    <ArchiveRow key={doc.id} doc={doc} group={group} busy={busy === doc.id} locked={busy !== null}
       onDownload={download} onRemove={remove} onAttach={attach} />
   );
 
@@ -117,7 +117,7 @@ export default function ArchivePage() {
         <>
           <div className="archive-views" role="group" aria-label="보관함 보기">
             <button type="button" aria-pressed={view === "completed"} onClick={() => setView("completed")}>
-              완료 보관함 <span>{completedCount}</span>
+              완료 <span>{completedCount}</span>
             </button>
             <button type="button" aria-pressed={view === "work"} onClick={() => setView("work")}>
               작업 기록 <span>{unfinished.length}</span>
@@ -128,27 +128,20 @@ export default function ArchivePage() {
               {groups.map((year, index) => (
                 <details className="archive-year" key={year.key} open={index === 0}>
                   <summary>{year.label} <span className="archive-count">{year.count}건</span></summary>
-                  <div className="archive-branches">
-                    {year.terms.map((term, i) => (
-                      <details key={term.key} open={i === 0}>
-                        <summary>{term.label} <span className="archive-count">{term.count}건</span></summary>
-                        <div className="archive-branches">
-                          {term.grades.map((grade, j) => (
-                            <details key={grade.key} open={j === 0}>
-                              <summary>{grade.label} <span className="archive-count">{grade.count}건</span></summary>
-                              <ul className="archive-documents">{grade.docs.map(row)}</ul>
-                            </details>
-                          ))}
-                        </div>
+                  <div className="archive-classes">
+                    {year.terms.flatMap((term, i) => term.grades.map((grade, j) => (
+                      <details className="archive-class" key={`${term.key}-${grade.key}`} open={i === 0 && j === 0}>
+                        <summary><span>{term.label} <span className="archive-path-separator" aria-hidden="true">·</span> {grade.label}</span><span className="archive-count">{grade.count}건</span></summary>
+                        <ul className="archive-documents">{grade.docs.map((doc) => row(doc, { year: year.key, term: term.key, grade: grade.key }))}</ul>
                       </details>
-                    ))}
+                    )))}
                   </div>
                 </details>
               ))}
             </section>
           ) : <p className="muted">원본과 한글 파일을 함께 보관한 시험지가 여기에 표시됩니다.</p>)}
           {view === "work" && (unfinished.length ? (
-            <ul className="archive-documents archive-work" aria-label="시험지 작업 기록">{unfinished.map(row)}</ul>
+            <ul className="archive-documents archive-work" aria-label="시험지 작업 기록">{unfinished.map((doc) => row(doc))}</ul>
           ) : <p className="muted">진행 중이거나 확인이 필요한 시험지가 없습니다.</p>)}
         </>
       )}
@@ -156,8 +149,9 @@ export default function ArchivePage() {
   );
 }
 
-function ArchiveRow({ doc, busy, locked, onDownload, onRemove, onAttach }: {
+function ArchiveRow({ doc, group, busy, locked, onDownload, onRemove, onAttach }: {
   doc: ArchiveDocument;
+  group?: ArchiveClassPath;
   busy: boolean;
   locked: boolean;
   onDownload: (path: string, name: string) => void;
@@ -165,41 +159,36 @@ function ArchiveRow({ doc, busy, locked, onDownload, onRemove, onAttach }: {
   onAttach: (doc: ArchiveDocument, files: File[]) => void;
 }) {
   const fileInput = useRef<HTMLInputElement>(null);
+  const [panel, setPanel] = useState<"more" | "originals" | null>(null);
   const archived = isArchived(doc);
   const originals = doc.original_files;
+  const displayTitle = archiveDisplayTitle(doc.title, group);
+  const toggle = (next: "more" | "originals") => setPanel((current) => current === next ? null : next);
 
   return (
-    <li className="archive-document" aria-busy={busy}>
-      <div className="archive-document-name">
-        <strong>{doc.title}</strong>
-        <span className={`archive-label${archived ? " complete" : ""}`}>{documentStatus(doc)}</span>
+    <li className="archive-document" aria-busy={busy} onKeyDown={(event) => { if (event.key === "Escape") setPanel(null); }}>
+      <div className="archive-document-info">
+        <div className="archive-document-name">
+          <strong title={doc.title}>{displayTitle}</strong>
+          {!archived && <span className="archive-label">{documentStatus(doc)}</span>}
+        </div>
+        {doc.item_count > 0 && <span className="archive-document-meta">{doc.item_count}문항</span>}
       </div>
-      <div className="muted small archive-document-meta">
-        {when(doc.created_at)}
-        {doc.item_count > 0 && ` · ${doc.item_count}문항`}
-        {doc.cost_usd > 0 && ` · AI 요금 ${won(doc.cost_usd)}`}
-      </div>
-      {doc.note && <p className="muted small">{doc.note}</p>}
-      <div className="row archive-actions">
+      <div className="archive-actions">
         {doc.hwpx_path && (
-          <button type="button" className="primary" onClick={() => onDownload(doc.hwpx_path!, `${doc.title}.hwpx`)}>
+          <button type="button" className="archive-download" onClick={() => onDownload(doc.hwpx_path!, `${doc.title}.hwpx`)} aria-label={`${displayTitle} 한글 파일 내려받기`}>
             한글 파일
           </button>
         )}
         {originals.length === 1 && (
-          <button type="button" title={originals[0].name} onClick={() => onDownload(originals[0].path, originals[0].name)}>
-            원본 파일
+          <button type="button" title={originals[0].name} onClick={() => onDownload(originals[0].path, originals[0].name)} aria-label={`${displayTitle} 원본 파일 내려받기`}>
+            원본
           </button>
         )}
         {originals.length > 1 && (
-          <details className="archive-originals">
-            <summary>원본 {originals.length}개</summary>
-            <ul>
-              {originals.map((file) => (
-                <li key={file.path}><button type="button" onClick={() => onDownload(file.path, file.name)}>{file.name}</button></li>
-              ))}
-            </ul>
-          </details>
+          <button type="button" aria-expanded={panel === "originals"} aria-controls={`archive-panel-${doc.id}`} onClick={() => toggle("originals")}>
+            원본 {originals.length}개
+          </button>
         )}
         {doc.hwpx_path && originals.length === 0 && (
           <>
@@ -214,11 +203,35 @@ function ArchiveRow({ doc, busy, locked, onDownload, onRemove, onAttach }: {
             </button>
           </>
         )}
-        {doc.item_count > 0 && <a href={`/?resume=${encodeURIComponent(doc.id)}`}>다시 만들기</a>}
-        <button type="button" className="archive-remove" disabled={locked} onClick={() => onRemove(doc)} aria-label={`${doc.title} 지우기`}>
-          지우기
+        <button type="button" className="archive-more" aria-label={`${displayTitle} 더보기`} aria-expanded={panel === "more"} aria-controls={`archive-panel-${doc.id}`} onClick={() => toggle("more")}>
+          {panel === "more" ? "접기" : "더보기"}
         </button>
       </div>
+      {!archived && doc.note && <p className="archive-document-note muted small">{doc.note}</p>}
+      {panel && (
+        <div className="archive-document-panel" id={`archive-panel-${doc.id}`}>
+          {panel === "originals" ? (
+            <ul className="archive-originals" aria-label={`${displayTitle} 원본 파일 목록`}>
+              {originals.map((file) => (
+                <li key={file.path}><button type="button" onClick={() => onDownload(file.path, file.name)}>{file.name}</button></li>
+              ))}
+            </ul>
+          ) : (
+            <>
+              <dl className="archive-file-info">
+                <dt>원래 이름</dt><dd>{doc.title}</dd>
+                <dt>저장일</dt><dd>{when(doc.created_at)}</dd>
+                {doc.cost_usd > 0 && <><dt>AI 요금</dt><dd>{won(doc.cost_usd)}</dd></>}
+              </dl>
+              {archived && doc.note && <p className="muted small">{doc.note}</p>}
+              <div className="row archive-secondary-actions">
+                {doc.item_count > 0 && <a href={`/?resume=${encodeURIComponent(doc.id)}`}>다시 만들기</a>}
+                <button type="button" className="archive-remove" disabled={locked} onClick={() => onRemove(doc)} aria-label={`${doc.title} 지우기`}>지우기</button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </li>
   );
 }

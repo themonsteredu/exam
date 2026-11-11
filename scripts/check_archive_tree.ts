@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { groupArchivedDocuments, isArchived, type ArchiveDocument } from "@/lib/client/archive-tree";
+import { archiveDisplayTitle, groupArchivedDocuments, isArchived, type ArchiveDocument } from "@/lib/client/archive-tree";
 
 function exam(id: string, title: string, original: string, options: Partial<ArchiveDocument> = {}): ArchiveDocument {
   return {
@@ -88,6 +88,14 @@ assert.equal(groupArchivedDocuments([exam("date-only", "시험지", "scan_2026-1
 const [scanDate] = groupArchivedDocuments([exam("scan-date", "시험지", "scan_2026-1-2.pdf")]);
 assert.equal(scanDate.terms[0].label, "학기 미분류");
 assert.equal(scanDate.terms[0].grades[0].label, "학년 미분류");
+const displayGroup = { year: "2025", term: "2", grade: "1" };
+assert.equal(archiveDisplayTitle("TalkFile_2025 중1-2 기말 서석중 수학".normalize("NFD"), displayGroup), "서석중 · 기말 수학");
+assert.equal(archiveDisplayTitle("TalkFile_2025 중1-2 기말 동성여중", displayGroup), "동성여중 · 기말");
+assert.equal(archiveDisplayTitle("26년 문성중 1-2 중간고사", { ...displayGroup, year: "2026" }), "문성중 · 중간고사");
+assert.equal(archiveDisplayTitle("2025학년도 ( 1 )학년 2학기 금호중 1차 수학", displayGroup), "금호중 · 1차 수학");
+assert.equal(archiveDisplayTitle("2024 중1-2 기말 서석중", displayGroup), "서석중 · 2024 기말", "분류와 다른 년도는 이름에 남긴다");
+assert.equal(archiveDisplayTitle("2025학년도 1학년 2학기", displayGroup), "2025학년도 1학년 2학기", "이름이 비면 원래 제목을 표시한다");
+assert.equal(archiveDisplayTitle("TalkFile_2025 중1-2 기말 서석중"), "서석중 · 2025 중1-2 기말", "작업 기록은 분류 정보를 생략하지 않는다");
 assert.deepEqual(groupArchivedDocuments([noOriginal, noOutput, stopped, failed]), []);
 
 // 실제 파일 저장 경로와 보관함 API에서 원본을 추가하는 흐름을 확인한다.

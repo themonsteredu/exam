@@ -34,6 +34,35 @@ export type ArchiveYearGroup = {
   terms: ArchiveTermGroup[];
 };
 
+export type ArchiveClassPath = { year: string; term: string; grade: string };
+
+/** 목록용 이름만 정돈한다. 저장된 제목과 내려받는 파일명은 그대로 둔다. */
+export function archiveDisplayTitle(title: string, group?: ArchiveClassPath): string {
+  const original = title.normalize("NFKC");
+  let name = original.replace(/^TalkFile[\s_-]*/i, "").replace(/_/g, " ").trim();
+  if (group) {
+    const { year, grade, term } = group;
+    if (/^(19|20)\d{2}$/.test(year)) {
+      const shortYear = year.startsWith("20") ? `|${year.slice(2)}(?:학년도|년)` : "";
+      name = name.replace(new RegExp(`(^|[\\s(])(?:${year}(?:학년도|년)?${shortYear})(?=$|[\\s)])`, "g"), "$1");
+    }
+    if (/^[1-6]$/.test(grade) && /^[12]$/.test(term)) {
+      name = name.replace(new RegExp(`(^|[\\s(])(?:초|중|고)?\\s*${grade}\\s*[-–]\\s*${term}(?=$|[\\s)])`, "g"), "$1");
+    }
+    if (/^[1-6]$/.test(grade)) {
+      name = name.replace(new RegExp(`(?<!\\d)(?:\\(\\s*${grade}\\s*\\)|${grade})\\s*학년(?!도)`, "g"), " ");
+    }
+    if (/^[12]$/.test(term)) name = name.replace(new RegExp(`(?<!\\d)${term}\\s*학기`, "g"), " ");
+  }
+  name = name.replace(/\(\s*\)/g, " ").replace(/\s+/g, " ").trim();
+  const school = name.match(/(?:^|\s)([가-힣]{2,20}(?:초등학교|중학교|고등학교|초교|초|중|고))(?=\s|$)/u);
+  if (school && !/(?:작업중|변환중|진행중|기초)$/.test(school[1])) {
+    const rest = name.replace(school[0], " ").replace(/\s+/g, " ").trim();
+    name = school[1] + (rest ? ` · ${rest}` : "");
+  }
+  return name || original;
+}
+
 export function isArchived(doc: ArchiveDocument): boolean {
   return doc.status === "done" && Boolean(doc.hwpx_path) && doc.original_files.length > 0;
 }
