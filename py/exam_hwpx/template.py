@@ -40,8 +40,8 @@ SCHOOL_A_2026 = {
     # 문항 사이 간격과 답안을 적는 빈 공간은 별도로 둔다.
     "item_gap_pt": 12,
     "work_space_mm": {"choice": 12, "written": 28},
-    # 그림: 위아래 여백, 오른쪽에 둘 때 단 너비에 대한 최대 비율
-    "figure": {"gap_pt": 6, "right_max_ratio": 0.5},
+    # 그림 크기는 원본에서 읽은 값을 기준으로 출력할 때 늘린다. PNG 해상도에도 같은 배율을 쓴다(render-exam.ts).
+    "figure": {"gap_pt": 6, "right_max_ratio": 0.5, "scale": 1.4},
     # 수식 속 대문자(점 이름)를 정자체로. 점 이름이 아닌 대문자(집합 A, 확률 P 등)는 \mathit{A} 로 쓰면 기울임으로 남는다
     "upright_point_names": True,
 }

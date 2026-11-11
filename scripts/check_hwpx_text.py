@@ -8,6 +8,7 @@ import zipfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'py'))
 from exam_hwpx.builder import build_exam, split_condition_list  # noqa: E402
+from exam_hwpx.template import mm  # noqa: E402
 
 # 쉼표로 나열한 조건 수식은 하나씩 나눈다 (한글 수식은 줄을 못 바꿔 앞 줄 끝이 빈다). 순서쌍·집합·관계식 아닌 나열은 그대로
 assert split_condition_list(r'\angle A=70^{\circ}, \angle C=30^{\circ}') == [r'\angle A=70^{\circ}', r'\angle C=30^{\circ}']
@@ -132,28 +133,47 @@ assert int(table.find(hp + 'sz').get('height')) == sum(row[0] for row in heights
 assert len(list(table.iter(hp + 'equation'))) == 4, '선택지 수식은 개체로 남긴다'
 assert [''.join(t.text or '' for t in row.iter(hp + 't')) for row in rows] == ['①  ②  ③  세 번째', '④  ⑤  ']
 
-# 오른쪽에 떠 있는 그림이 긴 수식 개체의 폭을 침범하거나 같은 자리에 둘 이상 겹치지 않게 한다.
-png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jrGQAAAAASUVORK5CYII=')
-right = {'place': 'right', 'width_mm': 40, 'png': png}
+# 가로세로 2:1 그림을 키우되, 본문 폭이 부족하면 그림을 문제 아래에 배치한다.
+png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAAAAADRSSBWAAAAC0lEQVR4nGNg+A8AAQIBAEK+vGgAAAAASUVORK5CYII=')
+right = {'place': 'right', 'width_mm': 20, 'png': png}
+larger_right = {**right, 'width_mm': 30}
+
+
+def assert_picture_size(pic, width_mm):
+    size = pic.find(hp + 'sz')
+    width, height = int(size.get('width')), int(size.get('height'))
+    assert abs(width - mm(width_mm)) <= 1, (width, width_mm)
+    assert abs(height - mm(width_mm / 2)) <= 1, (height, width_mm)
+
+
 positions, _ = build_exam({'sections': [{'items': [
     {'no': 1, 'stem': [{'t': '그림을 보시오.'}], 'figure': right},
-    {'no': 2, 'stem': [{'m': 'x+y+z+a+b+c+d+e+f=0'}, {'t': '일 때의 그림.'}], 'figure': right},
-    {'no': 3, 'stem': [{'t': '두 그림을 보시오.'}], 'figure': right, 'extra_figures': [right]},
+    {'no': 2, 'stem': [{'t': '그림을 보시오.'}], 'figure': larger_right},
+    {'no': 3, 'stem': [{'m': 'x+y+z+a+b+c+d+e+f+g+h+i+j+k=0'}, {'t': '일 때의 그림.'}], 'figure': right},
+    {'no': 4, 'stem': [{'t': '두 그림을 보시오.'}], 'figure': right, 'extra_figures': [right]},
+    {'no': 5, 'stem': [{'t': '아래 그림을 보시오.'}], 'figure': {**right, 'place': 'below', 'width_mm': 60}},
 ]}]})
 with zipfile.ZipFile(io.BytesIO(positions)) as z:
     sec = ET.fromstring(z.read('Contents/section0.xml'))
-assert [pic.find(hp + 'pos').get('treatAsChar') for pic in sec.iter(hp + 'pic')] == ['0', '1', '1', '1']
+pics = list(sec.iter(hp + 'pic'))
+assert [pic.find(hp + 'pos').get('treatAsChar') for pic in pics] == ['0', '1', '1', '1', '1', '1']
+for pic, width_mm in zip(pics, [28, 42, 28, 28, 28, 84]):
+    assert_picture_size(pic, width_mm)
 
+wide_choice = {**right, 'width_mm': 40}
 picture_grid, _ = build_exam({'sections': [{'items': [
-    {'no': 1, 'stem': [{'t': '다음 중 옳은 것은?'}], 'figure': right, 'extra_figures': [right, right, right, right],
+    {'no': 1, 'stem': [{'t': '다음 중 옳은 것은?'}], 'figure': right, 'extra_figures': [wide_choice, right, wide_choice, right],
      'choices': [[] for _ in range(5)]},
 ]}]})
 with zipfile.ZipFile(io.BytesIO(picture_grid)) as z:
     sec = ET.fromstring(z.read('Contents/section0.xml'))
 table = next(tbl for tbl in sec.iter(hp + 'tbl') if tbl.get('rowCnt') == '3' and tbl.get('colCnt') == '2')
-assert len(list(table.iter(hp + 'pic'))) == 5, '그림 선택지 다섯 개를 모두 보존한다'
+pics = list(table.iter(hp + 'pic'))
+assert len(pics) == 5, '그림 선택지 다섯 개를 모두 보존한다'
+for pic, width_mm in zip(pics, [28, 40.5, 28, 40.5, 28]):
+    assert_picture_size(pic, width_mm)
 for cell in table.iter(hp + 'tc'):
     pic = next(cell.iter(hp + 'pic'), None)
     if pic is not None:
         assert int(cell.find(hp + 'cellSz').get('height')) >= int(pic.find(hp + 'sz').get('height')) + 1100
-print('한글 문항 강조, 배점, 수식, B4 용지, 단 아래 빈 곳, 선택지 행 높이, 그림 배치 확인 완료')
+print('한글 문항 강조, 배점, 수식, B4 용지, 단 아래 빈 곳, 선택지 행 높이, 그림 배치와 확대 확인 완료')

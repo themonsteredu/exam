@@ -11,8 +11,11 @@ import type { FigureSpec } from "./types";
 import { checkFigureSpec } from "./validate";
 import { renderGraphicPng } from "@/lib/graphic/render";
 import type { GraphicSpec } from "@/lib/graphic/schema";
+import { layoutFor } from "@/lib/ai/assemble";
 
 export const DEFAULT_FIGURE_DPI = 360;
+// template.py의 figure.scale과 같은 값. 확대해 인쇄할 때도 해상도를 유지한다.
+const PRINT_FIGURE_SCALE = 1.4;
 
 export type ExamFigure = {
   commands?: FigureSpec;
@@ -48,7 +51,7 @@ export type FigureRenderResult = {
 };
 
 function figureWidthMm(fig: ExamFigure): number {
-  // 한글 파일 만드는 쪽(builder.figure_width_mm)과 같게: 0 이나 빈 값이면 size_mm, 그것도 없으면 50
+  // 글자와 선의 비율은 읽어 둔 그림 크기로 정한다. 확대할 때 그림과 함께 커진다.
   return fig.width_mm || fig.size_mm?.[0] || 50;
 }
 
@@ -63,6 +66,7 @@ export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGUR
   await loadFigureFonts();
   const results: FigureRenderResult[] = [];
   const sections: any[] = Array.isArray(exam?.sections) ? exam.sections : [];
+  const maxWidthMm = layoutFor(exam?.paper).columnWidthMm - 1;
   for (let s = 0; s < sections.length; s++) {
     const items: any[] = Array.isArray(sections[s]?.items) ? sections[s].items : [];
     for (let i = 0; i < items.length; i++) {
@@ -70,9 +74,14 @@ export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGUR
       for (let f = 0; f < figures.length; f++) {
         const fig = figures[f];
         const base = { section: s, index: i, figureIndex: f, no: items[i].no };
+        const originalWidthMm = figureWidthMm(fig);
+        const widthPx = pxForPrint(Math.min(originalWidthMm * PRINT_FIGURE_SCALE, maxWidthMm), dpi);
         if (fig.graphic) {
           try {
-            const out = await renderGraphicPng(fig.graphic, pxForPrint(figureWidthMm(fig), dpi), figureWidthMm(fig));
+            // 세로로 긴 표도 캔버스 크기 제한 안에서 비율을 유지한다.
+            const aspect = fig.graphic.height / fig.graphic.width;
+            const rasterWidthPx = Math.max(1, Math.floor(Math.min(widthPx, 10_000 / aspect, Math.sqrt(24_900_000 / aspect))));
+            const out = await renderGraphicPng(fig.graphic, rasterWidthPx, originalWidthMm);
             results.push({ ...base, png: base64Of(out.dataUrl), size: [out.width, out.height], ...(out.warnings.length ? { warnings: out.warnings } : {}) });
           } catch (err) {
             results.push({ ...base, error: err instanceof Error ? err.message : String(err) });
@@ -94,10 +103,9 @@ export async function renderExamFigures(JXG: any, exam: any, dpi = DEFAULT_FIGUR
         }
         try {
           const out = await renderFigurePng(JXG, checked.spec, {
-            widthPx: pxForPrint(figureWidthMm(fig), dpi),
+            widthPx,
             gliders: fig.gliders,
-            // 인쇄될 크기에 맞춰 그림 글자 크기를 고른다 (너무 크거나 작은 글자)
-            printWidthMm: figureWidthMm(fig),
+            printWidthMm: originalWidthMm,
           });
           results.push({
             ...base,
