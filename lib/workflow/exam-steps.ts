@@ -1,4 +1,4 @@
-import { FatalError } from "workflow";
+import { FatalError, getWorkflowMetadata } from "workflow";
 import { apiKeyDevice, getStore, type FileRef } from "@/lib/server/store";
 import { currentSessionKey, logUsage, sessionVersion } from "@/lib/server/auth";
 import { makeSessionToken, SESSION_COOKIE } from "@/lib/server/session";
@@ -18,6 +18,7 @@ import type { Progress } from "@/lib/client/make-exam";
 
 async function active(job: JobInput) {
   const state = await getJob(job.docId);
+  if (state && state.runId !== getWorkflowMetadata().workflowRunId) throw new FatalError("새 제작 작업이 시작되어 이전 작업을 종료합니다.");
   if (state?.status === "cancelled") throw new FatalError("제작을 취소했습니다.");
   if (!await getStore().getDoc(job.docId)) throw new FatalError("문서를 찾지 못했습니다.");
   return state;
@@ -143,6 +144,7 @@ export async function assemble(job: JobInput, pages: string[], figures: string[]
   const drawings = await Promise.all(figures.map(p => readJson(p, job.origin)));
   const exam = assembleExam(readings, new Map(drawings.map(d => [d.key, d.result])));
   exam.title = (await getStore().getDoc(job.docId))!.title;
+  await active(job);
   await checkpoint(job, exam, usd, pageProblems);
   return writeJson(job, { exam, usd, pageProblems });
 }
@@ -193,6 +195,7 @@ export async function applyReread(job: JobInput, workPath: string, answer: { pat
   else work.pageProblems.push(`${target.name}: 다시 읽지 못해 이전 그림을 유지했습니다.`);
   work.usd += answer.usd;
   reviewFigures(work.exam);
+  await active(job);
   await checkpoint(job, work.exam, work.usd, work.pageProblems);
   return writeJson(job, work);
 }
@@ -201,6 +204,7 @@ export async function draw(job: JobInput, workPath: string) {
   await active(job);
   const work = await readJson(workPath, job.origin);
   const output = await renderOnServer(job.origin, "draw", { exam: work.exam });
+  await active(job);
   const record = await checkpoint(job, output.exam, work.usd, work.pageProblems);
   const warnings = output.rendered.flatMap((r: any) => [...(r.error ? [`${r.no}번: ${r.error}`] : []), ...(r.warnings || []).map((w: string) => `${r.no}번: ${w}`)]);
   return { record, warnings, usd: work.usd, pageProblems: work.pageProblems as string[] };
@@ -226,7 +230,7 @@ export async function finish(job: JobInput, drawn: Awaited<ReturnType<typeof dra
 export async function failJob(job: JobInput, error: string) {
   "use step";
   const state = await getJob(job.docId);
-  if (!state || state.status === "cancelled") return;
+  if (!state || state.status === "cancelled" || state.runId !== getWorkflowMetadata().workflowRunId) return;
   await setJob(job.docId, { ...state, status: "failed", error: error.slice(0, 1000) });
   const doc = await getStore().getDoc(job.docId);
   if (doc) await getStore().updateDoc(job.docId, { status: doc.hwpx_path ? "done" : "failed", note: error.slice(0, 1000) });
