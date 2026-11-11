@@ -27,8 +27,8 @@ SCHOOL_A_2026 = {
         "header_row": 11,
         "box": 9.5,
         "section_title": 12,
-        "body": 11,
-        "choice": 11,
+        "body": 12,
+        "choice": 12,
         "footer_page": 13,
         "footer_right": 11,
         "footer_notice": 6.5,
@@ -37,8 +37,9 @@ SCHOOL_A_2026 = {
     "heights_mm": {"title_row": 13, "info_row": 10},
     # 바깥 굵은 선, 안쪽 가는 선
     "border": {"thick": "0.4 mm", "thin": "0.12 mm"},
-    # 문제와 문제 사이 빈 공간. 처음에는 원본처럼 풀이 공간(40pt)을 두었으나 사용자가 빈 공간이 많다고 해서 줄임 (2026-11-01)
+    # 문항 사이 간격과 답안을 적는 빈 공간은 별도로 둔다.
     "item_gap_pt": 12,
+    "work_space_mm": {"choice": 12, "written": 28},
     # 그림: 위아래 여백, 오른쪽에 둘 때 단 너비에 대한 최대 비율
     "figure": {"gap_pt": 6, "right_max_ratio": 0.5},
     # 수식 속 대문자(점 이름)를 정자체로. 점 이름이 아닌 대문자(집합 A, 확률 P 등)는 \mathit{A} 로 쓰면 기울임으로 남는다

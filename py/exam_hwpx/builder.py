@@ -776,17 +776,17 @@ class ExamBuilder:
         extra = item.get("_extra_before_mm")
         return extra * 72 / 25.4 if isinstance(extra, (int, float)) and extra > 0 else 0.0
 
-    def build_item(self, item: dict, is_first: bool):
+    def build_item(self, item: dict, is_first: bool, section_title: str = ""):
         """문항 하나. 문항의 문단들은 '다음 문단과 함께'·'문단 보호'로 묶어 단·쪽 사이에서 잘리지 않게 한다."""
         start = len(self.doc.paragraphs)
-        self._build_item(item, is_first)
+        self._build_item(item, is_first, section_title)
         if item.get("split_ok"):
             return  # 원본에서도 다음 단으로 이어진 문항: 원본처럼 단 사이에서 나뉘게 둔다
         made = self.doc.paragraphs[start:]
         for k, p in enumerate(made):
             self.para_format(p, keep_lines=True, **({"keep_with_next": True} if k < len(made) - 1 else {}))
 
-    def _build_item(self, item: dict, is_first: bool):
+    def _build_item(self, item: dict, is_first: bool, section_title: str):
         t = self.tpl
         size = t["sizes"]["body"]
         no = item["no"]
@@ -888,6 +888,19 @@ class ExamBuilder:
             if dup:
                 self.warnings.append(f"{no}번: 선택지를 담은 표를 한글 표로 넣지 못해 선택지 글로 넣었습니다")
             self.build_choices(item.get("choices") or [], no, item.get("choice_layout"))
+
+        # 마지막 문항에도 풀이 자리가 필요하므로 다음 문항의 앞 간격에 의존하지 않는다.
+        written = re.search(r"서술형|단답형", f"{section_title} {label}")
+        kind = "choice" if not written and (picture_choices or choice_table or item.get("choices")) else "written"
+        work_mm = t.get("work_space_mm", {}).get(kind, 0)
+        if work_mm > 0:
+            if item.get("split_ok"):
+                self.para_format(self.doc.paragraphs[-1], keep_with_next=True)
+            p = self.doc.add_paragraph("", include_run=False)
+            p.add_run("\u00a0", char_pr_id_ref=self.run_style(size=1))
+            self.para_format(p, line_spacing_percent=100, indent_left_mm=0, first_line_indent_mm=0,
+                             spacing_before_pt=round(work_mm * 72 / 25.4, 1), keep_lines=True)
+
         # 문항 뒤의 안내 상자 (마지막 쪽의 저작권 안내 같은 것)
         for box in item.get("boxes_after") or []:
             pa = self.doc.add_paragraph("")
@@ -1185,7 +1198,7 @@ class ExamBuilder:
                 self.build_section_title(section["title"], section.get("break_before"))
             for j, item in enumerate(section.get("items", [])):
                 start = len(self.doc.paragraphs)
-                self.build_item(item, is_first=(j == 0))
+                self.build_item(item, is_first=(j == 0), section_title=section.get("title") or "")
                 self.item_spans.append((si, j, start, len(self.doc.paragraphs)))
         note = self.exam.get("page_end_note")
         if note:
@@ -1342,30 +1355,6 @@ def balance_columns(exam: dict, tpl: dict, builder: "ExamBuilder", data: bytes):
     return data2, again
 
 
-# 원본과 같은 자리에서 단·쪽을 나눌 때, 우리 글이 원본보다 길면 단이 넘쳐 빈 단이 생기고 쪽이 늘어난다
-# (2026-11-01 대자중: 5쪽이 8쪽). 원본 쪽 수 안에 들어갈 때까지 줄 간격 → 글자 크기 → 문항 사이 → 그림 크기 순으로 조금씩 줄인다.
-FIT_STEPS = [
-    {},
-    {"line_spacing": {"body": 165, "choice": 150, "box": 140}},
-    {"line_spacing": {"body": 160, "choice": 145, "box": 140}, "sizes": {"body": 10.5, "choice": 10.5}},
-    {"line_spacing": {"body": 150, "choice": 140, "box": 135}, "sizes": {"body": 10.5, "choice": 10.5}, "item_gap_pt": 8},
-    {"line_spacing": {"body": 150, "choice": 140, "box": 135}, "sizes": {"body": 10, "choice": 10, "box": 9}, "item_gap_pt": 6,
-     "figure": {"scale": 0.9}},
-    {"line_spacing": {"body": 140, "choice": 130, "box": 130}, "sizes": {"body": 9.5, "choice": 9.5, "box": 8.5}, "item_gap_pt": 4,
-     "figure": {"scale": 0.8}},
-]
-
-
-def _fitted_template(base: dict, step: dict) -> dict:
-    tpl = copy.deepcopy(base)
-    for key, value in step.items():
-        if isinstance(value, dict):
-            tpl[key] = {**tpl.get(key, {}), **value}
-        else:
-            tpl[key] = value
-    return tpl
-
-
 def _without_breaks(exam: dict, kinds: set[str]) -> dict:
     copy_ = copy.deepcopy(exam)
     for section in copy_.get("sections", []):
@@ -1378,48 +1367,34 @@ def _without_breaks(exam: dict, kinds: set[str]) -> dict:
 
 
 def build_exam(exam: dict, template: dict | None = None) -> tuple[bytes, list[str]]:
-    data, warnings, used_exam, used_tpl, builder = _build_fitted(exam, template)
-    # 원본 자리에서 나눈 단의 아래가 크게 비면 그 빈 곳을 문항들 아래에 나눠 준다 (원본처럼 풀이 공간)
-    if builder is not None:
-        spaced = balance_columns(used_exam, used_tpl, builder, data)
-        if spaced:
-            data = spaced[0]
-            warnings = warnings + [w for w in spaced[1].warnings if w not in warnings]
-    return data, warnings
-
-
-def _build_fitted(exam: dict, template: dict | None = None):
-    """원본 쪽 수 안에 들게 만든 한글 파일: (바이트, 알림, 쓴 시험지 데이터, 쓴 양식, 만든 builder — 원본 나눔을 지킨 경우만)."""
-    # 원본이 B4 면 B4 로 (원본과 같은 쪽 수·배열을 글자·그림을 줄이지 않고 맞춘다)
-    base = template or with_paper(get_template(exam.get("template")), exam.get("paper"))
+    """글자와 풀이 공간을 확보한 뒤, 들어갈 수 있는 범위에서 원본의 단·쪽 나눔을 따른다."""
+    tpl = template or with_paper(get_template(exam.get("template")), exam.get("paper"))
     target = len(exam.get("source_pages") or [])
     has_breaks = any(s.get("break_before") or any(i.get("break_before") for i in s.get("items", []))
                      for s in exam.get("sections", []))
-    builder = ExamBuilder(exam, base)
+    builder = ExamBuilder(exam, tpl)
     data = builder.build()
-    if not target or not has_breaks:
-        return data, builder.warnings, exam, base, (builder if has_breaks else None)
-    pages = estimated_pages(data)
-    if pages is None or pages <= target:
-        return data, builder.warnings, exam, base, builder
-    first_pages = pages
-    # 1) 글을 조금씩 촘촘하게
-    for n, step in enumerate(FIT_STEPS[1:], start=1):
-        tpl = _fitted_template(base, step)
-        builder = ExamBuilder(exam, tpl)
-        data = builder.build()
-        pages = estimated_pages(data) or pages
-        if pages <= target:
-            builder.warnings.append(f"원본({target}쪽)과 같은 배열이 되도록 줄 간격·글자 크기를 조금 줄였습니다 (맞춤 {n}단계)")
-            return data, builder.warnings, exam, tpl, builder
-    # 2) 그래도 넘치면 단 나눔을 풀고(쪽 나눔은 둔다), 3) 그래도 넘치면 쪽 나눔도 풀어 빈 단·빈 쪽이 생기지 않게 한다
-    tightest = _fitted_template(base, FIT_STEPS[-1])
-    for kinds, note in (({"column"}, "원본의 단 나눔"), ({"column", "page"}, "원본의 단·쪽 나눔")):
-        builder = ExamBuilder(_without_breaks(exam, kinds), tightest)
-        data = builder.build()
-        pages = estimated_pages(data) or pages
-        if pages <= target or kinds == {"column", "page"}:
-            builder.warnings.append(f"글이 원본보다 길어 {note}을 따르지 않고 이어서 넣었습니다 (원본 {target}쪽, 처음 어림 {first_pages}쪽 → {pages}쪽)")
-            return data, builder.warnings, exam, tightest, None
-    return data, builder.warnings, exam, base, None
+    if not has_breaks:
+        return data, builder.warnings
+
+    pages = estimated_pages(data) if target else None
+    if pages is not None and pages > target:
+        # 원본 쪽 나눔은 유지하고 단 나눔부터 풀어 본다. 여전히 넘치면 문항을 두 단에 이어 넣는다.
+        relaxed = ExamBuilder(_without_breaks(exam, {"column"}), tpl)
+        relaxed_data = relaxed.build()
+        relaxed_pages = estimated_pages(relaxed_data)
+        if relaxed_pages is not None and relaxed_pages <= target:
+            relaxed.warnings.append("풀이 공간을 확보하기 위해 일부 문항을 다음 단으로 옮겼습니다.")
+            return relaxed_data, relaxed.warnings
+
+        flowing = ExamBuilder(_without_breaks(exam, {"column", "page"}), tpl)
+        data = flowing.build()
+        flowing.warnings.append("글자 크기와 풀이 공간을 확보하기 위해 문항을 다음 단과 쪽으로 이어 배치했습니다.")
+        return data, flowing.warnings
+
+    # 원본 나눔을 유지했을 때 단 아래에 남는 공간은 문항 사이에도 나눠 준다.
+    spaced = balance_columns(exam, tpl, builder, data)
+    if spaced:
+        return spaced[0], spaced[1].warnings
+    return data, builder.warnings
 
