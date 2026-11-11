@@ -15,6 +15,7 @@ import { figureImage, openSources, orientationImage, pageImage, precheckFiles, r
 import { assertFresh } from "./version";
 import { readCached } from "./read-cache";
 import { itemFigures } from "@/lib/figure/item-figures";
+import { OPENAI_PRICES } from "@/lib/ai/models";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -356,6 +357,11 @@ export async function resumeExam(o: FinishOptions, saved: Recovery): Promise<Mak
  * 다시 읽기를 권하는 그림은 검사에 걸린 그림이라 AI 에게 한 번 더 살피게 하는 일이 잦다 → 많을 때는 두 번으로 어림한다
  */
 export function figureRereadUsd(model?: string): { usual: number; most: number } {
+  const gpt = OPENAI_PRICES[model as keyof typeof OPENAI_PRICES];
+  if (gpt) return {
+    usual: (9_000 * gpt.input * 1.25 + 10_000 * gpt.output) / 1_000_000,
+    most: 2 * (18_000 * gpt.input * 1.25 + 32_000 * gpt.output) / 1_000_000,
+  };
   if (!model || /opus/i.test(model)) return { usual: 0.08, most: 0.3 };
   if (/sonnet/i.test(model)) return { usual: 0.04, most: 0.16 };
   return { usual: 0.02, most: 0.08 };

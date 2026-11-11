@@ -1,6 +1,7 @@
 // 옆으로 누운 쪽의 방향 묻기: 작은 쪽 사진(긴 변 1024px) → 바로 읽으려면 시계 방향으로 몇 도 돌려야 하는지 (0·90·180·270).
 // 칸 다수결(lib/ai/orientation voteTextDirection)로 글자가 세로로 누운 쪽만 묻는다 (쪽당 1원 남짓). 서버 전용.
-import { callClaude, extractJson, modelFor, type Usage } from "./claude";
+import { extractJson, modelFor, type Usage } from "./claude";
+import { callAI } from "./client";
 import type { ImageInput } from "./read-page";
 
 export const ORIENT_SYSTEM = `너는 시험지 한 쪽을 스캔하거나 찍은 사진의 방향만 본다.
@@ -16,7 +17,7 @@ export async function readOrientation(
   image: ImageInput,
   o: { model?: string; apiKey?: string; signal?: AbortSignal; deadline?: number } = {},
 ): Promise<{ rotate: 0 | 90 | 180 | 270 | null; usage: Usage }> {
-  const call = await callClaude({
+  const call = await callAI({
     system: ORIENT_SYSTEM,
     messages: [
       {

@@ -1,8 +1,8 @@
 // 2차 읽기: 그림 하나(잘라서 키운 사진) + 문제 글 → 그림 명령.
 // 받은 그림 명령은 바로 검사하고, 틀린 곳이 있으면 그 내용을 돌려보내 한 번 더 고쳐 받는다.
-// 서버 전용 (Claude 를 부른다).
+// 서버 전용 (설정에서 고른 AI를 부른다).
 
-import type { BetaMessageParam } from "@anthropic-ai/sdk/resources/beta/messages/messages";
+import { callAI, assistantTurn, type AITurn } from "./client";
 import { z } from "zod";
 import { checkFigureSpec } from "@/lib/figure/validate";
 import {
@@ -19,7 +19,7 @@ import {
   worthReporting,
 } from "@/lib/figure/review";
 import type { FigureSpec, PointRef } from "@/lib/figure/types";
-import { addUsage, assistantTurn, callClaude, extractJson, modelFor, ReadError, type Effort, type Usage } from "./claude";
+import { addUsage, extractJson, modelFor, ReadError, type Effort, type Usage } from "./claude";
 import type { Piece, Region } from "./page-schema";
 import { FIGURE_SYSTEM, figureRepairText, figureUserText, piecesToText } from "./prompts";
 import type { ImageInput } from "./read-page";
@@ -83,7 +83,7 @@ export async function readFigure(
 ): Promise<{ figure: FigureReading; usage: Usage }> {
   const model = modelFor("figure", o.model);
   const maxAttempts = o.maxAttempts ?? 2;
-  const messages: BetaMessageParam[] = [
+  const messages: AITurn[] = [
     {
       role: "user",
       content: [
@@ -110,7 +110,7 @@ export async function readFigure(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     let call;
     try {
-      call = await callClaude({
+      call = await callAI({
         system: FIGURE_SYSTEM,
         messages,
         model,

@@ -1,11 +1,17 @@
-// 설정 화면에 보여 줄 것: 이 기기의 API 키 저장 여부(끝 4자리만), 이 기기에서 고른 모델, 이 열쇠로 달마다 쓴 AI 요금.
-// API 키 자체는 절대 돌려주지 않는다. AI 열쇠와 모델은 기기(브라우저)마다 따로다 (lib/server/device.ts).
+// Returns key status and usage for this browser. Plaintext keys stay on the server.
 import { pickModels, requireSession } from "@/lib/server/auth";
 import { deviceOf } from "@/lib/server/device";
-import { getStore, type DeviceInfo } from "@/lib/server/store";
+import { apiKeyDevice, getStore, type ApiKeyInfo, type DeviceInfo, type MonthUsage } from "@/lib/server/store";
 import { KRW_PER_USD, MODEL_INFO } from "@/lib/ai/models-info";
+import { providerFor, type AiProvider } from "@/lib/ai/models";
 
 export const runtime = "nodejs";
+
+function publicKey(info: ApiKeyInfo) {
+  return info.saved
+    ? { saved: true, last4: info.last4 ?? "", savedAt: info.savedAt ?? "", broken: !!info.broken }
+    : { saved: false };
+}
 
 export async function GET(req: Request) {
   const denied = await requireSession(req);
@@ -13,14 +19,38 @@ export async function GET(req: Request) {
   try {
     const store = getStore();
     const device = await deviceOf(req);
-    const info: DeviceInfo = device ? await store.deviceInfo(device) : { apiKey: { saved: false }, models: null };
-    const key = info.apiKey;
-    const usage = key.saved && key.tag ? await store.monthlyUsage(key.tag, 12) : [];
+    const empty: DeviceInfo = { apiKey: { saved: false }, models: null };
+    const [claude, gpt] = device
+      ? await Promise.all([store.deviceInfo(device), store.deviceInfo(apiKeyDevice(device, "openai"))])
+      : [empty, empty];
+    const models = pickModels(claude.models);
+    const apiKeys = { anthropic: publicKey(claude.apiKey), openai: publicKey(gpt.apiKey) };
+    const [anthropicUsage, openaiUsage] = await Promise.all([claude, gpt].map((info) =>
+      info.apiKey.saved && info.apiKey.tag ? store.monthlyUsage(info.apiKey.tag, 12) : Promise.resolve([] as MonthUsage[]),
+    ));
+    const usageByProvider = { anthropic: anthropicUsage, openai: openaiUsage };
+    const totals = new Map<string, MonthUsage>();
+    for (const row of [...anthropicUsage, ...openaiUsage]) {
+      const month = totals.get(row.month) ?? { month: row.month, calls: 0, usd: 0 };
+      month.calls += row.calls;
+      month.usd += row.usd;
+      totals.set(row.month, month);
+    }
+    const selected = [...new Set<AiProvider>(Object.values(models).map(providerFor))];
+    const canRead = selected.every((provider) => apiKeys[provider].saved && !apiKeys[provider].broken);
+    const cacheScope = selected.map((provider) => {
+      const key = apiKeys[provider];
+      return `${provider}:${key.savedAt ?? ""}:${key.last4 ?? ""}`;
+    }).join("|");
     return Response.json({
-      apiKey: key.saved ? { saved: true, last4: key.last4 ?? "", savedAt: key.savedAt ?? "", broken: !!key.broken } : { saved: false },
-      models: pickModels(info.models),
+      apiKey: apiKeys.anthropic,
+      apiKeys,
+      canRead,
+      cacheScope,
+      models,
       modelOptions: MODEL_INFO,
-      usage,
+      usage: [...totals.values()].sort((a, b) => b.month.localeCompare(a.month)).slice(0, 12),
+      usageByProvider,
       krwPerUsd: KRW_PER_USD,
       hwpxEndpoint: process.env.EXAM_STORE === "local" ? "/api/dev-hwpx" : "/api/hwpx",
     });

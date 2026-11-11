@@ -104,7 +104,7 @@ export default function MakePage() {
     (async () => {
       try {
         const s = await api<any>("/api/settings");
-        setReady({ keySaved: !!s.apiKey?.saved && !s.apiKey?.broken, hwpxEndpoint: s.hwpxEndpoint, krwPerUsd: s.krwPerUsd, models: s.models, cacheScope: s.apiKey?.savedAt ? s.apiKey.savedAt + ":" + s.apiKey.last4 : "" });
+        setReady({ keySaved: s.canRead ?? (!!s.apiKey?.saved && !s.apiKey?.broken), hwpxEndpoint: s.hwpxEndpoint, krwPerUsd: s.krwPerUsd, models: s.models, cacheScope: s.cacheScope ?? (s.apiKey?.savedAt ? s.apiKey.savedAt + ":" + s.apiKey.last4 : "") });
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }

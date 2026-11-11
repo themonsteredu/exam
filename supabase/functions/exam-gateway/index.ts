@@ -26,7 +26,7 @@ const PATH = /^(originals|generated)\/[0-9a-f-]{36}\/[A-Za-z0-9._-]{1,100}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const DEVICE = /^[0-9a-f]{64}$/;
 const KEY_TAG = /^[0-9a-f]{32}$/;
-const MODEL = /^claude-[a-z0-9.-]{1,60}$/;
+const MODEL = /^(?:claude-[a-z0-9.-]{1,60}|gpt-6\.1-(?:terra|sol)|gpt-6-astra)$/;
 const DOC_FIELDS = "id,created_at,updated_at,title,status,original_files,hwpx_path,cost_usd,item_count,note";
 
 const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, {
@@ -298,7 +298,7 @@ Deno.serve(async (req) => {
       case "apikey.set": {
         if (!DEVICE.test(String(body.device))) return bad(400, "bad device");
         const key = typeof body.key === "string" ? body.key.trim() : "";
-        if (!/^sk-ant-[A-Za-z0-9_-]{20,300}$/.test(key)) return bad(400, "bad key");
+        if (!/^sk-(?!admin-|ant-admin)[A-Za-z0-9_-]{20,1000}$/.test(key)) return bad(400, "bad key");
         const iv = crypto.getRandomValues(new Uint8Array(12));
         const data = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await apiKeyCipher(), te.encode(key));
         const sealed: Sealed = { v: 2, iv: b64(iv), data: b64(data) };
