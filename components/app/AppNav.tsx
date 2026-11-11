@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 
 const LINKS = [
   { href: "/", label: "시험지 만들기" },
-  { href: "/archive", label: "보관함" },
+  { href: "/archive", label: "완료 보관함" },
   { href: "/settings", label: "설정" },
 ];
 
