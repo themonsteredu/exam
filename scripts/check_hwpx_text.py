@@ -1,4 +1,4 @@
-"""한글 문항의 강조·배점·삼각형 수식이 보존되는지 확인한다."""
+"""한글 시험지의 글, 수식, 풀이 공간과 그림 배치를 확인한다."""
 import base64
 import io
 import pathlib
@@ -66,13 +66,52 @@ with zipfile.ZipFile(io.BytesIO(spaced_data)) as z:
     head = ET.fromstring(z.read('Contents/header.xml'))
 hc = '{http://www.hancom.co.kr/hwpml/2011/core}'
 pp = {e.get('id'): e for e in head.iter(hh + 'paraPr')}
-def prev_of(para):
-    margin = pp[para.get('paraPrIDRef')].find('.//' + hh + 'margin')
+def prev_of(para, styles):
+    margin = styles[para.get('paraPrIDRef')].find('.//' + hh + 'margin')
     return int(margin.find(hc + 'prev').get('value'))
 starts = [p for p in sec if p.tag == hp + 'p' and ''.join(t.text or '' for t in p.iter(hp + 't')).startswith(('2.', '4.'))]
-assert len(starts) == 2 and all(prev_of(p) > 1200 * 5 for p in starts), [prev_of(p) for p in starts]
+assert len(starts) == 2 and all(prev_of(p, pp) > 1200 * 5 for p in starts), [prev_of(p, pp) for p in starts]
 from exam_hwpx.builder import estimated_pages  # noqa: E402
 assert estimated_pages(spaced_data) == 2, estimated_pages(spaced_data)
+
+# 한 쪽에 들어갈 수 없는 시험지도 글자 크기와 문항별 풀이 자리를 유지한다.
+written = []
+for no in range(1, 7):
+    stem = []
+    for part in range(1, 11):
+        if stem:
+            stem.append({'t': '\n'})
+        stem.append({'t': f'({part}) 조건에 맞는 값을 구하시오.'})
+    written.append({'no': no, 'label': f'서술형 {no}.', 'stem': stem})
+roomy, _ = build_exam({
+    'source_pages': [{'page': 1, 'width': 1000, 'height': 1414}],
+    'sections': [{'items': [q(1)]}, {'title': '서술형', 'break_before': 'column', 'items': written}],
+})
+with zipfile.ZipFile(io.BytesIO(roomy)) as z:
+    sec = ET.fromstring(z.read('Contents/section0.xml'))
+    head = ET.fromstring(z.read('Contents/header.xml'))
+assert (estimated_pages(roomy) or 0) > 1, '풀이 공간이 한 쪽에 들어가지 않으면 쪽 수를 늘린다'
+assert any(c.get('colCount') == '2' for c in sec.iter(hp + 'colPr')), '시험지 본문은 2단'
+
+def text_of(node):
+    return ''.join(t.text or '' for t in node.iter(hp + 't'))
+
+styles = {e.get('id'): e for e in head.iter(hh + 'paraPr')}
+font_heights = {e.get('id'): int(e.get('height')) for e in head.iter(hh + 'charPr')}
+paras = sec.findall(hp + 'p')
+body_runs = [r for p in paras if text_of(p).startswith(('1. 1번 문제 글입니다.', '서술형 '))
+             for r in p.findall(hp + 'run') if text_of(r).strip()]
+choice_runs = [r for r in sec.iter(hp + 'run') if text_of(r).startswith('①  ')]
+for runs in (body_runs, choice_runs):
+    assert runs and {font_heights[r.get('charPrIDRef')] for r in runs} == {1200}, '본문과 선택지는 12pt'
+spaces = [p for p in paras if text_of(p) == '\u00a0']
+assert len(spaces) == 1 + len(written), '마지막 문항에도 풀이 자리를 둔다'
+last_written = next(p for p in paras if text_of(p).startswith('서술형 6.'))
+assert paras.index(spaces[-1]) > paras.index(last_written), '마지막 풀이 자리는 마지막 문항 뒤'
+for p, minimum_mm in zip(spaces, [12] + [28] * len(written)):
+    space_run = next(r for r in p.findall(hp + 'run') if text_of(r) == '\u00a0')
+    height = prev_of(p, styles) + font_heights[space_run.get('charPrIDRef')]
+    assert height >= round(minimum_mm * 283.465), (minimum_mm, height)
 
 # ①②③ / ④⑤처럼 둘째 행이 있는 선택지 표에는 뷰어가 그대로 쓸 수 있는 행 높이를 저장한다.
 # 분수가 들어간 첫 행은 숫자만 있는 둘째 행보다 높아야 한다.
