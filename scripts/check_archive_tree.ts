@@ -24,8 +24,13 @@ const recent = exam("recent", "숭의중학교 1학년 2학기 기말고사", "�
   created_at: "2026-11-11T10:00:00Z",
 });
 const olderYear = exam("older-year", "숭의중 2025학년도 3학년 2학기", "숭의중학교.pdf");
+const firstTerm = exam("first-term", "금호중 2026학년도 2학년 1학기", "금호중.pdf");
+const secondGrade = exam("second-grade", "2026학년도 ( 2 )학년 2학기", "시험지.pdf");
+const upperGrade = exam("upper-grade", "2026학년도 6학년 2학기", "시험지.pdf");
 const schoolConflict = exam("school-conflict", "금호중 2학년", "대자중학교_2학년.pdf");
-const gradeConflict = exam("grade-conflict", "숭의중 2학년", "숭의중학교_1학년.pdf");
+const gradeConflict = exam("grade-conflict", "숭의중 2026학년도 2학년 2학기", "숭의중학교_1학년.pdf");
+const termConflict = exam("term-conflict", "숭의중 2026학년도 2학년 2학기", "숭의중학교_1학기.pdf");
+const yearConflict = exam("year-conflict", "숭의중 2026학년도 2학년 2학기", "숭의중학교_2025년.pdf");
 const unknown = exam("unknown", "제목 없는 시험지", "변환중_수학기초.pdf");
 const noOriginal = exam("no-original", "숭의중 시험지", "숭의중.pdf", { original_files: [] });
 const noOutput = exam("no-output", "숭의중 시험지", "숭의중.pdf", { hwpx_path: null });
@@ -35,17 +40,39 @@ const failed = exam("failed", "숭의중 시험지", "숭의중.pdf", { status: 
 assert.equal(isArchived(recent), true);
 for (const doc of [noOriginal, noOutput, stopped, failed]) assert.equal(isArchived(doc), false);
 
-const tree = groupArchivedDocuments([unknown, old, olderYear, noOriginal, gradeConflict, failed, schoolConflict, recent, noOutput, stopped]);
-assert.deepEqual(tree.map(({ label, count }) => [label, count]), [["숭의중학교", 4], ["학교 미분류", 2]]);
-assert.deepEqual(tree[0].groups.map((group) => [group.label, group.docs.map((doc) => doc.id)]), [
-  ["2026학년도 1학년 2학기", ["recent", "old"]],
-  ["2025학년도 3학년 2학기", ["older-year"]],
-  ["학년·학기 미분류", ["grade-conflict"]],
+const input = [unknown, old, olderYear, noOriginal, gradeConflict, failed, schoolConflict, recent, noOutput, stopped,
+  firstTerm, secondGrade, upperGrade, termConflict, yearConflict];
+const tree = groupArchivedDocuments(input);
+assert.deepEqual(tree.map(({ label, count }) => [label, count]), [["2026학년도", 7], ["2025학년도", 1], ["년도 미분류", 3]]);
+const paths = tree.flatMap((year) => year.terms.flatMap((term) => term.grades.map((grade) => [
+  year.label, term.label, grade.label, grade.docs.map((doc) => doc.id),
+])));
+assert.deepEqual(paths, [
+  ["2026학년도", "1학기", "2학년", ["first-term"]],
+  ["2026학년도", "2학기", "1학년", ["recent", "old"]],
+  ["2026학년도", "2학기", "2학년", ["second-grade"]],
+  ["2026학년도", "2학기", "6학년", ["upper-grade"]],
+  ["2026학년도", "2학기", "학년 미분류", ["grade-conflict"]],
+  ["2026학년도", "학기 미분류", "2학년", ["term-conflict"]],
+  ["2025학년도", "2학기", "3학년", ["older-year"]],
+  ["년도 미분류", "2학기", "2학년", ["year-conflict"]],
+  ["년도 미분류", "학기 미분류", "2학년", ["school-conflict"]],
+  ["년도 미분류", "학기 미분류", "학년 미분류", ["unknown"]],
 ]);
-assert.deepEqual(tree[1].groups.map((group) => [group.label, group.docs.map((doc) => doc.id)]), [
-  ["2학년", ["school-conflict"]],
-  ["학년·학기 미분류", ["unknown"]],
-]);
+for (const year of tree) {
+  assert.equal(year.count, year.terms.reduce((n, term) => n + term.count, 0));
+  for (const term of year.terms) assert.equal(term.count, term.grades.reduce((n, grade) => n + grade.docs.length, 0));
+}
+const grouped = tree.flatMap((year) => year.terms.flatMap((term) => term.grades.flatMap((grade) => grade.docs)));
+assert.equal(grouped.length, input.filter(isArchived).length);
+assert.equal(new Set(grouped.map((doc) => doc.id)).size, grouped.length);
+assert.equal(grouped.find((doc) => doc.id === recent.id), recent, "분류해도 원본과 한글 파일이 묶인 항목을 유지한다");
+const normalized = groupArchivedDocuments([exam("normalized", "２０２４학년도 （ ３ ）학년 １학기", "scan.pdf")]);
+assert.equal(normalized[0].label, "2024학년도");
+assert.equal(normalized[0].terms[0].label, "1학기");
+assert.equal(normalized[0].terms[0].grades[0].label, "3학년");
+assert.equal(groupArchivedDocuments([exam("date-only", "시험지", "scan_2026-11-11.pdf")])[0].label, "년도 미분류",
+  "저장 날짜나 스캔 파일의 날짜를 시험 학년도로 추측하지 않는다");
 assert.deepEqual(groupArchivedDocuments([noOriginal, noOutput, stopped, failed]), []);
 
 // 실제 파일 저장 경로와 보관함 API에서 원본을 추가하는 흐름을 확인한다.
@@ -97,4 +124,4 @@ try {
   await rm(scratch, { recursive: true, force: true });
 }
 
-console.log("완료 파일과 원본 묶기, 원본 추가와 내려받기, 학교·학년 분류 및 정렬 검사 통과");
+console.log("완료 파일과 원본 묶기, 원본 추가와 내려받기, 년도·학기·학년 분류 및 정렬 검사 통과");
