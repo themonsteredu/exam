@@ -47,10 +47,19 @@ function classInfo(texts: string[]): ClassInfo {
   const grades = new Set<number>();
   const terms = new Set<number>();
   for (const raw of texts) {
-    const text = raw.replace(/\(\s*([1-6])\s*\)\s*(학년|학기)/g, "$1$2");
-    for (const [, year] of text.matchAll(/(?:^|\D)((?:19|20)\d{2})\s*(?:학년도|년)/g)) years.add(Number(year));
+    const text = raw
+      .replace(/\(\s*([1-6])\s*\)\s*(학년|학기)/g, "$1$2")
+      // 스캔 날짜를 시험 학년도나 '학년-학기'로 읽지 않는다.
+      .replace(/(?<!\d)(?:19|20)\d{2}[-./]\d{1,2}[-./]\d{1,2}(?!\d)/g, " ");
+    for (const [, year] of text.matchAll(/(?:^|\D)((?:19|20)\d{2})(?!\d)/g)) years.add(Number(year));
+    // 보관된 '26년 문성중 1-2' 같은 최근 시험지 파일명 표기.
+    for (const [, year] of text.matchAll(/(?:^|\D)([0-4]\d)\s*(?:학년도|년)/g)) years.add(2000 + Number(year));
     for (const [, grade] of text.matchAll(/(?:^|\D)([1-6])\s*학년(?!도)/g)) grades.add(Number(grade));
     for (const [, term] of text.matchAll(/(?:^|\D)([12])\s*학기/g)) terms.add(Number(term));
+    for (const [, grade, term] of text.matchAll(/(?:^|[^\d])([1-6])\s*[-–]\s*([12])(?=$|[^\d])/g)) {
+      grades.add(Number(grade));
+      terms.add(Number(term));
+    }
   }
   // 한 항목이 모호하더라도 나머지 확인된 분류는 유지한다.
   const unique = (values: Set<number>) => values.size === 1 ? [...values][0] : undefined;

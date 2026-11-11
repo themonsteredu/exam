@@ -71,8 +71,23 @@ const normalized = groupArchivedDocuments([exam("normalized", "２０２４학�
 assert.equal(normalized[0].label, "2024학년도");
 assert.equal(normalized[0].terms[0].label, "1학기");
 assert.equal(normalized[0].terms[0].grades[0].label, "3학년");
+for (const [title, year, grade] of [
+  ["TalkFile_2025 중1-2 기말 서석중 수학".normalize("NFD"), "2025학년도", "1학년"],
+  ["2026 중3-2 중간 주월중", "2026학년도", "3학년"],
+  ["2025년 3-2 기말 숭의중", "2025학년도", "3학년"],
+  ["2024 중 1-2 중간 금호중", "2024학년도", "1학년"],
+  ["26년 문성중 1-2 중간고사", "2026학년도", "1학년"],
+]) {
+  const [group] = groupArchivedDocuments([exam("filename", title, `${title}.pdf`)]);
+  assert.equal(group.label, year);
+  assert.equal(group.terms[0].label, "2학기");
+  assert.equal(group.terms[0].grades[0].label, grade);
+}
 assert.equal(groupArchivedDocuments([exam("date-only", "시험지", "scan_2026-11-11.pdf")])[0].label, "년도 미분류",
   "저장 날짜나 스캔 파일의 날짜를 시험 학년도로 추측하지 않는다");
+const [scanDate] = groupArchivedDocuments([exam("scan-date", "시험지", "scan_2026-1-2.pdf")]);
+assert.equal(scanDate.terms[0].label, "학기 미분류");
+assert.equal(scanDate.terms[0].grades[0].label, "학년 미분류");
 assert.deepEqual(groupArchivedDocuments([noOriginal, noOutput, stopped, failed]), []);
 
 // 실제 파일 저장 경로와 보관함 API에서 원본을 추가하는 흐름을 확인한다.
