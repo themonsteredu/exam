@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { getStore, type FileRef } from "./store";
 import type { Progress } from "@/lib/client/make-exam";
 
-export type JobInput = { docId: string; device: string; models: { page: string; figure: string }; origin: string; mode: "create" | "rebuild" };
+export type JobInput = { docId: string; device: string; models: { page: string; figure: string }; origin: string; mode: "create" | "rebuild" | "reread";
+  targets?: { section: number; index: number; figureIndex: number; name: string; reasons: string[] }[] };
 export type JobState = { runId: string; status: "running" | "completed" | "failed" | "cancelled"; progress: Progress; error?: string; warnings?: string[] };
 export const jobKey = (id: string) => `exam_job_${id}`;
 export async function getJob(id: string): Promise<JobState | null> {

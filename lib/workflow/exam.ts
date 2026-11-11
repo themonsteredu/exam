@@ -1,6 +1,6 @@
 import { getWorkflowMetadata } from "workflow";
 import type { JobInput } from "@/lib/server/exam-job";
-import { begin, inspectOriginal, preparePage, readPageStep, cropPage, readFigureStep, assemble, rebuild, draw, finish, failJob, progress } from "./exam-steps";
+import { begin, inspectOriginal, preparePage, readPageStep, cropPage, readFigureStep, assemble, rebuild, prepareReread, applyReread, draw, finish, failJob, progress } from "./exam-steps";
 
 export async function createExam(job: JobInput) {
   "use workflow";
@@ -8,8 +8,15 @@ export async function createExam(job: JobInput) {
   try {
     const doc = await begin(job, runId);
     let work: string;
-    if (job.mode === "rebuild") {
+    if (job.mode !== "create") {
       work = await rebuild(job);
+      if (job.mode === "reread") {
+        for (let i = 0; i < (job.targets || []).length; i++) {
+          const cut = await prepareReread(job, work, i);
+          const answer = await readFigureStep(job, cut);
+          work = await applyReread(job, work, answer, i);
+        }
+      }
     } else {
       const sources: { file: number; index: number; label: string; problem?: string }[] = [];
       for (let file = 0; file < doc.original_files.length; file++) {

@@ -14,7 +14,7 @@ function documentStatus(doc: ArchiveDocument): string {
   if (doc.hwpx_path && !doc.original_files.length) return "원본 필요";
   if (doc.status === "failed") return "실패";
   if (doc.status === "done") return "한글 파일 필요";
-  return "작업 중·멈춤";
+  return doc.note?.includes("서버") || doc.note?.includes("읽고 있습니다") ? "서버 제작 중" : "작업 기록";
 }
 
 export default function ArchivePage() {
@@ -175,6 +175,7 @@ function ArchiveRow({ doc, group, busy, locked, onDownload, onRemove, onAttach }
         {doc.item_count > 0 && <span className="archive-document-meta">{doc.item_count}문항</span>}
       </div>
       <div className="archive-actions">
+        {doc.status === "reading" && <a href={`/?job=${encodeURIComponent(doc.id)}`}>진행 확인</a>}
         {doc.hwpx_path && (
           <button type="button" className="archive-download" onClick={() => onDownload(doc.hwpx_path!, `${doc.title}.hwpx`)} aria-label={`${displayTitle} 한글 파일 내려받기`}>
             한글 파일

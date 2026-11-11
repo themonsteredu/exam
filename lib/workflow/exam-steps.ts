@@ -4,7 +4,9 @@ import { currentSessionKey, logUsage, sessionVersion } from "@/lib/server/auth";
 import { makeSessionToken, SESSION_COOKIE } from "@/lib/server/session";
 import { checkpoint, download, fileUrl, getJob, loadCheckpoint, originalInput, readJson, setJob, upload, writeJson, type JobInput } from "@/lib/server/exam-job";
 import { renderOnServer } from "@/lib/server/exam-render";
-import { assembleExam, figureJobs, normalizeLegacyExam, tidyExam, toExamPieces } from "@/lib/ai/assemble";
+import { serverReading } from "@/lib/server/reading-cache";
+import { assembleExam, figureJobs, normalizeLegacyExam, tidyExam, toExamPieces, replaceFigureReading, reviewFigures, usableReading } from "@/lib/ai/assemble";
+import { itemFigures } from "@/lib/figure/item-figures";
 import { readPage, continuationHint } from "@/lib/ai/read-page";
 import { readOrientation } from "@/lib/ai/read-orient";
 import { readFigure } from "@/lib/ai/read-figure";
@@ -13,6 +15,9 @@ import { providerFor } from "@/lib/ai/models";
 import { ReadError } from "@/lib/ai/claude";
 import { fakeAiEnabled, fakeFigure, fakePage } from "@/lib/ai/fake";
 import type { Progress } from "@/lib/client/make-exam";
+
+// 한 함수 실행에서 두 번의 긴 AI 호출이 이어져 플랫폼 제한을 넘지 않게 한다.
+process.env.WORKFLOW_MAX_INLINE_STEPS = "1";
 
 async function active(job: JobInput) {
   const state = await getJob(job.docId);
@@ -50,7 +55,9 @@ export async function progress(job: JobInput, value: Progress) {
 export async function inspectOriginal(job: JobInput, ref: FileRef): Promise<{ label: string; problem?: string }[]> {
   "use step";
   await active(job);
-  return renderOnServer(job.origin, "inspect", await originalInput(ref, job.origin));
+  const pages = await renderOnServer(job.origin, "inspect", await originalInput(ref, job.origin));
+  if (pages.some((p: any) => p.problem)) throw new FatalError("PDF의 일부 글자나 그림을 열지 못했습니다. PDF를 다시 저장하거나 JPG로 올려 주세요. AI 읽기는 시작하지 않았습니다.");
+  return pages;
 }
 export async function preparePage(job: JobInput, ref: FileRef, index: number, page: number) {
   "use step";
@@ -83,8 +90,9 @@ export async function readPageStep(job: JobInput, preparedPath: string, page: nu
   const cfg = await config(job, "page");
   const prepared = await readJson(preparedPath, job.origin);
   try {
-    const answer = fakeAiEnabled() ? fakePage() : await readPage(prepared.image, { ...cfg, page, total, before, deadline: Date.now() + 260_000 });
-    await logUsage("page", answer.usage, job.docId, cfg.keyTag);
+    const answer = await serverReading("page", `${job.device}:${cfg.keyTag}`, { model: cfg.model, image: prepared.image, page, total, before },
+      async () => fakeAiEnabled() ? fakePage() : readPage(prepared.image, { ...cfg, page, total, before, deadline: Date.now() + 260_000 }));
+    if (!answer.cached) await logUsage("page", answer.usage, job.docId, cfg.keyTag);
     let section: string | undefined; let no: number | undefined;
     for (const s of answer.reading.sections) { if (s.title) section = s.title; if (s.items.length) no = s.items[s.items.length - 1].no; }
     return { path: await writeJson(job, { meta: prepared.meta, reading: answer.reading }), before: continuationHint(section, no), usd: answer.usage.usd };
@@ -114,12 +122,13 @@ export async function cropPage(job: JobInput, preparedPath: string, pagePath: st
 export async function readFigureStep(job: JobInput, cutPath: string) {
   "use step";
   const cfg = await config(job, "figure");
-  const { key, cut, kind, item, upright } = await readJson(cutPath, job.origin);
+  const { key, cut, kind, item, upright, hint } = await readJson(cutPath, job.origin);
   let result: any; let usd = 0;
   try {
     const reader = ["table", "map", "chart", "illustration", "photo", "other"].includes(kind) ? readGraphic : readFigure;
-    const answer = fakeAiEnabled() ? fakeFigure(item.no) : await reader(cut.image, item, { ...cfg, pageUpright: upright, deadline: Date.now() + 260_000 });
-    await logUsage("figure", answer.usage, job.docId, cfg.keyTag);
+    const answer = await serverReading("figure", `${job.device}:${cfg.keyTag}`, { model: cfg.model, image: cut.image, item, kind, upright, hint },
+      async () => fakeAiEnabled() ? fakeFigure(item.no) : reader(cut.image, item, { ...cfg, hint, pageUpright: upright, deadline: Date.now() + 260_000 }), job.mode === "reread");
+    if (!answer.cached) await logUsage("figure", answer.usage, job.docId, cfg.keyTag);
     usd = answer.usage.usd;
     result = { crop: cut.crop, scale: cut.scale, reading: answer.figure };
   } catch (err) {
@@ -146,6 +155,49 @@ export async function rebuild(job: JobInput) {
   const doc = (await getStore().getDoc(job.docId))!;
   const exam = tidyExam(normalizeLegacyExam(await loadCheckpoint(job, doc.exam_json)));
   return writeJson(job, { exam, usd: doc.cost_usd, pageProblems: (doc.exam_json as any)?.pageProblems || [] });
+}
+export async function prepareReread(job: JobInput, workPath: string, index: number) {
+  "use step";
+  await active(job);
+  const target = job.targets![index];
+  const work = await readJson(workPath, job.origin);
+  const item = work.exam.sections?.[target.section]?.items?.[target.index];
+  const fig: any = itemFigures(item)[target.figureIndex];
+  if (!fig?.box?.page) throw new FatalError("다시 읽을 그림의 원본 위치가 없습니다.");
+  const doc = (await getStore().getDoc(job.docId))!;
+  let remaining = fig.box.page - 1;
+  let raw: any;
+  for (const ref of doc.original_files) {
+    const info = await originalInput(ref, job.origin);
+    const pages = await renderOnServer(job.origin, "inspect", info);
+    if (remaining < pages.length) { raw = await renderOnServer(job.origin, "page", { ...info, index: remaining }); break; }
+    remaining -= pages.length;
+  }
+  if (!raw) throw new FatalError("그림이 있던 원본 쪽을 찾지 못했습니다.");
+  const source = work.exam.source_pages?.find((p: any) => p.page === fig.box.page);
+  const rawPath = await upload(job.docId, pngBytes(raw.png), job.origin, "png");
+  const prepared = await renderOnServer(job.origin, "prepare", { url: await signed(rawPath, job), rotate: source?.rotate || 0 });
+  const png = await upload(job.docId, pngBytes(prepared.png), job.origin, "png");
+  const kind = fig.asset_kind || "diagram";
+  const [cut] = await renderOnServer(job.origin, "crop", { url: await signed(png, job), scale: 1, regions: [{ ...fig.box, kind, place: fig.place || "below" }] });
+  const state = (await getJob(job.docId))!;
+  await setJob(job.docId, { ...state, progress: { ...state.progress, step: "figure", message: `${target.name} 그림을 다시 읽고 있습니다.`, figuresDone: index, figuresTotal: job.targets!.length, usd: work.usd } });
+  return writeJson(job, { key: String(index), cut, kind, item: { no: item.no, stem: item.stem || [], choices: item.choices || [], bogi: item.bogi || [] }, upright: !!source && ("rotate" in source || !(source.width > source.height)), hint: target.reasons.join(" / ").slice(0, 600) });
+}
+export async function applyReread(job: JobInput, workPath: string, answer: { path: string; usd: number }, index: number) {
+  "use step";
+  await active(job);
+  const work = await readJson(workPath, job.origin);
+  const { result } = await readJson(answer.path, job.origin);
+  const target = job.targets![index];
+  const item = work.exam.sections[target.section].items[target.index];
+  const fig: any = itemFigures(item)[target.figureIndex];
+  if (usableReading(result, fig.asset_kind || "diagram")) replaceFigureReading(item, target.figureIndex, result, target.reasons.join(" / "));
+  else work.pageProblems.push(`${target.name}: 다시 읽지 못해 이전 그림을 유지했습니다.`);
+  work.usd += answer.usd;
+  reviewFigures(work.exam);
+  await checkpoint(job, work.exam, work.usd, work.pageProblems);
+  return writeJson(job, work);
 }
 export async function draw(job: JobInput, workPath: string) {
   "use step";

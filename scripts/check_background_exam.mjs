@@ -69,7 +69,37 @@ try {
   assert.ok(exam.sections.flatMap(s => s.items).some(it => it.figure?.png), "서버 그림 렌더링");
   const store = JSON.parse(await readFile(".data/store.json", "utf8"));
   assert.ok(store.usage.every(u => u.model === "fake" && u.usd === 0), "유료 AI 없음");
+  async function waitForRun(runId) {
+    for (let i = 0; i < 90; i++) {
+      const status = await call(`/api/jobs/${doc.id}`);
+      if (status.job?.runId === runId && status.job.status === "failed") throw new Error(status.job.error);
+      if (status.job?.runId === runId && status.job.status === "completed") return status;
+      await pause(2000);
+    }
+    throw new Error("다시 만들기 완료 시간 초과");
+  }
+  const figureIndex = exam.sections[0].items.findIndex(it => it.figure?.commands && it.figure.box);
+  assert.ok(figureIndex >= 0);
+  const reread = await call("/api/jobs", "POST", { docId: doc.id, mode: "reread", targets: [{ section: 0, index: figureIndex, figureIndex: 0, name: "그림", reasons: ["통합 검사"] }] });
+  assert.notEqual(reread.runId, started.runId);
+  const rereadResult = await waitForRun(reread.runId);
+  assert.equal(rereadResult.doc.status, "done");
+  const readsBefore = JSON.parse(await readFile(".data/store.json", "utf8")).usage.length;
+  await call("/api/settings/api-key", "DELETE");
+  const rebuilt = await call("/api/jobs", "POST", { docId: doc.id, mode: "rebuild" });
+  assert.notEqual(rebuilt.runId, reread.runId);
+  const rebuiltResult = await waitForRun(rebuilt.runId);
+  assert.equal(rebuiltResult.doc.status, "done");
+  assert.equal(JSON.parse(await readFile(".data/store.json", "utf8")).usage.length, readsBefore, "다시 만들기는 API 키·AI 호출 불필요");
+  const cancelled = await call("/api/jobs", "POST", { docId: doc.id, mode: "rebuild" });
+  await call(`/api/jobs/${doc.id}`, "DELETE");
+  await pause(3000);
+  const cancelledResult = await call(`/api/jobs/${doc.id}`);
+  assert.equal(cancelledResult.job.runId, cancelled.runId);
+  assert.equal(cancelledResult.job.status, "cancelled");
+  assert.equal(cancelledResult.doc.hwpx_path, rebuiltResult.doc.hwpx_path, "취소해도 기존 완성 파일 유지");
   console.log("브라우저 종료 → 서버 제작 완료 → 원본·도형·한글 보관 / 중복 접수·인증 검사 통과");
+  console.log("선택 그림 다시 읽기·API 키 없는 다시 만들기·접수 직후 취소 검사 통과");
 } catch (err) {
   console.error(logs); throw err;
 } finally {
