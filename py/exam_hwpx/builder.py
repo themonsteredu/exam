@@ -566,11 +566,27 @@ class ExamBuilder:
         png_size(data)  # PNG 인지 확인
         return data
 
+    def scaled_figure_width_mm(self, fig: dict, default: float = 50) -> float:
+        source_width = fig.get("width_mm") or (fig.get("size_mm") or [default])[0]
+        return float(source_width) * self.tpl["figure"].get("scale", 1.0)
+
     def figure_width_mm(self, fig: dict) -> float:
-        width = (fig.get("width_mm") or (fig.get("size_mm") or [50])[0]) * self.tpl["figure"].get("scale", 1.0)
         column_mm = self.column_width() / MM
         limit = column_mm * self.tpl["figure"]["right_max_ratio"] if fig.get("place") == "right" else column_mm - 1
-        return min(float(width), limit)
+        return min(self.scaled_figure_width_mm(fig), limit)
+
+    def figure_height_budget_mm(self) -> float:
+        margins = self.tpl["margins_mm"]
+        body_height = self.tpl["paper"]["height_mm"] - sum(margins.get(k, 0) for k in ("top", "bottom", "header", "footer"))
+        work_space = max(self.tpl.get("work_space_mm", {}).values(), default=0)
+        return max(20, body_height - work_space - 20)  # 문제 글과 풀이 공간을 위한 자리
+
+    @staticmethod
+    def fit_picture_size(png: bytes, width_mm: float, height_limit_mm: float) -> tuple[float, float]:
+        px_w, px_h = png_size(png)
+        aspect = px_h / px_w
+        width_mm = min(width_mm, height_limit_mm / aspect)
+        return width_mm, width_mm * aspect
 
     def figure_align(self, fig: dict, no) -> str:
         """그림 가로 맞춤. LEFT·CENTER·RIGHT 가 아니면 가운데로 두고 알려 준다."""
@@ -595,9 +611,7 @@ class ExamBuilder:
                 self.warnings.append(f"{no}번 그림: 그림을 만들지 못해 빈 자리로 넣음 - {fig['render_error']}")
             self.build_figure_placeholder(fig, align=self.figure_align(fig, no))
             return
-        w_mm = self.figure_width_mm(fig)
-        px_w, px_h = png_size(png)
-        h_mm = w_mm * px_h / px_w
+        w_mm, h_mm = self.fit_picture_size(png, self.figure_width_mm(fig), self.figure_height_budget_mm())
         if fig.get("place") == "right":
             self.add_floating_figure(stem_paragraph, png, w_mm, h_mm)
             return
@@ -710,6 +724,7 @@ class ExamBuilder:
             for c in range(cols):
                 table.set_cell_border_fill(r, c, none)
         cell_mm = column_mm / cols
+        picture_height_limit = max(8, self.figure_height_budget_mm() / rows - 8)  # 번호와 설명 줄
         row_heights = [0] * rows
         for i, fig in enumerate(figures):
             cell = table.cell(i // cols, i % cols)
@@ -728,9 +743,8 @@ class ExamBuilder:
                                  spacing_after_pt=4)
                 height += int(round((t["sizes"]["box"] + 4) * 100))
             else:
-                px_w, px_h = png_size(png)
-                w_mm = min(float(fig.get("width_mm") or (fig.get("size_mm") or [cell_mm])[0]), cell_mm - 4)
-                h_mm = w_mm * px_h / px_w
+                width_mm = min(self.scaled_figure_width_mm(fig, default=cell_mm), cell_mm - 4)
+                w_mm, h_mm = self.fit_picture_size(png, width_mm, picture_height_limit)
                 pic = p.add_picture(self.add_image(png), width=mm(w_mm), height=mm(h_mm), treat_as_char=True, align="CENTER")
                 hancom_picture_sizes(pic.element, png)
                 self.para_format(p, alignment="CENTER", line_spacing_percent=100, indent_left_mm=0, first_line_indent_mm=0,
@@ -843,8 +857,11 @@ class ExamBuilder:
                     continue
                 if figure.get("place") == "right" and figure.get("png"):
                     # 내어쓰기 5.5 mm와 그림 왼쪽 바깥 여백 3 mm를 뺀 폭이다.
-                    beside = self.column_width() / MM - self.figure_width_mm(figure) - 8.5
-                    if right_count > 1 or widest_word > beside:
+                    column_mm = self.column_width() / MM
+                    width = self.scaled_figure_width_mm(figure)
+                    beside = column_mm - width - 8.5
+                    if (right_count > 1 or width > column_mm * t["figure"]["right_max_ratio"]
+                            or beside < max(widest_word, column_mm * 0.55)):
                         figure = {**figure, "place": "below"}
                 self.build_figure({**item, "figure": figure}, first)
 
