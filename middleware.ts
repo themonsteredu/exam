@@ -7,7 +7,7 @@ import { DEVICE_COOKIE, DEVICE_MAX_AGE, isDeviceId, newDeviceId } from "@/lib/se
 import { isHttps, peekSessionToken, SESSION_COOKIE } from "@/lib/server/session";
 
 /** 로그인 없이 열리는 곳 */
-const OPEN = ["/login", "/api/auth/login", "/api/dev-files"];
+const OPEN = ["/login", "/api/auth/login", "/api/dev-files", "/internal-render"];
 
 export function middleware(req: NextRequest) {
   const fresh = isDeviceId(req.cookies.get(DEVICE_COOKIE)?.value) ? null : newDeviceId();
@@ -45,5 +45,5 @@ function pass(req: NextRequest, fresh: string | null): NextResponse {
 
 export const config = {
   // 글꼴, 빌드 파일, 아이콘, PDF 보조 파일은 막지 않는다
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|fonts/|pdfjs/|pdf.worker).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|fonts/|pdfjs/|pdf.worker|.well-known/workflow/).*)"],
 };

@@ -262,3 +262,20 @@ for cell in table.iter(hp + 'tc'):
     if pic is not None:
         assert int(cell.find(hp + 'cellSz').get('height')) >= int(pic.find(hp + 'sz').get('height')) + 1100
 print('한글 문항 강조, 배점, 수식, B4 용지, 단 아래 빈 곳, 선택지 행 높이, 그림 배치와 확대 확인 완료')
+
+# 원본에서 작은 도형도 읽을 수 있는 크기, 원본의 단 경계를 넘어간 문항도 보호한다.
+readable, _ = build_exam({'sections': [{'items': [
+    {'no': 1, 'stem': [{'t': '다음 그림을 보고 답하시오.'}], 'split_ok': True,
+     'figure': {**right, 'commands': {'base': 10}, 'size_mm': [20, 10]},
+     'choices': [[{'t': '정답'}], [{'t': '오답'}]]},
+]}]})
+with zipfile.ZipFile(io.BytesIO(readable)) as z:
+    sec = ET.fromstring(z.read('Contents/section0.xml'))
+    head = ET.fromstring(z.read('Contents/header.xml'))
+pic = next(sec.iter(hp + 'pic'))
+assert_picture_size(pic, 44)
+assert pic.find(hp + 'pos').get('treatAsChar') == '1', '작은 원본 도형을 본문 아래에서 크게 표시'
+stem = next(p for p in sec.iter(hp + 'p') if '다음 그림을 보고' in ''.join(t.text or '' for t in p.iter(hp + 't')))
+style = next(p for p in head.iter() if p.tag.endswith('}paraPr') and p.get('id') == stem.get('paraPrIDRef'))
+assert any(n.get('keepWithNext') == '1' for n in style.iter()), '문제 글과 그림을 다음 단으로 함께 넘긴다'
+print('작은 도형 최소 인쇄 크기·문제와 그림 함께 넘기기 확인 완료')

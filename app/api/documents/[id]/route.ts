@@ -1,6 +1,7 @@
 // 보관함 문서 하나: 읽기 / 고치기(제목, 상태, 파일, 시험지 JSON, 요금) / 지우기(파일까지).
 import { requireSession } from "@/lib/server/auth";
 import { DOC_ID, getStore, isAllowedPath, type DocPatch, type FileRef } from "@/lib/server/store";
+import { getJob } from "@/lib/server/exam-job";
 
 export const runtime = "nodejs";
 
@@ -54,6 +55,7 @@ export async function PATCH(req: Request, { params }: Ctx) {
   }
   try {
     const store = getStore();
+    if ((await getJob(id))?.status === "running") return Response.json({ error: "서버에서 제작 중인 문서입니다. 진행 상태를 확인해 주세요." }, { status: 409 });
     if (body.attach_originals !== undefined) {
       const refs = Array.isArray(body.attach_originals) ? originalRefs(body.attach_originals) : [];
       if (!Array.isArray(body.attach_originals) || !refs.length || refs.length !== body.attach_originals.length) {
@@ -79,6 +81,7 @@ export async function DELETE(req: Request, { params }: Ctx) {
   const { id } = await params;
   if (!DOC_ID.test(id)) return Response.json({ error: "문서를 찾지 못했습니다." }, { status: 404 });
   try {
+    if ((await getJob(id))?.status === "running") return Response.json({ error: "서버 제작을 취소한 뒤 지워 주세요." }, { status: 409 });
     await getStore().deleteDoc(id);
     return Response.json({ ok: true });
   } catch {
