@@ -1,13 +1,15 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, downloadStored, patchJson, uploadFile, won, type FileRef } from "@/lib/client/api";
-import { archiveDisplayTitle, groupArchivedDocuments, isArchived, type ArchiveClassPath, type ArchiveDocument } from "@/lib/client/archive-tree";
+import { api, downloadStored, patchJson, postJson, uploadFile, won, type FileRef } from "@/lib/client/api";
+import { ARCHIVE_STEPS, EMPTY_ARCHIVE_SELECTION, archivedItems, archiveOptions, archiveSchoolMatches, selectArchiveStep, selectedArchiveItems, archiveDisplayTitle, isArchived, type ArchiveClassPath, type ArchiveDocument, type ArchiveSelection, type ArchiveStep } from "@/lib/client/archive-tree";
 import { precheckFiles } from "@/lib/client/pages";
 
 const BATCH_SIZE = 100;
 const when = (iso: string) => new Date(iso).toLocaleDateString("ko-KR", { dateStyle: "medium" });
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
+const stepLabels: Record<ArchiveStep, string> = { year: "년도", grade: "학년", term: "학기", exam: "시험" };
+const stepPrompts: Record<ArchiveStep, string> = { year: "년도를 선택해 주세요.", grade: "학년을 선택해 주세요.", term: "학기를 선택해 주세요.", exam: "중간 또는 기말을 선택해 주세요." };
 
 function documentStatus(doc: ArchiveDocument): string {
   if (isArchived(doc)) return "완료";
@@ -23,6 +25,8 @@ export default function ArchivePage() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const [selection, setSelection] = useState<ArchiveSelection>({ ...EMPTY_ARCHIVE_SELECTION });
+  const [query, setQuery] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -45,9 +49,28 @@ export default function ArchivePage() {
     return () => controller.abort();
   }, []);
 
-  const groups = useMemo(() => groupArchivedDocuments(docs ?? []), [docs]);
+  const items = useMemo(() => archivedItems(docs ?? []), [docs]);
   const unfinished = useMemo(() => (docs ?? []).filter((doc) => !isArchived(doc)), [docs]);
-  const completedCount = groups.reduce((count, year) => count + year.count, 0);
+  const searching = query.trim().length > 0;
+  const selectedAll = ARCHIVE_STEPS.every(step => selection[step]);
+  const visibleItems = useMemo(() => searching ? items.filter(item => archiveSchoolMatches(item, query)) : selectedArchiveItems(items, selection), [items, selection, query, searching]);
+  const completedCount = items.length;
+
+  async function retry(doc: ArchiveDocument) {
+    setBusy(doc.id); setError("");
+    try {
+      const { doc: saved } = await api<{ doc: ArchiveDocument & { exam_json?: unknown } }>(`/api/documents/${doc.id}`);
+      if (!saved.exam_json && !confirm("저장된 원본으로 읽기를 다시 시도할까요? 이미 읽어 둔 결과는 재사용하며, 새로 읽는 부분에는 AI 요금이 발생할 수 있습니다.")) return;
+      // 접수 응답이 유실돼도 같은 문서로 조회해 중복 생성하지 않는다.
+      localStorage.setItem("exam-server-job", doc.id);
+      localStorage.setItem("exam-server-mode", "retry");
+      localStorage.setItem("exam-server-targets", "[]");
+      await postJson("/api/jobs", { docId: doc.id, mode: "retry" });
+      window.location.assign(`/?job=${encodeURIComponent(doc.id)}`);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally { setBusy(null); }
+  }
 
   async function download(path: string, name: string) {
     setError("");
@@ -100,9 +123,9 @@ export default function ArchivePage() {
     }
   }
 
-  const row = (doc: ArchiveDocument, group?: ArchiveClassPath) => (
+  const row = (doc: ArchiveDocument, group?: ArchiveClassPath, context?: string) => (
     <ArchiveRow key={doc.id} doc={doc} group={group} busy={busy === doc.id} locked={busy !== null}
-      onDownload={download} onRemove={remove} onAttach={attach} />
+      context={context} onDownload={download} onRemove={remove} onAttach={attach} onRetry={retry} />
   );
 
   return (
@@ -123,21 +146,34 @@ export default function ArchivePage() {
               작업 기록 <span>{unfinished.length}</span>
             </button>
           </div>
-          {view === "completed" && (groups.length ? (
-            <section className="archive-tree" aria-label="년도·학기·학년별 완료 시험지">
-              {groups.map((year, index) => (
-                <details className="archive-year" key={year.key} open={index === 0}>
-                  <summary>{year.label} <span className="archive-count">{year.count}건</span></summary>
-                  <div className="archive-classes">
-                    {year.terms.flatMap((term, i) => term.grades.map((grade, j) => (
-                      <details className="archive-class" key={`${term.key}-${grade.key}`} open={i === 0 && j === 0}>
-                        <summary><span>{term.label} <span className="archive-path-separator" aria-hidden="true">·</span> {grade.label}</span><span className="archive-count">{grade.count}건</span></summary>
-                        <ul className="archive-documents">{grade.docs.map((doc) => row(doc, { year: year.key, term: term.key, grade: grade.key }))}</ul>
-                      </details>
-                    )))}
-                  </div>
-                </details>
-              ))}
+          {view === "completed" && (items.length ? (
+            <section className="archive-browser" aria-label="완료 시험지 찾기">
+              <div className="archive-search">
+                <label className="field" htmlFor="archive-school">학교명 검색
+                  <input id="archive-school" type="search" placeholder="전체 보관함에서 학교명 검색" value={query} onChange={event => setQuery(event.target.value)} autoComplete="off" />
+                </label>
+                {searching && <button type="button" onClick={() => setQuery("")}>검색 지우기</button>}
+              </div>
+              {!searching && <div className="archive-filters" aria-label="년도, 학년, 학기, 시험 순서로 선택">
+                {ARCHIVE_STEPS.map((step, index) => {
+                  const enabled = index === 0 || Boolean(selection[ARCHIVE_STEPS[index - 1]]);
+                  const options = archiveOptions(items, selection, step);
+                  return <label className="field" key={step}><span><span className="archive-step-number">{index + 1}</span>{stepLabels[step]}</span>
+                    <select aria-label={`${stepLabels[step]} 선택`} value={selection[step]} disabled={!enabled} onChange={event => setSelection(current => selectArchiveStep(current, step, event.target.value))}>
+                      <option value="">{stepLabels[step]} 선택</option>
+                      {options.map(option => <option key={option.key} value={option.key}>{option.label} ({option.count}건)</option>)}
+                    </select>
+                  </label>;
+                })}
+              </div>}
+              {searching || selectedAll ? <div className="archive-results">
+                <div className="archive-results-heading" role="status">
+                  <h2>{searching ? "학교 검색 결과" : ARCHIVE_STEPS.map(step => visibleItems[0]?.labels[step] || archiveOptions(items, selection, step).find(option => option.key === selection[step])?.label).filter(Boolean).join(" · ")}</h2>
+                  <span className="archive-count">{visibleItems.length}건</span>
+                </div>
+                {visibleItems.length ? <ul className="archive-documents">{visibleItems.map(item => row(item.doc, item.displayPath, searching ? ARCHIVE_STEPS.map(step => item.labels[step]).join(" · ") : undefined))}</ul>
+                  : <p className="archive-empty muted">{searching ? "해당 학교의 시험지가 없습니다. 학교명 일부로도 검색할 수 있어요." : "이 분류에 보관된 시험지가 없습니다."}</p>}
+              </div> : <p className="archive-empty muted" role="status">{stepPrompts[ARCHIVE_STEPS.find(step => !selection[step]) || "year"]}</p>}
             </section>
           ) : <p className="muted">원본과 한글 파일을 함께 보관한 시험지가 여기에 표시됩니다.</p>)}
           {view === "work" && (unfinished.length ? (
@@ -149,14 +185,16 @@ export default function ArchivePage() {
   );
 }
 
-function ArchiveRow({ doc, group, busy, locked, onDownload, onRemove, onAttach }: {
+function ArchiveRow({ doc, group, context, busy, locked, onDownload, onRemove, onAttach, onRetry }: {
   doc: ArchiveDocument;
   group?: ArchiveClassPath;
+  context?: string;
   busy: boolean;
   locked: boolean;
   onDownload: (path: string, name: string) => void;
   onRemove: (doc: ArchiveDocument) => void;
   onAttach: (doc: ArchiveDocument, files: File[]) => void;
+  onRetry: (doc: ArchiveDocument) => void;
 }) {
   const fileInput = useRef<HTMLInputElement>(null);
   const [panel, setPanel] = useState<"more" | "originals" | null>(null);
@@ -173,8 +211,10 @@ function ArchiveRow({ doc, group, busy, locked, onDownload, onRemove, onAttach }
           {!archived && <span className="archive-label">{documentStatus(doc)}</span>}
         </div>
         {doc.item_count > 0 && <span className="archive-document-meta">{doc.item_count}문항</span>}
+        {context && <span className="archive-document-context">{context}</span>}
       </div>
       <div className="archive-actions">
+        {doc.status === "failed" && originals.length > 0 && <button type="button" className="archive-download" disabled={locked} onClick={() => onRetry(doc)}>{busy ? "접수 중" : "다시 시도"}</button>}
         {doc.status === "reading" && <a href={`/?job=${encodeURIComponent(doc.id)}`}>진행 확인</a>}
         {doc.hwpx_path && (
           <button type="button" className="archive-download" onClick={() => onDownload(doc.hwpx_path!, `${doc.title}.hwpx`)} aria-label={`${displayTitle} 한글 파일 내려받기`}>

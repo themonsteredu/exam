@@ -30,6 +30,7 @@ jobs:
       - run: node scripts/run-ts.mjs scripts/check_openai.ts
       - run: node scripts/run-ts.mjs scripts/check_exam_storage.ts
       - run: node scripts/run-ts.mjs scripts/check_archive_tree.ts
+      - run: node scripts/check_archive_ui.mjs
       - run: python scripts/check_hwpx_text.py
       - run: python scripts/check_latex.py
       - run: python scripts/check_eq_width.py

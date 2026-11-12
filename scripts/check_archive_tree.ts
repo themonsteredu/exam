@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { archiveDisplayTitle, groupArchivedDocuments, isArchived, type ArchiveDocument } from "@/lib/client/archive-tree";
+import { ARCHIVE_STEPS, EMPTY_ARCHIVE_SELECTION, archiveDisplayTitle, archivedItems, archiveOptions, archiveSchoolMatches, classifyArchiveDocument, selectArchiveStep, selectedArchiveItems, isArchived, type ArchiveDocument } from "@/lib/client/archive-tree";
 
 function exam(id: string, title: string, original: string, options: Partial<ArchiveDocument> = {}): ArchiveDocument {
   return {
@@ -42,52 +42,57 @@ for (const doc of [noOriginal, noOutput, stopped, failed]) assert.equal(isArchiv
 
 const input = [unknown, old, olderYear, noOriginal, gradeConflict, failed, schoolConflict, recent, noOutput, stopped,
   firstTerm, secondGrade, upperGrade, termConflict, yearConflict];
-const tree = groupArchivedDocuments(input);
-assert.deepEqual(tree.map(({ label, count }) => [label, count]), [["2026학년도", 7], ["2025학년도", 1], ["년도 미분류", 3]]);
-const paths = tree.flatMap((year) => year.terms.flatMap((term) => term.grades.map((grade) => [
-  year.label, term.label, grade.label, grade.docs.map((doc) => doc.id),
-])));
-assert.deepEqual(paths, [
-  ["2026학년도", "1학기", "2학년", ["first-term"]],
-  ["2026학년도", "2학기", "1학년", ["recent", "old"]],
-  ["2026학년도", "2학기", "2학년", ["second-grade"]],
-  ["2026학년도", "2학기", "6학년", ["upper-grade"]],
-  ["2026학년도", "2학기", "학년 미분류", ["grade-conflict"]],
-  ["2026학년도", "학기 미분류", "2학년", ["term-conflict"]],
-  ["2025학년도", "2학기", "3학년", ["older-year"]],
-  ["년도 미분류", "2학기", "2학년", ["year-conflict"]],
-  ["년도 미분류", "학기 미분류", "2학년", ["school-conflict"]],
-  ["년도 미분류", "학기 미분류", "학년 미분류", ["unknown"]],
-]);
-for (const year of tree) {
-  assert.equal(year.count, year.terms.reduce((n, term) => n + term.count, 0));
-  for (const term of year.terms) assert.equal(term.count, term.grades.reduce((n, grade) => n + grade.docs.length, 0));
-}
-const grouped = tree.flatMap((year) => year.terms.flatMap((term) => term.grades.flatMap((grade) => grade.docs)));
-assert.equal(grouped.length, input.filter(isArchived).length);
-assert.equal(new Set(grouped.map((doc) => doc.id)).size, grouped.length);
-assert.equal(grouped.find((doc) => doc.id === recent.id), recent, "분류해도 원본과 한글 파일이 묶인 항목을 유지한다");
-const normalized = groupArchivedDocuments([exam("normalized", "２０２４학년도 （ ３ ）학년 １학기", "scan.pdf")]);
-assert.equal(normalized[0].label, "2024학년도");
-assert.equal(normalized[0].terms[0].label, "1학기");
-assert.equal(normalized[0].terms[0].grades[0].label, "3학년");
+const items = archivedItems(input);
+assert.equal(items.length, input.filter(isArchived).length);
+assert.equal(new Set(items.map(item => item.doc.id)).size, items.length);
+assert.equal(items.find(item => item.doc.id === recent.id)?.doc, recent, "원본과 한글 파일의 연결을 유지한다");
+assert.deepEqual(archiveOptions(items, EMPTY_ARCHIVE_SELECTION, "year").map(({ label, count }) => [label, count]), [["2026년", 7], ["2025년", 1], ["년도 미분류", 3]]);
+let selection = selectArchiveStep(EMPTY_ARCHIVE_SELECTION, "year", "2026");
+assert.deepEqual(archiveOptions(items, selection, "grade").map(option => option.label), ["중학교 1학년", "중학교 2학년", "2학년", "6학년", "학년 미분류"]);
+selection = selectArchiveStep(selection, "grade", "middle:1");
+assert.deepEqual(archiveOptions(items, selection, "term").map(option => option.label), ["2학기"]);
+selection = selectArchiveStep(selection, "term", "2");
+assert.deepEqual(archiveOptions(items, selection, "exam").map(option => option.label), ["중간", "기말"]);
+assert.deepEqual(selectedArchiveItems(items, selection), [], "시험 선택 전에는 문서를 펼치지 않는다");
+selection = selectArchiveStep(selection, "exam", "final");
+assert.deepEqual(selectedArchiveItems(items, selection).map(item => item.doc.id), [recent.id]);
+assert.deepEqual(selectArchiveStep(selection, "year", "2025"), { year: "2025", grade: "", term: "", exam: "" }, "상위 분류를 바꾸면 하위 선택 초기화");
+assert.deepEqual(selectArchiveStep(selection, "grade", "middle:2"), { year: "2026", grade: "middle:2", term: "", exam: "" });
+assert.deepEqual(ARCHIVE_STEPS, ["year", "grade", "term", "exam"]);
+assert.equal(classifyArchiveDocument(gradeConflict).labels.grade, "학년 미분류");
+assert.equal(classifyArchiveDocument(termConflict).labels.term, "학기 미분류");
+assert.equal(classifyArchiveDocument(yearConflict).labels.year, "년도 미분류");
+const normalized = classifyArchiveDocument(exam("normalized", "２０２４학년도 （ ３ ）학년 １학기", "scan.pdf"));
+assert.equal(normalized.labels.year, "2024년");
+assert.equal(normalized.labels.term, "1학기");
+assert.equal(normalized.labels.grade, "3학년");
 for (const [title, year, grade] of [
-  ["TalkFile_2025 중1-2 기말 서석중 수학".normalize("NFD"), "2025학년도", "1학년"],
-  ["2026 중3-2 중간 주월중", "2026학년도", "3학년"],
-  ["2025년 3-2 기말 숭의중", "2025학년도", "3학년"],
-  ["2024 중 1-2 중간 금호중", "2024학년도", "1학년"],
-  ["26년 문성중 1-2 중간고사", "2026학년도", "1학년"],
+  ["TalkFile_2025 중1-2 기말 서석중 수학".normalize("NFD"), "2025년", "중학교 1학년"],
+  ["2026 중3-2 중간 주월중", "2026년", "중학교 3학년"],
+  ["2025년 3-2 기말 숭의중", "2025년", "중학교 3학년"],
+  ["2024 중 1-2 중간 금호중", "2024년", "중학교 1학년"],
+  ["26년 문성중 1-2 중간고사", "2026년", "중학교 1학년"],
 ]) {
-  const [group] = groupArchivedDocuments([exam("filename", title, `${title}.pdf`)]);
-  assert.equal(group.label, year);
-  assert.equal(group.terms[0].label, "2학기");
-  assert.equal(group.terms[0].grades[0].label, grade);
+  const item = classifyArchiveDocument(exam("filename", title, `${title}.pdf`));
+  assert.equal(item.labels.year, year);
+  assert.equal(item.labels.term, "2학기");
+  assert.equal(item.labels.grade, grade);
 }
-assert.equal(groupArchivedDocuments([exam("date-only", "시험지", "scan_2026-11-11.pdf")])[0].label, "년도 미분류",
+assert.equal(classifyArchiveDocument(exam("date-only", "시험지", "scan_2026-11-11.pdf")).labels.year, "년도 미분류",
   "저장 날짜나 스캔 파일의 날짜를 시험 학년도로 추측하지 않는다");
-const [scanDate] = groupArchivedDocuments([exam("scan-date", "시험지", "scan_2026-1-2.pdf")]);
-assert.equal(scanDate.terms[0].label, "학기 미분류");
-assert.equal(scanDate.terms[0].grades[0].label, "학년 미분류");
+const scanDate = classifyArchiveDocument(exam("scan-date", "시험지", "scan_2026-1-2.pdf"));
+assert.equal(scanDate.labels.term, "학기 미분류");
+assert.equal(scanDate.labels.grade, "학년 미분류");
+assert.equal(classifyArchiveDocument(exam("first", "2026 중1-2 1차 지필평가", "scan.pdf")).labels.exam, "중간");
+assert.equal(classifyArchiveDocument(exam("second", "2026 중1-2 2차 정기시험", "scan.pdf")).labels.exam, "기말");
+assert.equal(classifyArchiveDocument(exam("both", "중간 기말 모음", "scan.pdf")).labels.exam, "시험 미분류");
+assert.equal(classifyArchiveDocument(exam("lesson", "1차시 활동", "scan.pdf")).labels.exam, "시험 미분류");
+assert.equal(classifyArchiveDocument(exam("high", "2026 고1-2 기말 동아여고", "scan.pdf")).labels.grade, "고등학교 1학년");
+assert.equal(archiveSchoolMatches(classifyArchiveDocument(recent), "숭 의 중"), true);
+assert.equal(archiveSchoolMatches(classifyArchiveDocument(old), "숭의중학교"), true);
+assert.equal(archiveSchoolMatches(classifyArchiveDocument(recent), "금호"), false);
+assert.equal(archiveSchoolMatches(classifyArchiveDocument(unknown), "기초"), false);
+assert.equal(archiveSchoolMatches(classifyArchiveDocument(exam("filename-school", "2026 중1-2 기말", "동성여중학교.pdf")), "동성여중"), true);
 const displayGroup = { year: "2025", term: "2", grade: "1" };
 assert.equal(archiveDisplayTitle("TalkFile_2025 중1-2 기말 서석중 수학".normalize("NFD"), displayGroup), "서석중 · 기말 수학");
 assert.equal(archiveDisplayTitle("TalkFile_2025 중1-2 기말 동성여중", displayGroup), "동성여중 · 기말");
@@ -96,7 +101,7 @@ assert.equal(archiveDisplayTitle("2025학년도 ( 1 )학년 2학기 금호중 1�
 assert.equal(archiveDisplayTitle("2024 중1-2 기말 서석중", displayGroup), "서석중 · 2024 기말", "분류와 다른 년도는 이름에 남긴다");
 assert.equal(archiveDisplayTitle("2025학년도 1학년 2학기", displayGroup), "2025학년도 1학년 2학기", "이름이 비면 원래 제목을 표시한다");
 assert.equal(archiveDisplayTitle("TalkFile_2025 중1-2 기말 서석중"), "서석중 · 2025 중1-2 기말", "작업 기록은 분류 정보를 생략하지 않는다");
-assert.deepEqual(groupArchivedDocuments([noOriginal, noOutput, stopped, failed]), []);
+assert.deepEqual(archivedItems([noOriginal, noOutput, stopped, failed]), []);
 
 // 실제 파일 저장 경로와 보관함 API에서 원본을 추가하는 흐름을 확인한다.
 const previousDirectory = process.cwd();
@@ -147,4 +152,4 @@ try {
   await rm(scratch, { recursive: true, force: true });
 }
 
-console.log("완료 파일과 원본 묶기, 원본 추가와 내려받기, 년도·학기·학년 분류 및 정렬 검사 통과");
+console.log("원본·한글 보관, 년도→학년→학기→시험 선택, 학교명 검색·미분류 보존 검사 통과");
