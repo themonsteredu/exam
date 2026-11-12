@@ -6,7 +6,8 @@ import { ARCHIVE_STEPS, EMPTY_ARCHIVE_SELECTION, archivedItems, archiveOptions, 
 import { precheckFiles } from "@/lib/client/pages";
 
 const BATCH_SIZE = 100;
-const when = (iso: string) => new Date(iso).toLocaleDateString("ko-KR", { dateStyle: "medium" });
+const savedAt = new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "medium", timeZone: "Asia/Seoul" });
+type ArchiveAction = "retry" | "delete" | "attach";
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 const stepLabels: Record<ArchiveStep, string> = { year: "년도", grade: "학년", term: "학기", exam: "시험" };
 const stepPrompts: Record<ArchiveStep, string> = { year: "년도를 선택해 주세요.", grade: "학년을 선택해 주세요.", term: "학기를 선택해 주세요.", exam: "중간 또는 기말을 선택해 주세요." };
@@ -24,7 +25,7 @@ export default function ArchivePage() {
   const [view, setView] = useState<"completed" | "work">("completed");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busy, setBusy] = useState<{ id: string; action: ArchiveAction } | null>(null);
   const [selection, setSelection] = useState<ArchiveSelection>({ ...EMPTY_ARCHIVE_SELECTION });
   const [query, setQuery] = useState("");
 
@@ -57,7 +58,7 @@ export default function ArchivePage() {
   const completedCount = items.length;
 
   async function retry(doc: ArchiveDocument) {
-    setBusy(doc.id); setError("");
+    setBusy({ id: doc.id, action: "retry" }); setError("");
     try {
       const { doc: saved } = await api<{ doc: ArchiveDocument & { exam_json?: unknown } }>(`/api/documents/${doc.id}`);
       if (!saved.exam_json && !confirm("저장된 원본으로 읽기를 다시 시도할까요? 이미 읽어 둔 결과는 재사용하며, 새로 읽는 부분에는 AI 요금이 발생할 수 있습니다.")) return;
@@ -82,13 +83,15 @@ export default function ArchivePage() {
   }
 
   async function remove(doc: ArchiveDocument) {
-    if (!confirm(`'${doc.title}'을 지울까요? 원본과 한글 파일도 함께 지워집니다.`)) return;
-    setBusy(doc.id);
+    const time = savedAt.format(new Date(doc.created_at));
+    if (!confirm(`이 시험지를 삭제할까요?\n\n${doc.title}\n저장 시각: ${time}\n\n보관된 원본과 한글 파일도 함께 삭제됩니다.`)) return;
+    setBusy({ id: doc.id, action: "delete" });
     setError("");
     setMessage("");
     try {
       await api(`/api/documents/${doc.id}`, { method: "DELETE" });
       setDocs((current) => current?.filter((saved) => saved.id !== doc.id) ?? null);
+      setMessage("선택한 시험지를 삭제했습니다.");
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -98,7 +101,7 @@ export default function ArchivePage() {
 
   async function attach(doc: ArchiveDocument, files: File[]) {
     if (!files.length) return;
-    setBusy(doc.id);
+    setBusy({ id: doc.id, action: "attach" });
     setError("");
     setMessage("");
     try {
@@ -124,7 +127,7 @@ export default function ArchivePage() {
   }
 
   const row = (doc: ArchiveDocument, group?: ArchiveClassPath, context?: string) => (
-    <ArchiveRow key={doc.id} doc={doc} group={group} busy={busy === doc.id} locked={busy !== null}
+    <ArchiveRow key={doc.id} doc={doc} group={group} pending={busy?.id === doc.id ? busy.action : undefined} locked={busy !== null}
       context={context} onDownload={download} onRemove={remove} onAttach={attach} onRetry={retry} />
   );
 
@@ -185,11 +188,11 @@ export default function ArchivePage() {
   );
 }
 
-function ArchiveRow({ doc, group, context, busy, locked, onDownload, onRemove, onAttach, onRetry }: {
+function ArchiveRow({ doc, group, context, pending, locked, onDownload, onRemove, onAttach, onRetry }: {
   doc: ArchiveDocument;
   group?: ArchiveClassPath;
   context?: string;
-  busy: boolean;
+  pending?: ArchiveAction;
   locked: boolean;
   onDownload: (path: string, name: string) => void;
   onRemove: (doc: ArchiveDocument) => void;
@@ -201,20 +204,24 @@ function ArchiveRow({ doc, group, context, busy, locked, onDownload, onRemove, o
   const archived = isArchived(doc);
   const originals = doc.original_files;
   const displayTitle = archiveDisplayTitle(doc.title, group);
+  const time = savedAt.format(new Date(doc.created_at));
   const toggle = (next: "more" | "originals") => setPanel((current) => current === next ? null : next);
 
   return (
-    <li className="archive-document" aria-busy={busy} onKeyDown={(event) => { if (event.key === "Escape") setPanel(null); }}>
+    <li className="archive-document" aria-busy={Boolean(pending)} onKeyDown={(event) => { if (event.key === "Escape") setPanel(null); }}>
       <div className="archive-document-info">
         <div className="archive-document-name">
           <strong title={doc.title}>{displayTitle}</strong>
           {!archived && <span className="archive-label">{documentStatus(doc)}</span>}
         </div>
-        {doc.item_count > 0 && <span className="archive-document-meta">{doc.item_count}문항</span>}
+        <div className="archive-document-meta">
+          <time dateTime={doc.created_at}>저장 {time}</time>
+          {doc.item_count > 0 && <span>{doc.item_count}문항</span>}
+        </div>
         {context && <span className="archive-document-context">{context}</span>}
       </div>
       <div className="archive-actions">
-        {doc.status === "failed" && originals.length > 0 && <button type="button" className="archive-download" disabled={locked} onClick={() => onRetry(doc)}>{busy ? "접수 중" : "다시 시도"}</button>}
+        {doc.status === "failed" && originals.length > 0 && <button type="button" className="archive-download" disabled={locked} onClick={() => onRetry(doc)}>{pending === "retry" ? "접수 중" : "다시 시도"}</button>}
         {doc.status === "reading" && <a href={`/?job=${encodeURIComponent(doc.id)}`}>진행 확인</a>}
         {doc.hwpx_path && (
           <button type="button" className="archive-download" onClick={() => onDownload(doc.hwpx_path!, `${doc.title}.hwpx`)} aria-label={`${displayTitle} 한글 파일 내려받기`}>
@@ -240,12 +247,15 @@ function ArchiveRow({ doc, group, context, busy, locked, onDownload, onRemove, o
                 onAttach(doc, files);
               }} />
             <button type="button" disabled={locked} onClick={() => fileInput.current?.click()}>
-              {busy ? "저장 중" : "원본 추가"}
+              {pending === "attach" ? "저장 중" : "원본 추가"}
             </button>
           </>
         )}
         <button type="button" className="archive-more" aria-label={`${displayTitle} 더보기`} aria-expanded={panel === "more"} aria-controls={`archive-panel-${doc.id}`} onClick={() => toggle("more")}>
           {panel === "more" ? "접기" : "더보기"}
+        </button>
+        <button type="button" className="archive-remove" disabled={locked} onClick={() => onRemove(doc)} aria-label={`${doc.title}, ${time} 저장 시험지 삭제`}>
+          {pending === "delete" ? "삭제 중" : "삭제"}
         </button>
       </div>
       {!archived && doc.note && <p className="archive-document-note muted small">{doc.note}</p>}
@@ -261,14 +271,12 @@ function ArchiveRow({ doc, group, context, busy, locked, onDownload, onRemove, o
             <>
               <dl className="archive-file-info">
                 <dt>원래 이름</dt><dd>{doc.title}</dd>
-                <dt>저장일</dt><dd>{when(doc.created_at)}</dd>
                 {doc.cost_usd > 0 && <><dt>AI 요금</dt><dd>{won(doc.cost_usd)}</dd></>}
               </dl>
               {archived && doc.note && <p className="muted small">{doc.note}</p>}
-              <div className="row archive-secondary-actions">
-                {doc.item_count > 0 && <a href={`/?resume=${encodeURIComponent(doc.id)}`}>다시 만들기</a>}
-                <button type="button" className="archive-remove" disabled={locked} onClick={() => onRemove(doc)} aria-label={`${doc.title} 지우기`}>지우기</button>
-              </div>
+              {doc.item_count > 0 && <div className="row archive-secondary-actions">
+                <a href={`/?resume=${encodeURIComponent(doc.id)}`}>다시 만들기</a>
+              </div>}
             </>
           )}
         </div>
