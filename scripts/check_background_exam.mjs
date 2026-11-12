@@ -37,11 +37,12 @@ try {
   const signed = await call("/api/files/upload-url", "POST", { docId: doc.id, kind: "original", name: "exam_p1.jpg", type: "image/jpeg", size: bytes.length, index: 0 });
   const put = await fetch(new URL(signed.url, origin), { method: "PUT", headers: signed.headers, body: bytes }); assert.ok(put.ok);
   await call(`/api/documents/${doc.id}`, "PATCH", { original_files: [{ path: signed.path, name: "exam_p1.jpg", size: bytes.length, type: "image/jpeg" }] });
+  await call(`/api/documents/${doc.id}`, "PATCH", { status: "failed", note: "읽기 전 연결이 끊긴 문서 재시도 검사" });
   browser = await puppeteer.launch({ executablePath: await chromium.executablePath(), args: chromium.args, headless: true });
   await browser.setCookie({ name: "exam_session", value: token, domain: "localhost", path: "/" }, { name: "exam_device", value: device, domain: "localhost", path: "/" });
   const tab = await browser.newPage(); await tab.goto(origin + "/internal-render");
   const started = await tab.evaluate(async id => {
-    const res = await fetch("/api/jobs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ docId: id }) });
+    const res = await fetch("/api/jobs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ docId: id, mode: "retry" }) });
     return { status: res.status, ...await res.json() };
   }, doc.id);
   assert.equal(started.status, 202, JSON.stringify(started));
@@ -98,8 +99,13 @@ try {
   assert.equal(cancelledResult.job.runId, cancelled.runId);
   assert.equal(cancelledResult.job.status, "cancelled");
   assert.equal(cancelledResult.doc.hwpx_path, rebuiltResult.doc.hwpx_path, "취소해도 기존 완성 파일 유지");
+  const retried = await call("/api/jobs", "POST", { docId: doc.id, mode: "retry" });
+  const retriedResult = await waitForRun(retried.runId);
+  assert.equal(retriedResult.doc.status, "done");
+  assert.equal(JSON.parse(await readFile(".data/store.json", "utf8")).usage.length, readsBefore, "저장된 읽기 결과 재시도는 API 키·AI 호출 불필요");
   console.log("브라우저 종료 → 서버 제작 완료 → 원본·도형·한글 보관 / 중복 접수·인증 검사 통과");
   console.log("선택 그림 다시 읽기·API 키 없는 다시 만들기·접수 직후 취소 검사 통과");
+  console.log("원본만 있는 실패 문서와 읽기 결과가 있는 문서의 다시 시도 검사 통과");
 } catch (err) {
   console.error(logs); throw err;
 } finally {

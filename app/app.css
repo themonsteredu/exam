@@ -54,6 +54,7 @@
 
 label.field { display: grid; gap: 6px; font-weight: 500; font-size: 0.9rem; }
 input[type="text"],
+input[type="search"],
 input[type="password"],
 select {
   font: 400 0.95rem/1.4 var(--font-ui);
@@ -120,18 +121,21 @@ table.list td.num { text-align: right; white-space: nowrap; }
 .archive-views button { min-height: 44px; gap: 8px; padding: 10px 0; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); }
 .archive-views button[aria-pressed="true"] { color: var(--text); border-bottom-color: var(--accent); font-weight: 700; }
 .archive-views span, .archive-count { color: var(--muted); font-size: 0.82rem; font-weight: 400; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.archive-tree, .archive-work { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 0 24px; min-width: 0; }
-.archive-year + .archive-year { border-top: 1px solid var(--line); }
-.archive-year > summary, .archive-class > summary { display: flex; align-items: center; gap: 10px; cursor: pointer; list-style: none; }
-.archive-year > summary::-webkit-details-marker, .archive-class > summary::-webkit-details-marker { display: none; }
-.archive-year > summary::after, .archive-class > summary::after { content: ""; flex: none; width: 7px; height: 7px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); margin: 0 3px 0 6px; }
-.archive-year[open] > summary::after, .archive-class[open] > summary::after { transform: rotate(45deg); }
-.archive-year > summary { min-height: 68px; padding: 18px 0; font-size: 1.1rem; font-weight: 700; }
+.archive-results, .archive-work { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 0 24px; min-width: 0; }
+.archive-documents.archive-work { padding-inline: 24px; }
+.archive-browser { min-width: 0; display: grid; gap: 24px; }
+.archive-search { display: flex; align-items: flex-end; gap: 12px; }
+.archive-search .field { flex: 1; }
+.archive-search input { min-height: 48px; font-size: 1rem; }
+.archive-search button { min-height: 48px; flex: none; }
+.archive-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+.archive-filters select { min-height: 48px; font-size: 1rem; }
+.archive-filters select:disabled { opacity: 0.5; cursor: not-allowed; }
+.archive-step-number { color: var(--muted); font-size: 0.8rem; margin-right: 8px; }
+.archive-results-heading { display: flex; gap: 16px; align-items: baseline; padding: 20px 0 16px; border-bottom: 1px solid var(--line); }
+.archive-results-heading h2 { margin: 0; font-size: 0.95rem; font-weight: 500; line-height: 1.7; word-break: keep-all; }
+.archive-empty { padding: 30px 0; text-align: center; font-size: 0.95rem; }
 .archive-count { margin-left: auto; }
-.archive-classes { padding-bottom: 16px; }
-.archive-class + .archive-class { border-top: 1px solid var(--line); }
-.archive-class > summary { min-height: 48px; padding: 12px 0; font-size: 0.88rem; font-weight: 500; color: var(--muted); }
-.archive-path-separator { padding: 0 5px; }
 .archive-documents, .archive-originals { margin: 0; padding: 0; list-style: none; }
 .archive-document { padding: 19px 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px 20px; align-items: center; }
 .archive-document + .archive-document { border-top: 1px solid var(--line); }
@@ -140,6 +144,7 @@ table.list td.num { text-align: right; white-space: nowrap; }
 .archive-document-name { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; overflow-wrap: anywhere; line-height: 1.6; }
 .archive-document-name strong { font-size: 1rem; font-weight: 500; }
 .archive-document-meta { color: var(--muted); font-size: 0.82rem; }
+.archive-document-context { grid-column: 1 / -1; color: var(--muted); font-size: 0.82rem; line-height: 1.6; word-break: keep-all; }
 .archive-label { color: var(--warn); background: var(--warn-soft); padding: 2px 7px; border-radius: 4px; font-size: 0.8rem; white-space: nowrap; }
 .archive-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .archive-actions > button { min-height: 44px; justify-content: center; padding: 10px 14px; font-size: 0.85rem; }
@@ -170,8 +175,10 @@ table.list td.num { text-align: right; white-space: nowrap; }
   table.list .hide-sm { display: none; }
   .archive-page { padding-top: 24px; gap: 16px; }
   .archive-page .page-head h1 { font-size: 1.4rem; }
-  .archive-tree, .archive-work { padding-inline: 16px; }
-  .archive-year > summary { min-height: 62px; padding-block: 16px; }
+  .archive-results, .archive-documents.archive-work { padding-inline: 16px; }
+  .archive-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 12px; }
+  .archive-search { flex-wrap: wrap; gap: 8px; }
+  .archive-search .field { flex-basis: 100%; }
   .archive-document { grid-template-columns: minmax(0, 1fr); padding-block: 16px; gap: 10px; }
   .archive-document-info { grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 10px; }
   .archive-document-meta { white-space: nowrap; }

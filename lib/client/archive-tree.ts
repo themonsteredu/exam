@@ -13,28 +13,18 @@ export type ArchiveDocument = {
   note: string | null;
 };
 
-export type ArchiveGradeGroup = {
-  key: string;
-  label: string;
-  count: number;
-  docs: ArchiveDocument[];
-};
-
-export type ArchiveTermGroup = {
-  key: string;
-  label: string;
-  count: number;
-  grades: ArchiveGradeGroup[];
-};
-
-export type ArchiveYearGroup = {
-  key: string;
-  label: string;
-  count: number;
-  terms: ArchiveTermGroup[];
-};
-
 export type ArchiveClassPath = { year: string; term: string; grade: string };
+export const ARCHIVE_STEPS = ["year", "grade", "term", "exam"] as const;
+export type ArchiveStep = typeof ARCHIVE_STEPS[number];
+export type ArchiveSelection = Record<ArchiveStep, string>;
+export const EMPTY_ARCHIVE_SELECTION: ArchiveSelection = { year: "", grade: "", term: "", exam: "" };
+export type ArchiveItem = {
+  doc: ArchiveDocument;
+  path: ArchiveSelection;
+  labels: ArchiveSelection;
+  displayPath: ArchiveClassPath;
+  schools: string[];
+};
 
 /** 목록용 이름만 정돈한다. 저장된 제목과 내려받는 파일명은 그대로 둔다. */
 export function archiveDisplayTitle(title: string, group?: ArchiveClassPath): string {
@@ -100,38 +90,63 @@ function byNewest(a: ArchiveDocument, b: ArchiveDocument): number {
   return time(b) - time(a) || koreanOrder.compare(a.title, b.title) || a.id.localeCompare(b.id);
 }
 
-export function groupArchivedDocuments(docs: ArchiveDocument[]): ArchiveYearGroup[] {
-  const years = new Map<number, Map<number, Map<number, ArchiveDocument[]>>>();
+const schoolPattern = /(?:^|[\s\d()[\]·.,_-])([가-힣]{2,20}(?:초등학교|중학교|고등학교|초교|초|중|고))(?=$|[\s\d()[\]·.,_-])/gu;
+const schoolSearchKey = (value: string) => value.normalize("NFKC").replace(/초등학교|초교/g, "초").replace(/중학교/g, "중").replace(/고등학교/g, "고").replace(/\s/g, "").toLowerCase();
 
-  for (const doc of docs) {
-    if (!isArchived(doc)) continue;
-    const texts = [doc.title, ...doc.original_files.map((file) => file.name)].map((value) => value.normalize("NFKC"));
-    const { year = 0, term = 0, grade = 0 } = classInfo(texts);
-    if (!years.has(year)) years.set(year, new Map());
-    const terms = years.get(year)!;
-    if (!terms.has(term)) terms.set(term, new Map());
-    const grades = terms.get(term)!;
-    if (!grades.has(grade)) grades.set(grade, []);
-    grades.get(grade)!.push(doc);
+export function classifyArchiveDocument(doc: ArchiveDocument): ArchiveItem {
+  const texts = [doc.title, ...doc.original_files.map(file => file.name)].map(value => value.normalize("NFKC").replace(/_/g, " "));
+  const info = classInfo(texts);
+  const schools = [...new Set(texts.flatMap(text => [...text.matchAll(schoolPattern)].map(match => match[1])))].filter(name => !/(?:작업중|변환중|진행중|기초)$/.test(name));
+  const levels = new Set<string>();
+  const levelNames: Record<string, string> = { elementary: "초등학교", middle: "중학교", high: "고등학교" };
+  for (const [key, name, short] of [["elementary", "초등학교", "초"], ["middle", "중학교", "중"], ["high", "고등학교", "고"]]) {
+    if (schools.some(school => school.endsWith(name) || school.endsWith(short) || key === "elementary" && school.endsWith("초교")) ||
+      texts.some(text => new RegExp(`(?:^|[\\s(])(?:${name}|${short})\\s*[1-6](?:\\s*학년|\\s*[-–]|(?=$|\\s))`).test(text))) levels.add(key);
   }
+  const level = levels.size === 1 ? [...levels][0] : "";
+  const kinds = new Set<string>();
+  for (const text of texts) {
+    if (/중간/.test(text)) kinds.add("midterm");
+    if (/기말/.test(text)) kinds.add("final");
+    // 1차시 같은 수업 표기는 시험 구분으로 사용하지 않는다.
+    for (const [, order] of text.matchAll(/(?<!\d)([12])\s*차(?!시)/g)) kinds.add(order === "1" ? "midterm" : "final");
+  }
+  const kind = kinds.size === 1 ? [...kinds][0] : UNCLASSIFIED;
+  const key = (value?: number) => value ? String(value) : UNCLASSIFIED;
+  return {
+    doc, schools,
+    path: { year: key(info.year), grade: info.grade ? `${level || "unknown"}:${info.grade}` : UNCLASSIFIED, term: key(info.term), exam: kind },
+    labels: { year: info.year ? `${info.year}년` : "년도 미분류", grade: info.grade ? `${levelNames[level] || ""}${level ? " " : ""}${info.grade}학년` : "학년 미분류", term: info.term ? `${info.term}학기` : "학기 미분류", exam: kind === "midterm" ? "중간" : kind === "final" ? "기말" : "시험 미분류" },
+    displayPath: { year: key(info.year), grade: key(info.grade), term: key(info.term) },
+  };
+}
 
-  const key = (value: number) => value ? String(value) : UNCLASSIFIED;
-  const ascending = (a: number, b: number) => (a || Infinity) - (b || Infinity);
-  const count = (groups: { count: number }[]) => groups.reduce((total, group) => total + group.count, 0);
-  return [...years.entries()]
-    .sort(([a], [b]) => b - a)
-    .map(([year, termBuckets]) => {
-      const terms = [...termBuckets.entries()]
-        .sort(([a], [b]) => ascending(a, b))
-        .map(([term, gradeBuckets]) => {
-          const grades = [...gradeBuckets.entries()]
-            .sort(([a], [b]) => ascending(a, b))
-            .map(([grade, docs]) => ({
-              key: key(grade), label: grade ? `${grade}학년` : "학년 미분류",
-              count: docs.length, docs: docs.sort(byNewest),
-            }));
-          return { key: key(term), label: term ? `${term}학기` : "학기 미분류", count: count(grades), grades };
-        });
-      return { key: key(year), label: year ? `${year}학년도` : "년도 미분류", count: count(terms), terms };
-    });
+export function archivedItems(docs: ArchiveDocument[]): ArchiveItem[] {
+  return docs.filter(isArchived).sort(byNewest).map(classifyArchiveDocument);
+}
+
+export function archiveSchoolMatches(item: ArchiveItem, query: string): boolean {
+  const key = schoolSearchKey(query);
+  return !key || item.schools.some(school => schoolSearchKey(school).includes(key));
+}
+
+export function archiveOptions(items: ArchiveItem[], selection: ArchiveSelection, step: ArchiveStep) {
+  const parents = ARCHIVE_STEPS.slice(0, ARCHIVE_STEPS.indexOf(step));
+  const options = new Map<string, { key: string; label: string; count: number }>();
+  for (const item of items) {
+    if (!parents.every(parent => selection[parent] === item.path[parent])) continue;
+    const key = item.path[step];
+    const option = options.get(key) || { key, label: item.labels[step], count: 0 };
+    option.count++; options.set(key, option);
+  }
+  const rank = (key: string) => key === UNCLASSIFIED ? Infinity : step === "year" ? -Number(key) : step === "exam" ? (key === "midterm" ? 0 : 1) : step === "grade" ? (["elementary", "middle", "high", "unknown"].indexOf(key.split(":")[0]) * 10 + Number(key.split(":")[1])) : Number(key);
+  return [...options.values()].sort((a, b) => rank(a.key) - rank(b.key) || koreanOrder.compare(a.label, b.label));
+}
+
+export function selectArchiveStep(selection: ArchiveSelection, step: ArchiveStep, value: string): ArchiveSelection {
+  return Object.fromEntries(ARCHIVE_STEPS.map((key, index) => [key, index < ARCHIVE_STEPS.indexOf(step) ? selection[key] : key === step ? value : ""])) as ArchiveSelection;
+}
+
+export function selectedArchiveItems(items: ArchiveItem[], selection: ArchiveSelection): ArchiveItem[] {
+  return items.filter(item => ARCHIVE_STEPS.every(step => selection[step] && selection[step] === item.path[step]));
 }
