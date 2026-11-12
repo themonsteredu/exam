@@ -143,7 +143,7 @@ table.list td.num { text-align: right; white-space: nowrap; }
 .archive-document-info { min-width: 0; display: grid; gap: 3px; }
 .archive-document-name { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; overflow-wrap: anywhere; line-height: 1.6; }
 .archive-document-name strong { font-size: 1rem; font-weight: 500; }
-.archive-document-meta { color: var(--muted); font-size: 0.82rem; }
+.archive-document-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--muted); font-size: 0.82rem; }
 .archive-document-context { grid-column: 1 / -1; color: var(--muted); font-size: 0.82rem; line-height: 1.6; word-break: keep-all; }
 .archive-label { color: var(--warn); background: var(--warn-soft); padding: 2px 7px; border-radius: 4px; font-size: 0.8rem; white-space: nowrap; }
 .archive-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -155,7 +155,6 @@ table.list td.num { text-align: right; white-space: nowrap; }
 .archive-file-info { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 7px 16px; margin: 0; font-size: 0.84rem; }
 .archive-file-info dt { color: var(--muted); }
 .archive-file-info dd { margin: 0; overflow-wrap: anywhere; }
-.archive-secondary-actions { justify-content: space-between; }
 .archive-secondary-actions a { padding-block: 10px; font-size: 0.85rem; }
 .archive-remove { min-height: 44px; color: var(--warn); background: transparent; border-color: transparent; }
 .archive-originals { min-width: 0; display: grid; gap: 6px; }
@@ -180,9 +179,7 @@ table.list td.num { text-align: right; white-space: nowrap; }
   .archive-search { flex-wrap: wrap; gap: 8px; }
   .archive-search .field { flex-basis: 100%; }
   .archive-document { grid-template-columns: minmax(0, 1fr); padding-block: 16px; gap: 10px; }
-  .archive-document-info { grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 10px; }
-  .archive-document-meta { white-space: nowrap; }
-  .archive-actions { display: grid; grid-template-columns: 1fr 1fr auto; gap: 6px; }
+  .archive-actions { gap: 6px; }
   .archive-actions > button { padding-inline: 10px; }
-  .archive-actions .archive-more { grid-column: 3; }
+  .archive-actions > button:not(.archive-more, .archive-remove) { flex: 1 0 auto; }
 }
